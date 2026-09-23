@@ -11,14 +11,16 @@ from typing import Callable, Sequence
 from pydantic import ValidationError
 
 from ..config import Settings
-from ..projects import ProjectError, ProjectStore
+from ..projects import ProjectError, ProjectMeta, ProjectStore
 from ..slurm import Slurm, SlurmError
+from .checkpoint import CheckpointError, CheckpointStore
 from .clock import Clock, stamp
 from .inbox import Inbox
 from .journal import Journal, JournalError, parse_ref
-from .models import Actor, CellEntry, CellRequest, CheckSpec
+from .models import Actor, CellEntry, CellRequest, Checkpoint, CheckSpec, NoteEntry, WaitingJob
 from .results import CellResult, cell_result, waiting_result
 from .slots import slot_usage
+from .views import JournalView, ProjectCard, journal_view, project_cards
 from .workbench import BenchStopped, Workbench
 
 
@@ -139,6 +141,47 @@ class BenchService:
         self.inbox.control(project, cid, "interrupt")
         return f"asked the workbench to interrupt {ref}"
 
+    # ---- projects and the journal ---------------------------------------------------------
+
+    def projects_list(self) -> list[ProjectCard]:
+        return project_cards(self.settings)
+
+    def create_project(self, project: str, question: str, datasets: Sequence[str] = ()) -> ProjectMeta:
+        try:
+            meta = self.projects.create(project, question, tuple(datasets))
+        except ProjectError as exc:
+            raise BenchError(str(exc)) from exc
+        (self.projects.path_of(project) / "work").mkdir(parents=True, exist_ok=True)
+        return meta
+
+    def journal_view(self, project: str, since: str | None = None, kinds: Sequence[str] | None = None,
+                     limit: int = 20, max_chars: int = 12_000) -> JournalView:
+        self.journal(project)  # a clear error for an unknown project
+        return journal_view(self.settings, project, since, kinds, max(1, min(limit, 100)), max_chars)
+
+    def note(self, project: str, kind: str, text: str, because: Sequence[str] = (), reverses_if: str = "",
+             verdict: str | None = None, audience: str = "both", actor: Actor | None = None) -> NoteEntry:
+        if kind == "handoff":
+            raise BenchError("write the hand-over with handoff(), not as a note")
+        try:
+            return self.journal(project).add_note(kind, text, because, reverses_if, verdict, audience, actor)
+        except (JournalError, ValidationError) as exc:
+            raise BenchError(str(exc)) from exc
+
+    def handoff(self, project: str, text: str, disposition: str, next_action: str = "",
+                waiting_jobs: Sequence[str] = (), actor: Actor | None = None) -> Checkpoint:
+        journal = self.journal(project)
+        store = CheckpointStore(self.projects.path_of(project), now=self.now)
+        try:
+            checkpoint = store.write(disposition, next_action, [WaitingJob(job_id=j) for j in waiting_jobs],
+                                     actor=actor)
+            store.write_handoff(text)
+        except (CheckpointError, ValidationError) as exc:
+            raise BenchError(str(exc)) from exc
+        first = text.strip().splitlines()[0][:300]
+        journal.add_note("handoff", f"{disposition}: {first}", actor=actor)
+        return checkpoint
+
     # ---- the workbench ------------------------------------------------------------------
 
     def status(self) -> str:
@@ -146,6 +189,15 @@ class BenchService:
 
     def stop_workbench(self) -> str:
         return self.workbench.stop().summary()
+
+    def stop(self, target: str) -> str:
+        """A cell ref (interrupt it) or "workbench" (free its slot now)."""
+        target = target.strip()
+        if target == "workbench":
+            return self.stop_workbench()
+        if "#" in target:
+            return self.interrupt(target)
+        raise BenchError("stop takes a cell reference like 'project#c0007' or 'workbench'")
 
 
 def _previous_epoch(journal: Journal, entry: CellEntry) -> str:

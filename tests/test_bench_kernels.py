@@ -97,3 +97,16 @@ def test_a_cell_that_ignores_interrupts_is_killed_when_retiring(kernel: ProjectK
     result, _ = run(kernel, tmp_path, code, interrupt_after=0.5, kill=True)
     assert result.status == "lost" and result.interrupted and time.monotonic() - started < 20
     assert not kernel.alive()
+
+
+@pytest.mark.kernel
+def test_kernel_uses_private_unix_sockets(kernel: ProjectKernel) -> None:
+    import os
+    import stat
+
+    info = kernel._manager.get_connection_info()
+    assert info["transport"] == "ipc"
+    folder = kernel._sockets
+    assert folder is not None and stat.S_IMODE(os.stat(folder).st_mode) == 0o700
+    kernel.shutdown()
+    assert not folder.exists()

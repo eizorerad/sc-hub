@@ -11,6 +11,8 @@ under ~/.cache) stay readable to their own code.
 from __future__ import annotations
 
 import re
+import shutil
+import tempfile
 from pathlib import Path
 from typing import Mapping
 from urllib.parse import urlsplit, urlunsplit
@@ -70,7 +72,11 @@ def kernel_name(settings: Settings, project: str) -> str:
 
 
 class ProjectKernel:
-    """A started kernel and its blocking client, for one project in one workbench job."""
+    """A started kernel and its blocking client, for one project in one workbench job.
+
+    The kernel talks over Unix sockets in a private local folder (0700), not TCP:
+    compute nodes are shared, and ipykernel's TCP transport is unencrypted.
+    """
 
     def __init__(self, name: str, cwd: Path, env: Mapping[str, str], epoch: str) -> None:
         self.name = name
@@ -79,12 +85,14 @@ class ProjectKernel:
         self.epoch = epoch
         self._manager = None
         self.client = None
+        self._sockets: Path | None = None
 
     def start(self, timeout_s: float = 120) -> None:
         from jupyter_client import KernelManager
 
         self.cwd.mkdir(parents=True, exist_ok=True)
-        manager = KernelManager(kernel_name=self.name)
+        self._sockets = Path(tempfile.mkdtemp(prefix="schub-k-", dir="/tmp" if Path("/tmp").is_dir() else None))
+        manager = KernelManager(kernel_name=self.name, transport="ipc", ip=str(self._sockets / "k"))
         manager.start_kernel(cwd=str(self.cwd), env=self.env)
         client = manager.client()
         try:
@@ -93,6 +101,7 @@ class ProjectKernel:
         except Exception:
             client.stop_channels()
             manager.shutdown_kernel(now=True)
+            shutil.rmtree(self._sockets, ignore_errors=True)
             raise
         self._manager, self.client = manager, client
 
@@ -111,4 +120,7 @@ class ProjectKernel:
                 self._manager.shutdown_kernel(now=True)
             except Exception:  # noqa: BLE001 - a dead kernel must not stop the runner
                 pass
+        if self._sockets is not None:
+            shutil.rmtree(self._sockets, ignore_errors=True)
         self._manager = self.client = None
+        self._sockets = None

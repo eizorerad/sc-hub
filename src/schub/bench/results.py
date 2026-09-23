@@ -60,3 +60,20 @@ def cell_result(entry: CellEntry, previous_epoch: str, workbench: str, setup_ref
         jobs=entry.jobs, checks=entry.check_results, duration_s=entry.duration_s, kernel_epoch=entry.kernel_epoch,
         kernel_restarted=restarted, message=entry.message, workbench=workbench, hint=hint,
     )
+
+
+def trimmed(result: CellResult, max_chars: int) -> CellResult:
+    """The same result with output text cut to what a client takes well (the journal keeps more)."""
+    total = sum(len(o.text) for o in result.outputs)
+    if total <= max_chars:
+        return result
+    budget = max(200, max_chars // max(1, len(result.outputs)))
+    outputs = []
+    for item in result.outputs:
+        if len(item.text) <= budget:
+            outputs.append(item)
+            continue
+        cut = len(item.text) - budget
+        text = item.text[: budget * 2 // 3] + f"\n[... {cut} characters; the journal has more ...]\n" + item.text[-budget // 3:]
+        outputs.append(item.model_copy(update={"text": text, "truncated": item.truncated + cut}))
+    return result.model_copy(update={"outputs": tuple(outputs)})
