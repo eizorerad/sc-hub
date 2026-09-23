@@ -1,0 +1,11 @@
+{
+  "name": "schub-dashboard-e2e",
+  "private": true,
+  "description": "Click-through test of the sc-hub dashboard in the installed Google Chrome",
+  "scripts": {
+    "test": "./run.sh"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.63.0"
+  }
+}

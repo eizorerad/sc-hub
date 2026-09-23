@@ -161,7 +161,7 @@ jobs. Your remote `~/.bashrc` must not print anything for non-interactive shells
 | ...inside an allocation you already hold | `SCHUB_SRUN_ARGS="--jobid=<id> --overlap" SCHUB_GPU_CHECK=0 bash scripts/publish_library.sh` |
 | Build and publish the installers | `bash scripts/release.sh` on your laptop (`--gist` also updates a secret gist) |
 | Install Cell Ranger (10x license; link from the 10x downloads page) | `bash scripts/install_cellranger.sh '<link>' human` on the cluster |
-| Run the tests | `.venv/bin/python -m pytest --cov=schub` |
+| Run the tests | `.venv/bin/python -m pytest --cov=schub`, then `tests/e2e/run.sh` for the dashboard |
 
 Code changes reach students when the library is published; everyone re-runs the
 installer (idempotent) or just `bootstrap_cluster.sh` to pin the new environment.
@@ -278,10 +278,17 @@ filters, and waits while you read an opened section.
 ```bash
 uv venv --python 3.12 .venv && uv pip install --python .venv/bin/python -e ".[dev]"
 .venv/bin/python -m pytest --cov=schub
+tests/e2e/run.sh                         # the dashboard in Chrome: every control
+tests/e2e/run.sh ~/sc-hub-workspace/view # ...or the mirror of the real one
 ```
 
 Unit tests use a fake Slurm and tiny generated `.h5ad` files. The brick
-implementations are exercised end to end on the cluster.
+implementations are exercised end to end on the cluster. The dashboard test
+(Node 18+ and Google Chrome; it installs `playwright-core` on first run) clicks
+every tab, menu, step, filter and copy button of a page opened as a file, as
+students open it, and checks what each does: addresses, requests copied,
+notebooks downloaded, the auto-refresh keeping the open step, a 375 px phone.
+Results and screenshots go to `tests/e2e/out/`.
 
 ## Known limits (pilot)
 
