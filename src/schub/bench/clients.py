@@ -54,5 +54,13 @@ def profile_for(client_name: str, elicitation: bool = False, env: Mapping[str, s
     return profile.model_copy(update={"elicitation": elicitation}) if elicitation else profile
 
 
-def actor_for(client_name: str, client_version: str) -> Actor:
-    return Actor(kind="chat", client=(client_name or "unknown")[:200], client_version=(client_version or "")[:200])
+def actor_for(client_name: str, client_version: str, env: Mapping[str, str] | None = None) -> Actor:
+    """The chat client, or the lab agent: its goal job starts this server with SCHUB_LAB_AGENT_* set."""
+    env = os.environ if env is None else env
+    client, version = (client_name or "unknown")[:200], (client_version or "")[:200]
+    engine = env.get("SCHUB_LAB_AGENT_ENGINE", "")
+    if not engine:
+        return Actor(kind="chat", client=client, client_version=version)
+    return Actor(kind="lab_agent", client=client, client_version=version, engine=engine[:200],
+                 model=env.get("SCHUB_LAB_AGENT_MODEL", "")[:200], effort=env.get("SCHUB_LAB_AGENT_EFFORT", "")[:200],
+                 session_id=env.get("SCHUB_LAB_AGENT_SESSION", "")[:200])

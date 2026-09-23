@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 from .config import load_settings
 from .cli_bench import add_bench_parsers, bench_handlers
+from .cli_goal import add_goal_parsers, goal_handlers
 from .cli_projects import add_parsers, handlers, read_arg
 from .cli_experiments import add_experiment_parsers, experiment_handlers
 from .cli_tools import add_tool_parsers, tool_handlers
@@ -140,6 +141,7 @@ def _parser() -> argparse.ArgumentParser:
     add_tool_parsers(sub)
     add_experiment_parsers(sub)
     add_bench_parsers(sub)
+    add_goal_parsers(sub)
     return parser
 
 
@@ -165,6 +167,7 @@ def _dispatch(hub: Hub, args: argparse.Namespace) -> Any:
         **tool_handlers(hub, args),
         **experiment_handlers(hub, args),
         **(bench_handlers(hub, args) if args.command.startswith("bench-") else {}),
+        **(goal_handlers(hub, args) if args.command.startswith(("goal-", "engine-")) else {}),
     }
     return table[args.command]()
 
