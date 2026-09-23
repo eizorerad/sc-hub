@@ -97,17 +97,17 @@ def _title(run: NotebookRun) -> str:
     return f"sc-hub run {run.run_id}"
 
 
-def _header(run: NotebookRun, results: bool) -> str:
+def _header(run: NotebookRun, results: bool, figures: bool) -> str:
     results = results and any(s.completed for s in run.steps)
     question = f"**Question:** {run.question}\n\n" if run.question else ""
-    shown = (
-        f"- **Results are inside:** under each step you see what the pipeline computed in run `{run.run_id}` "
-        "(its numbers and figures, the DE tables, what the final data holds). Running a cell replaces its "
-        "output with what it computes here.\n"
-        if results else
-        "- **No results inside this copy** (the run has not finished a step yet, or it is an older run the "
-        "dashboard keeps light): ask your assistant for `make_notebook`, which writes the notebook with them.\n"
-    )
+    if not results:
+        shown = ("- **No results inside yet:** no step of this run has finished. Download it again later, or ask "
+                 "your assistant for `make_notebook`.\n")
+    else:
+        what = "its numbers and figures" if figures else "its numbers (figures are left out of this older run's copy; `make_notebook` includes them)"
+        shown = (f"- **Results are inside:** under each step you see what the pipeline computed in run `{run.run_id}` "
+                 f"({what}, the DE tables, what the final data holds). Running a cell replaces its output "
+                 "with what it computes here.\n")
     version = f" · sc-hub {run.schub_version}" if run.schub_version else ""
     return (
         f"# {_title(run)}\n\n{question}"
@@ -230,11 +230,12 @@ def _explore(run: NotebookRun, results: bool, problems: Problems) -> list[dict[s
     return cells
 
 
-def render_notebook(run: NotebookRun, results: bool = True) -> dict[str, Any]:
-    """The run as a notebook; with `results`, each cell carries the pipeline's saved outputs.
-    Saved files that exist but could not be read are listed in metadata.schub_incomplete."""
-    cells = [_cell("markdown", _header(run, results)), _cell("code", _setup(run))]
-    budget, problems = Budget(), []
+def render_notebook(run: NotebookRun, results: bool = True, figures: bool = True) -> dict[str, Any]:
+    """The run as a notebook; with `results`, each cell carries the pipeline's saved outputs
+    (with `figures`, its images too). Saved files that exist but could not be read are
+    listed in metadata.schub_incomplete."""
+    cells = [_cell("markdown", _header(run, results, figures)), _cell("code", _setup(run))]
+    budget, problems = Budget(enabled=figures), []
     defined: dict[str, int] = {}  # brick -> the step whose section holds its code
     for step in run.steps:
         markdown = _step_markdown(run, step)

@@ -24,9 +24,10 @@ from .collect import RUN_ID, RunView, Snapshot
 from .html import esc
 
 FOLDER = "nb"
-# Notebooks of the newest runs carry the saved results (figures make them ~0.2-1.5 MB);
-# older ones are code only, so the laptop's mirror stays small. make_notebook always has them.
-RECENT_RESULTS = 12
+# Every notebook carries the saved results. Figures (~0.2-1.5 MB a run) go into the newest
+# runs and the latest run of every branch; beyond that the laptop's mirror would only grow.
+# make_notebook always has them.
+RECENT_FIGURES = 40
 
 
 def notebook_run(run: RunView, question: str = "") -> NotebookRun:
@@ -55,11 +56,11 @@ KEY_PREFIX = "// schub-notebook "
 RENDERER = ("schub.notebook", "schub.notebook_results", "schub.notebook_kit", "schub.headlines", "schub.brick_code")
 
 
-def _key(run: NotebookRun, results: bool) -> str:
-    """Everything the notebook is made from: the run's steps, the question, whether results
-    are embedded and the current brick code (saved results never change once a step is done)."""
+def _key(run: NotebookRun, figures: bool) -> str:
+    """Everything the notebook is made from: the run's steps, the question, whether figures
+    are embedded and the current code (saved results never change once a step is done)."""
     bricks = sorted({s.brick for s in run.steps if s.brick in REGISTRY})
-    return stable_hash(run.model_dump(), results, {b: current_code_id(b) for b in bricks},
+    return stable_hash(run.model_dump(), figures, {b: current_code_id(b) for b in bricks},
                        [module_stamp(m) for m in RENDERER])
 
 
@@ -78,16 +79,20 @@ def write_notebooks(view: Path, snap: Snapshot, write: Callable[[Path, str], Non
     folder = view / FOLDER
     questions = {p.path: p.meta.question for p in snap.projects}
     done: set[str] = set()
+    latest: dict[str, str] = {}  # project/branch -> its newest run: what the project page offers
+    for run in snap.runs:
+        if run.project and run.branch:
+            latest.setdefault(f"{run.project}/{run.branch}", run.run_id)
     for position, run in enumerate(snap.runs):  # newest first
         if not RUN_ID.fullmatch(run.run_id):  # it becomes a file name
             continue
         path = folder / f"{run.run_id}.js"
-        results = position < RECENT_RESULTS
+        figures = position < RECENT_FIGURES or run.run_id in latest.values()
         try:
             source = notebook_run(run, questions.get(run.project or "", ""))
-            key = _key(source, results)
+            key = _key(source, figures)
             if _written_key(path) != key:  # rendering reads figures: only when something changed
-                notebook = render_notebook(source, results=results)
+                notebook = render_notebook(source, figures=figures)
                 # A saved file that could not be read: keep a key that never matches, so the next build retries.
                 written = f"{key}-incomplete" if notebook["metadata"].get("schub_incomplete") else key
                 write(path, f"{KEY_PREFIX}{written}\nwindow.SCHUB_NB=window.SCHUB_NB||{{}};"

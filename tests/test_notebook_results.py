@@ -145,18 +145,23 @@ def _view_run(run_id: str, folder: Path):
                    state="COMPLETED", steps=(step,))
 
 
-def test_dashboard_notebooks_embed_results_for_recent_runs_and_rerender_only_on_change(tmp_path, monkeypatch):
+def test_dashboard_notebooks_always_have_results_and_rerender_only_on_change(tmp_path, monkeypatch):
     from schub.dashboard import _write
     from schub.dashboard import notebooks as nbs
 
     folder = _step(tmp_path / "qc", {"cells_final": 55}, {"qc_distributions.png": PNG})
-    newest, older = _view_run("20260923-100000-abcdef-0001", folder), _view_run("20260923-090000-abcdef-0002", folder)
-    monkeypatch.setattr(nbs, "RECENT_RESULTS", 1)
+    newest = _view_run("20260923-100000-abcdef-0001", folder)
+    older = _view_run("20260923-090000-abcdef-0002", folder)  # same branch, superseded
+    other = _view_run("20260923-080000-abcdef-0003", folder).model_copy(update={"branch": "alt"})  # its branch's latest
+    monkeypatch.setattr(nbs, "RECENT_FIGURES", 1)
     view = tmp_path / "view"
-    assert nbs.write_notebooks(view, _snapshot([newest, older]), _write) == {newest.run_id, older.run_id}
-    first = (view / "nb" / f"{newest.run_id}.js").read_text()
-    assert first.startswith(nbs.KEY_PREFIX) and "image/png" in first and "cells_final" in first
-    assert "image/png" not in (view / "nb" / f"{older.run_id}.js").read_text()  # older: code only
+    runs = [newest, older, other]
+    assert nbs.write_notebooks(view, _snapshot(runs), _write) == {r.run_id for r in runs}
+    text = {r.run_id: (view / "nb" / f"{r.run_id}.js").read_text() for r in runs}
+    assert text[newest.run_id].startswith(nbs.KEY_PREFIX) and "image/png" in text[newest.run_id]
+    assert "cells_final" in text[older.run_id] and "image/png" not in text[older.run_id]  # results, no figures
+    assert "not in this copy of an older run" in text[older.run_id]
+    assert "image/png" in text[other.run_id]  # the latest run of its branch keeps its figures
 
     real = nbs.render_notebook
     calls = []
@@ -166,16 +171,17 @@ def test_dashboard_notebooks_embed_results_for_recent_runs_and_rerender_only_on_
         return real(*args, **kwargs)
 
     monkeypatch.setattr(nbs, "render_notebook", counting)
-    nbs.write_notebooks(view, _snapshot([newest, older]), _write)
+    nbs.write_notebooks(view, _snapshot(runs), _write)
     assert calls == []  # nothing changed: nothing rendered, no figures read
-    nbs.write_notebooks(view, _snapshot([newest.model_copy(update={"branch": "coarse"}), older]), _write)
-    assert len(calls) == 1  # the run changed: only its notebook is rendered again
-    monkeypatch.setattr(nbs, "RECENT_RESULTS", 2)
-    nbs.write_notebooks(view, _snapshot([newest.model_copy(update={"branch": "coarse"}), older]), _write)
+    runs[2] = other.model_copy(update={"branch": "alt2"})
+    nbs.write_notebooks(view, _snapshot(runs), _write)
+    assert len(calls) == 1  # one run changed: only its notebook is rendered again
+    monkeypatch.setattr(nbs, "RECENT_FIGURES", 2)
+    nbs.write_notebooks(view, _snapshot(runs), _write)
     assert len(calls) == 2 and "image/png" in (view / "nb" / f"{older.run_id}.js").read_text()  # joined the window
     monkeypatch.setattr(nbs, "module_stamp", lambda module: (module, 42))  # sc-hub updated
-    nbs.write_notebooks(view, _snapshot([newest.model_copy(update={"branch": "coarse"}), older]), _write)
-    assert len(calls) == 4
+    nbs.write_notebooks(view, _snapshot(runs), _write)
+    assert len(calls) == 5
 
 
 def test_incomplete_notebooks_are_rendered_again_and_failures_keep_the_last_one(tmp_path, monkeypatch):

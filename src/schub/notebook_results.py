@@ -29,10 +29,11 @@ Problems = list[str]
 
 
 class Budget:
-    """Bytes of figures one notebook may still embed."""
+    """Bytes of figures one notebook may still embed; `enabled=False` leaves all figures out."""
 
-    def __init__(self, total: int = FIGURE_BUDGET_BYTES) -> None:
+    def __init__(self, total: int = FIGURE_BUDGET_BYTES, enabled: bool = True) -> None:
         self.left = total
+        self.enabled = enabled
 
 
 def _lines(text: str) -> list[str]:
@@ -88,6 +89,10 @@ def _read_summary(path: Path, problems: Problems) -> dict[str, Any] | None:
 
 def _figures(results: Path, budget: Budget, problems: Problems) -> list[dict[str, Any]]:
     found = sorted(p for p in results.glob("*.png") if not p.stem.endswith("_thumb")) if results.is_dir() else []
+    if found and not budget.enabled:
+        names = ", ".join(p.name for p in found)
+        return [stream(f"(Figures of this step, {names}, are not in this copy of an older run: "
+                       "make_notebook writes the notebook with them.)")]
     outputs = []
     for path in found:
         try:
