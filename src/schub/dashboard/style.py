@@ -95,7 +95,8 @@ background:var(--card);border:1px solid var(--line);border-radius:14px;padding:6
 /* shared blocks */
 .metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-top:14px}
 .metric{display:block;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;color:var(--text);box-shadow:var(--shadow)}
-.metric span{color:var(--muted);font-size:12px}.metric b{display:block;font-size:24px;font-weight:600}.metric:hover{text-decoration:none}
+.metric span{color:var(--muted);font-size:12px}.metric>span:first-child{display:block;margin-bottom:6px}
+.metrics+h3,.metrics+h2{margin-top:26px}.metric b{display:block;font-size:24px;font-weight:600}.metric:hover{text-decoration:none}
 .bar{height:6px;border-radius:3px;background:var(--soft);overflow:hidden;margin:4px 0}.bar span{display:block;height:100%;background:var(--run);transition:width .4s}
 .bar.warn span{background:var(--plan)}.bar.bad span{background:var(--bad)}
 .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}
@@ -184,9 +185,10 @@ li.idea{display:flex;justify-content:space-between;align-items:flex-start;gap:14
 button.done,.ask-buttons button.done{border-color:var(--ok);color:var(--ok);background:var(--okbg)}
 .ask-foot{display:flex;align-items:center;gap:10px;margin-top:8px;font-size:12px;color:var(--muted)}
 .ask-foot code.ref{background:var(--card);padding:1px 6px;border-radius:6px}.ask-foot select{font-size:12px;padding:2px 6px;max-width:60%}
-.ask-foot button.link{font-size:12px;color:var(--muted)}
+.ask-foot button.link{font-size:12px;color:var(--muted)}.ask-foot select.need{border-color:var(--plan);box-shadow:0 0 0 2px var(--planbg)}
 .ask textarea.manual,.nb-box textarea.manual{width:100%;margin-top:6px;font:12px ui-monospace,Menlo,monospace;background:var(--card);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:6px}
 .pop .ask{margin:4px 0 0;padding:8px 10px 4px;border-radius:0;background:none}
+#node-panel .ask{position:sticky;bottom:-18px;z-index:2;box-shadow:0 -10px 24px -12px rgba(0,0,0,.35)}
 .cellmap canvas{display:block;width:100%;max-width:560px;aspect-ratio:1;border:1px solid var(--line);border-radius:12px;background:var(--card)}
 .cm-bar{display:flex;gap:8px;align-items:center;margin:6px 0}.cm-bar select{max-width:220px;padding:3px 8px}
 .cm-legend{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px}.cm-item{font-size:11px;padding:1px 7px;border-radius:999px;display:inline-flex;align-items:center;gap:5px}
@@ -215,7 +217,7 @@ table.compare img.thumb{max-width:180px;margin:2px}
 /* Runs, sessions, notebooks */
 .back{display:inline-block;margin:14px 0 6px}.run-detail h2{margin:0}
 ol.timeline{list-style:none;padding:0;margin:14px 0;border-left:2px solid var(--line);margin-left:8px}
-.step{position:relative;margin:0 0 12px 18px;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 16px;box-shadow:var(--shadow)}
+.step{position:relative;margin:0 0 12px 18px;background:var(--card);color:var(--text);border:1px solid var(--line);border-radius:14px;padding:12px 16px;box-shadow:var(--shadow)}
 .step .dot{position:absolute;left:-26px;top:16px;width:12px;height:12px}.step-head{display:flex;align-items:center;gap:8px}
 .session{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center}.session code{background:var(--soft);padding:1px 6px;border-radius:6px}
 .nb-box{margin:12px 0 4px;padding:12px 14px;border-radius:14px;background:var(--soft)}.nb-box .ask-buttons button{font-size:12.5px}

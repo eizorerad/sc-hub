@@ -333,7 +333,12 @@ SCRIPT = r"""
     if (nb) { downloadNotebook(nb); return; }
     const ask = e.target.closest('[data-ask]');
     if (ask) {
-      const box = ask.closest('.ask, .nb-box'), text = askText(ask.dataset.ask, box);
+      const box = ask.closest('.ask, .nb-box'), pick = $('select.ask-ref', box);
+      if (pick && !pick.value) {  // a step several branches share: which one is the request about?
+        pick.classList.add('need'); pick.focus();
+        return;
+      }
+      const text = askText(ask.dataset.ask, box);
       copyText(text).then(ok => {
         const manual = $('textarea.manual', box), note = $('.copied', box);
         if (ok) {
@@ -377,7 +382,10 @@ SCRIPT = r"""
   });
   ['input', 'change'].forEach(t => document.addEventListener(t, e => { if (e.target.closest('#run-filters')) filterRuns(); }));
   document.addEventListener('change', e => {
-    if (e.target.matches('#node-panel select.ask-ref')) keep.set('ask-ref-' + keep.get('node'), e.target.value);
+    if (e.target.matches('#node-panel select.ask-ref')) {
+      e.target.classList.toggle('need', !e.target.value);
+      keep.set('ask-ref-' + keep.get('node'), e.target.value);
+    }
   });
   const filterTree = input => {
     const q = input.value.toLowerCase();

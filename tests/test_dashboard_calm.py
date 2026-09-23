@@ -38,7 +38,7 @@ def test_a_step_shared_by_branches_has_one_request_box_and_its_result_first(hub,
     qc = finished_main.steps[0].step_key
     panel = _template(pipelines(snap).files, "v-ifn-main", qc)
     assert panel.count('data-ask="fix"') == 1 and panel.count('data-ask="fork"') == 1
-    assert '<select class="ask-ref"' in panel
+    assert '<select class="ask-ref" aria-label="Which branch"><option value="">which branch?</option>' in panel  # no silent default
     assert '<option value="ifn/main#1">ifn/main</option>' in panel and '<option value="ifn/twin#1">ifn/twin</option>' in panel
     # what it gave, then the request, then parameters / code / log / details folded
     assert panel.index("88 cells kept") < panel.index('<div class="ask"') < panel.index('<div class="folds">')
@@ -99,3 +99,13 @@ def test_a_request_about_an_older_version_says_so_in_plain_sight():
     head, body = box.split('<span class="tip" role="tooltip">', 1)[1].split("</span>", 1)
     assert "earlier version" not in head and '<p class="note warn small">This run used an earlier version' in body
     assert "revision" in ASK_HINT and '<code class="ref">ifn/main#2</code>' in box and "ask-ref" not in box
+
+
+def test_a_run_row_names_the_run_and_keeps_its_id_in_the_tooltip(hub, finished_main):
+    from schub.dashboard.views_runs import render_runs
+
+    run_id = finished_main.run_id
+    html = render_runs(collect(hub), lambda *_: None)
+    row = html.split(f'data-href="runs/{run_id}"', 1)[1].split("</tr>", 1)[0]
+    assert f'title="run {run_id}">ifn / main' in row and f'<div class="muted small">{run_id}' not in row
+    assert run_id in html.split(f'data-href="runs/{run_id}"', 1)[1].split(">", 1)[0]  # still found by the search box

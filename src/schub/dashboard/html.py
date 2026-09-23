@@ -100,9 +100,11 @@ def ask_block(ref: str, brick: str, branch: str, note: str = "", refs: tuple[str
     """Buttons that copy a ready request for Codex / Claude about one step: fix it in
     place (a new revision of the branch) or try an alternative from here (a new
     branch). The page script writes the text from these attributes on click. With
-    several branches using the step, a picker chooses which one the request is about."""
+    several branches using the step, a picker chooses which one the request is about:
+    the page sets it to the branch on screen; on a project map the student picks it."""
     choices = refs if len(refs) > 1 else ()
-    picker = ("".join(f'<option value="{esc(r)}">{esc(r.rpartition("#")[0])}</option>' for r in choices))
+    picker = '<option value="">which branch?</option>' + "".join(
+        f'<option value="{esc(r)}">{esc(r.rpartition("#")[0])}</option>' for r in choices)
     target = (f'<select class="ask-ref" aria-label="Which branch">{picker}</select>' if choices
               else f'<code class="ref">{esc(ref)}</code>')
     warning = f'<p class="note warn small">{esc(note)}</p>' if note else ""  # stays visible: it changes the request

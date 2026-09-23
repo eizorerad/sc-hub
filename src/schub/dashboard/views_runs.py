@@ -219,7 +219,7 @@ def _row(run: RunView) -> str:
     text = f"{run.run_id} {run.label} {run.dataset} {last}".lower()
     return (
         f'<tr data-href="runs/{esc(run.run_id)}" data-state="{esc(run.state)}" data-text="{esc(text)}">'
-        f'<td><a href="#runs/{esc(run.run_id)}">{esc(run.label)}</a><div class="muted small">{esc(run.run_id)}</div></td>'
+        f'<td><a href="#runs/{esc(run.run_id)}" title="run {esc(run.run_id)}">{esc(run.label)}</a></td>'
         f"<td>{esc(' + '.join(run.inputs) or run.dataset)}</td><td>{pill(run.state)}</td><td class=dots>{dots}</td>"
         f'<td class="muted">{esc(last)}</td></tr>'
     )

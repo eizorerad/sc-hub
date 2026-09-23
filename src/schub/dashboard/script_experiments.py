@@ -259,11 +259,12 @@ EXPERIMENTS_SCRIPT = r"""
     return [...out, ...[...notes].map(([text, branches]) => `${branches.join(', ')}: ${text}`)];
   }
 
-  function stepCell(r, i, base) {
+  function stepCell(r, i, base, rows) {
     const s = r.steps[i];
     if (!s) return h('td', {class: 'muted small', text: '—'});
     const b = base.steps[i];
-    const same = b && s.key === b.key;
+    const shared = x => x !== base && x.steps[i] && x.steps[i].key === s.key;
+    const same = r === base ? rows.some(shared) : b && s.key === b.key;
     const diff = b && b.brick === s.brick && !same
       ? Object.keys({...s.params, ...b.params}).filter(k => JSON.stringify(s.params[k]) !== JSON.stringify(b.params[k])).map(k => `${k}=${JSON.stringify(s.params[k] ?? null)}`)
       : [];
@@ -279,7 +280,7 @@ EXPERIMENTS_SCRIPT = r"""
     const base = rows[0], len = Math.max(...rows.map(r => r.steps.length));
     const clear = on(h('button', {type: 'button', class: 'quiet', text: 'Clear'}), 'click', () => { S.selected = []; save(); renderCompare(); renderTable(); });
     const heads = h('tr', {}, h('th'), rows.map(r => h('th', {}, r.view ? h('a', {href: `#pipelines/${r.view}`, text: r.branch}) : r.branch, ' ', pill(r.state, r.state_label))));
-    const stepRows = [...Array(len).keys()].map(i => h('tr', {}, h('th', {text: `step ${i + 1}`}), rows.map(r => stepCell(r, i, base))));
+    const stepRows = [...Array(len).keys()].map(i => h('tr', {}, h('th', {text: `step ${i + 1}`}), rows.map(r => stepCell(r, i, base, rows))));
     const metricRows = METRICS.filter(m => rows.some(r => m.key in r.metrics)).map(m => h('tr', {}, h('th', {text: m.label, title: m.hint || null}),
       rows.map(r => {
         const v = r.metrics[m.key], b = base.metrics[m.key];
