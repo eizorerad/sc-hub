@@ -46,8 +46,10 @@ run(project, code, why, expect) runs a cell (Python; %%bash for shell):
   cell with %%slurm --gpus 1 --time 6h (skills('slurm_jobs')). It returns at once;
   the job's state, files and checks land in the same journal entry when it ends.
 - In cells, `bench.fetch(url)` downloads data with a recorded checksum
-  (skills('fetching_data')) and `bench.run_brick(...)` runs sc-hub's checked
-  single-cell steps (skills('bricks_library')).
+  (skills('fetching_data'), skills('dataset_sources')) and `bench.run_brick(...)`
+  runs sc-hub's checked single-cell steps (skills('bricks_library')).
+- A paper to reproduce: targets and feasibility first, then `bench.clone`,
+  `bench.repo_env`, checkpointed runs and `bench.compare` (skills('paper_reproduction')).
 - run(..., checks=[...]) validates what a cell produced (skills('checks')). A failed
   check marks the result: do not build on it until it passes.
 Record reasoning with note(): registration before a deciding test; decision with

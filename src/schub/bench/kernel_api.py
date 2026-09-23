@@ -4,6 +4,8 @@
     bench.twin(path, stratify=None, keep=(), fraction=0.05)   a small stratified copy to try code on
     bench.clone(url, ref=None)                   a paper's repository at a recorded commit (work/repos/<name>)
     bench.repo_env(repo, python, torch, cuda, requirements)   its own uv environment; returns its python
+    bench.compare(ours, paper, source="Table 2 ...")            our numbers next to the paper's
+    from schub_ckpt import Run                   checkpoints that survive time limits (skills('paper_reproduction'))
     bench.run_brick(name, input, output, params)   a checked sc-hub brick
     bench.project_dir(), bench.work_dir(), bench.data_dir()
     %%slurm --gpus 1 --time 6h ...              the cell as a Slurm job (see skills('slurm_jobs'))
@@ -76,6 +78,13 @@ def repo_env(repo: str | os.PathLike, python: str = "3.11", torch: str | None = 
     return environment(repo, python, torch, cuda, requirements, install_repo, extra)
 
 
+def compare(ours: dict, paper: dict, source: str, tolerance: float | dict = 0.10,
+            name: str = "comparison") -> list[dict]:
+    from .compare import compare as _compare
+
+    return _compare(ours, paper, source, tolerance, name)
+
+
 def run_brick(name: str, input: str | os.PathLike, output: str | os.PathLike | None = None,
               params: dict | None = None, results_dir: str | os.PathLike | None = None) -> dict:
     from .bricks_lib import run_brick as _run
@@ -83,5 +92,5 @@ def run_brick(name: str, input: str | os.PathLike, output: str | os.PathLike | N
     return _run(name, input, output, params or {}, results_dir)
 
 
-__all__ = ["FetchError", "clone", "current_cell", "current_checks", "data_dir", "fetch", "project_dir", "repo_env",
+__all__ = ["FetchError", "clone", "compare", "current_cell", "current_checks", "data_dir", "fetch", "project_dir", "repo_env",
            "run_brick", "set_cell", "twin", "work_dir"]
