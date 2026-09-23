@@ -97,7 +97,7 @@ def test_cli_and_mcp_expose_sweeps_queue_and_labels(hub, settings, monkeypatch, 
     hub.submit(hub.plan_branch("ifn", "strict").plan_id)  # above the cap of 2: waits
     assert cli.main(["queue"]) == 0
     assert [w["branch"] for w in _json.loads(capsys.readouterr().out)["waiting"]] == ["strict"]  # JSON, not repr
-    names = {t.name for t in build_server(hub)._tool_manager.list_tools()}
+    names = {t.name for t in build_server(legacy(hub))._tool_manager.list_tools()}
     assert {"sweep_branch", "submit_sweep", "queue_status", "cancel_queued", "label_branch"} <= names
 
 
@@ -106,7 +106,7 @@ def test_sweeps_queue_and_labels_through_the_mcp_server(hub):
 
     from .test_mcp_server import call
 
-    server = build_server(hub)
+    server = build_server(legacy(hub))
     sweep = call(server, "sweep_branch", {"project": "ifn", "branch": "main", "step": 2, "param": "leiden_resolution",
                                           "values": [0.5, 1.0, 2.0], "sweep": "res", "reason": "resolution"})
     assert not sweep.is_error and sweep.structured_content["branches"] == ["res-0-5", "res-1-0", "res-2-0"]
@@ -156,3 +156,12 @@ def test_resetting_the_swept_parameter_records_the_default(hub):
     hub.sweep_branch("ifn", "main", 2, "leiden_resolution", [0.5, 2.0], "res", "r")
     hub.revise_branch("ifn", "res-2-0", 2, "back to the default", params={"leiden_resolution": None})
     assert hub.projects.load_branch("ifn", "res-2-0").sweep_value == 1.0
+
+
+def legacy(hub):
+    """The same student root with the brick-era MCP tools switched on."""
+    import dataclasses
+
+    from schub.service import Hub
+
+    return Hub(dataclasses.replace(hub.settings, legacy_tools=True), hub.slurm)
