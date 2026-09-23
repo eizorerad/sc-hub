@@ -244,7 +244,7 @@ JOURNAL_CSS = """
 .badges{display:flex;flex-wrap:wrap;gap:4px;margin:4px 0}
 pre.out,pre.code{background:var(--soft);border-radius:8px;padding:8px 10px;margin:6px 0;white-space:pre-wrap;word-break:break-word;font:12px ui-monospace,SFMono-Regular,Menlo,monospace;max-height:420px;overflow:auto}
 pre.out.err{color:var(--bad,#b3261e)}
-img.jfig{max-width:100%;max-height:360px;border:1px solid var(--line);border-radius:8px;margin:6px 0;display:block}
+img.jfig{max-width:100%;max-height:360px;border:1px solid var(--line);border-radius:8px;margin:6px 0;display:block;background:#fff}
 details.fold>summary{cursor:pointer;color:var(--muted);font-size:12px;margin-top:4px}
 details.more-out>summary{list-style:none;cursor:pointer}.jfoot{margin-top:6px}
 .note-card .note-text{margin:6px 0;white-space:pre-wrap}.tag.kind{font-weight:500}
