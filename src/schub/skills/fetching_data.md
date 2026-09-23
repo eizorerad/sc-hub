@@ -15,6 +15,9 @@ path = bench.fetch("https://.../file.h5ad", sha256="<if the source publishes one
 - Large files (tens of GB): fetch inside a `%%slurm` cell so the kernel stays free.
 - First check the shared library with `datasets()`: Kang 2018, PBMC 3k and PBMC 1k
   FASTQ are already there, with checksums.
+- Perturbation screens: scPerturb on Zenodo (record 10044268) has Replogle K562 and
+  RPE1, Norman 2019 and more as h5ad with md5 checksums (skills("perturbseq")).
+- GEO: use the https links (https://ftp.ncbi.nlm.nih.gov/geo/...); ftp:// is refused.
 - Say where the data comes from (paper, accession, license) in the cell's `why`.
 - Never download into another student's folder or the shared library.
 - Data stays on the cluster: never copy matrices into the chat.

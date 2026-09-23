@@ -120,3 +120,10 @@ def test_gives_up_after_repeated_network_errors(project: Path, monkeypatch) -> N
     monkeypatch.setattr(fetch_module, "_open", lambda url, offset, validator="": (_ for _ in ()).throw(ConnectionResetError("reset")))
     with pytest.raises(FetchError, match="after 2 attempts"):
         fetch("https://example.org/x.bin", attempts=2, pause_s=0)
+
+
+def test_md5_as_zenodo_publishes_it(server: str, project: Path) -> None:
+    good = "md5:" + hashlib.md5(b"hello").hexdigest()
+    assert fetch(f"{server}/small.txt", md5=good).read_text() == "hello"
+    with pytest.raises(FetchError, match="md5"):
+        fetch(f"{server}/small.txt", dest=project / "data" / "other.txt", md5="0" * 32)

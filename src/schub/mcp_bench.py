@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Callable, Literal, TypeVar
 
 import base64
+import json
 
 import anyio
 from mcp.server import MCPServer
@@ -43,6 +44,22 @@ Scope = Literal["twin", "full", "unknown"]
 class DatasetsAnswer(Frozen):
     datasets: tuple[DatasetEntry, ...] = ()
     profile: dict[str, Any] | None = None
+    twins: tuple[dict[str, Any], ...] = ()  # small stratified copies already built (bench.twin)
+
+
+def _twins_of(path: str) -> tuple[dict[str, Any], ...]:
+    from .bench.twins import twins_home
+
+    home = twins_home(Path(path))
+    found = []
+    for info in sorted(home.glob("*/twin.json")) if home.is_dir() else []:
+        try:
+            data = json.loads(info.read_text())
+        except (OSError, ValueError):
+            continue
+        found.append({"path": str(info.parent / "data.h5ad"), "cells": data.get("n_obs_twin"),
+                      "stratify": data.get("stratify"), "keep": data.get("keep"), "fraction": data.get("fraction")})
+    return tuple(found)
 
 
 class SkillsAnswer(Frozen):
@@ -222,8 +239,10 @@ def _register_reference(mcp: MCPServer, hub: Hub, bench: BenchService, call: Cal
         """Datasets in the shared library and the student's data/. With `name`: its metadata profile
         (counts or normalized, gene ids, species, obs columns with their levels)."""
         if name:
-            return call("datasets", {"name": name},
-                        lambda: DatasetsAnswer(profile=hub.inspect(name).model_dump(mode="json")))
+            def inspect() -> DatasetsAnswer:
+                profile = hub.inspect(name)
+                return DatasetsAnswer(profile=profile.model_dump(mode="json"), twins=_twins_of(profile.path))
+            return call("datasets", {"name": name}, inspect)
         return call("datasets", {}, lambda: DatasetsAnswer(datasets=tuple(hub.datasets())))
 
     @mcp.tool(annotations=READ)

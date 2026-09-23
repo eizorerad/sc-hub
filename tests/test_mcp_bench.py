@@ -118,9 +118,25 @@ def test_files_profile_h5ad_in_the_library(server, bench: Settings, write_h5ad) 
     assert ok(call(server, "datasets", {"name": "pbmc3k"}))["profile"]["state"]["x_kind"] == "raw_counts"
 
 
+def test_datasets_show_the_twins_already_built(server, bench: Settings, write_h5ad) -> None:
+    from schub.bench import kernel_api
+
+    directory = library_datasets(bench) / "pbmc3k"
+    write_catalog_entry(directory, {"title": "PBMC"})
+    path = write_h5ad(make_adata(), directory=directory)
+    assert ok(call(server, "datasets", {"name": "pbmc3k"}))["twins"] == []
+    small = kernel_api.twin(path, stratify="label", fraction=0.2, min_per_group=5)
+    answer = ok(call(server, "datasets", {"name": "pbmc3k"}))
+    [found] = answer["twins"]
+    assert found["path"] == str(small) and found["stratify"] == "label" and 10 <= found["cells"] < 60
+    assert answer["profile"]["state"]["n_obs"] == 60  # the profile is still the full data, not the twin
+    assert [d["name"] for d in ok(call(server, "datasets"))["datasets"]] == ["pbmc3k"]
+
+
 def test_skills_and_stop(server, bench: Settings, cluster: FakeCluster) -> None:
     names = [s["name"] for s in ok(call(server, "skills"))["skills"]]
-    assert {"resume", "rigor", "mbzuai_slurm"} <= set(names)
+    assert {"resume", "rigor", "mbzuai_slurm", "perturbseq", "twins", "fetching_data"} <= set(names)
+    assert "d8cba17576d1a8afc0f7d71b79cad0f7" in ok(call(server, "skills", {"name": "perturbseq"}))["text"]
     assert "hand-over" in ok(call(server, "skills", {"name": "resume"}))["text"]
     assert call(server, "skills", {"name": "../x"}).is_error
     ok(call(server, "create_project", {"project": "p", "question": "q"}))

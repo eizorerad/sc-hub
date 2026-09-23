@@ -112,17 +112,24 @@ def _attempt(url: str, part: Path) -> int | None:
     return total
 
 
-def sha256_of(path: Path) -> str:
-    digest = hashlib.sha256()
+def digests_of(path: Path) -> tuple[str, str]:
+    """(sha256, md5) in one read; Zenodo publishes md5, the journal records sha256."""
+    sha, md5 = hashlib.sha256(), hashlib.md5(usedforsecurity=False)
     with path.open("rb") as handle:
         while block := handle.read(CHUNK):
-            digest.update(block)
-    return digest.hexdigest()
+            sha.update(block)
+            md5.update(block)
+    return sha.hexdigest(), md5.hexdigest()
 
 
-def fetch(url: str, dest: str | os.PathLike | None = None, sha256: str | None = None,
+def sha256_of(path: Path) -> str:
+    return digests_of(path)[0]
+
+
+def fetch(url: str, dest: str | os.PathLike | None = None, sha256: str | None = None, md5: str | None = None,
           attempts: int = ATTEMPTS, pause_s: float = 5.0) -> Path:
-    """Download `url` (default: the project's data/ folder) and record it in the journal."""
+    """Download `url` (default: the project's data/ folder) and record it in the journal.
+    `sha256` / `md5`: the checksum the source publishes (Zenodo gives md5); a mismatch deletes the file."""
     if urlsplit(url).scheme not in SCHEMES:
         raise FetchError(f"only {', '.join(SCHEMES)} URLs can be fetched")
     target = _target(url, dest)
@@ -133,10 +140,13 @@ def fetch(url: str, dest: str | os.PathLike | None = None, sha256: str | None = 
     if size == 0 or (total is not None and size != total):
         _discard(part)
         _fail(url, target, f"got {size} bytes, expected {total}")
-    digest = sha256_of(part)
+    digest, md5_digest = digests_of(part)
     if sha256 and digest != sha256.lower():
         _discard(part)
         _fail(url, target, f"sha256 {digest} does not match the expected {sha256}")
+    if md5 and md5_digest != md5.lower().removeprefix("md5:"):
+        _discard(part)
+        _fail(url, target, f"md5 {md5_digest} does not match the expected {md5}")
     part.replace(target)
     _sidecar(part).unlink(missing_ok=True)
     ledger.record("download", url=url, path=str(target), size=size, sha256=digest, status="ok")

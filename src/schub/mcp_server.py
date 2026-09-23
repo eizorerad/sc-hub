@@ -40,7 +40,8 @@ run(project, code, why, expect) runs a cell (Python; %%bash for shell):
 - Short cells; look at each result before the next step. Variables persist between
   cells until the kernel restarts; files persist always, so save what matters.
 - Status "queued" or "running": call wait(ref). Never run the same code again.
-- Try things on a small subset (a twin of the dataset) first, then the full data.
+- Try things on a small twin first (`bench.twin(path, stratify=..., keep=[controls])`,
+  skills('twins')), then the full data; say which with data_scope="twin"/"full".
 - Heavy or long work (GPU, many hours, big memory) goes to a Slurm job: start the
   cell with %%slurm --gpus 1 --time 6h (skills('slurm_jobs')). It returns at once;
   the job's state, files and checks land in the same journal entry when it ends.

@@ -18,9 +18,10 @@ file only repeats what matters most.
 3. `run(project, code, why, expect)`: short cells, each with what it is for and
    what you expect. Look at each result before the next step. On "queued" or
    "running", call `wait(ref)`; never run the same code again.
-4. Small subset first (a twin of the dataset), then the full data. Heavy work
-   (GPU, hours, big memory) goes to a Slurm job, not the kernel
-   (`skills("mbzuai_slurm")`).
+4. Small twin first (`bench.twin(path, stratify=..., keep=[controls])`,
+   `skills("twins")`), then the full data; mark cells `data_scope="twin"` or
+   `"full"`. Heavy work (GPU, hours, big memory) goes to a `%%slurm` cell, not
+   the kernel (`skills("slurm_jobs")`, `skills("mbzuai_slurm")`).
 5. Record reasoning with `note()`: a registration before a deciding test, a
    decision with `because` and `reverses_if`, findings with `because`, your own
    errors. Before you stop: `handoff(project, text, disposition, next_action)`.

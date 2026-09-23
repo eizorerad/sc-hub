@@ -103,7 +103,7 @@ def _loose_private(settings: Settings, known: set[str]) -> list[DatasetEntry]:
     base = settings.data_dir
     if not base.is_dir():
         return []
-    files = sorted(base.rglob("*.h5ad"))[:MAX_USER_FILES]
+    files = sorted(f for f in base.rglob("*.h5ad") if "twins" not in f.relative_to(base).parts)[:MAX_USER_FILES]
     return [
         DatasetEntry(name=str(f.relative_to(base)), path=str(f), source="private", size_mb=_size_mb(f))
         for f in files
