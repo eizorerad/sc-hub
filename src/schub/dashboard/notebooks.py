@@ -2,10 +2,11 @@
 
 Every run gets nb/<run_id>.js: its notebook as a script the page loads on demand
 (file:// pages cannot fetch files, but they can load scripts) and offers as a
-.ipynb download. A file is rewritten only when its content differs, so the
-laptop's mirror (rsync, or the Windows change check) stays cheap, and two
-overlapping builds converge on the newest content. Brick code is embedded once
-per brick for the "Code" sections.
+.ipynb download. The first line of each file is a key of everything it is made
+from; a file is rendered and rewritten only when that key changes, so builds stay
+cheap, the laptop's mirror (rsync, or the Windows change check) only copies what
+changed, and two overlapping builds converge on the newest content. Brick code
+is embedded once per brick for the "Code" sections.
 """
 
 from __future__ import annotations
@@ -15,13 +16,17 @@ import re
 from pathlib import Path
 from typing import Callable
 
-from ..brick_code import brick_source, code_changed
+from ..brick_code import brick_source, code_changed, current_code_id, module_stamp
 from ..bricks import REGISTRY
+from ..hashing import stable_hash
 from ..notebook import NotebookRun, NotebookStep, render_notebook
 from .collect import RUN_ID, RunView, Snapshot
 from .html import esc
 
 FOLDER = "nb"
+# Notebooks of the newest runs carry the saved results (figures make them ~0.2-1.5 MB);
+# older ones are code only, so the laptop's mirror stays small. make_notebook always has them.
+RECENT_RESULTS = 12
 
 
 def notebook_run(run: RunView, question: str = "") -> NotebookRun:
@@ -45,12 +50,27 @@ def download_name(run: RunView) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "-", base).strip("-")
 
 
-def _same(path: Path, text: str) -> bool:
-    """The file already holds exactly this text (size first: most files differ there or not at all)."""
+KEY_PREFIX = "// schub-notebook "
+# The code that writes notebooks and the helpers they call: an update re-renders every notebook.
+RENDERER = ("schub.notebook", "schub.notebook_results", "schub.notebook_kit", "schub.headlines", "schub.brick_code")
+
+
+def _key(run: NotebookRun, results: bool) -> str:
+    """Everything the notebook is made from: the run's steps, the question, whether results
+    are embedded and the current brick code (saved results never change once a step is done)."""
+    bricks = sorted({s.brick for s in run.steps if s.brick in REGISTRY})
+    return stable_hash(run.model_dump(), results, {b: current_code_id(b) for b in bricks},
+                       [module_stamp(m) for m in RENDERER])
+
+
+def _written_key(path: Path) -> str:
+    """The key on the first line of an existing notebook script (a few bytes, not the ~1 MB file)."""
     try:
-        return path.stat().st_size == len(text.encode()) and path.read_text() == text
+        with path.open() as handle:
+            first = handle.readline(200)
     except OSError:
-        return False
+        return ""
+    return first[len(KEY_PREFIX):].strip() if first.startswith(KEY_PREFIX) else ""
 
 
 def write_notebooks(view: Path, snap: Snapshot, write: Callable[[Path, str], None]) -> set[str]:
@@ -58,18 +78,23 @@ def write_notebooks(view: Path, snap: Snapshot, write: Callable[[Path, str], Non
     folder = view / FOLDER
     questions = {p.path: p.meta.question for p in snap.projects}
     done: set[str] = set()
-    for run in snap.runs:
+    for position, run in enumerate(snap.runs):  # newest first
         if not RUN_ID.fullmatch(run.run_id):  # it becomes a file name
             continue
-        try:
-            notebook = render_notebook(notebook_run(run, questions.get(run.project or "", "")))
-        except (KeyError, ValueError, OSError):  # one odd run must not break the page
-            continue
-        script = (f"window.SCHUB_NB=window.SCHUB_NB||{{}};"
-                  f"window.SCHUB_NB[{json.dumps(run.run_id)}]={json.dumps(notebook)};\n")
         path = folder / f"{run.run_id}.js"
-        if not _same(path, script):
-            write(path, script)
+        results = position < RECENT_RESULTS
+        try:
+            source = notebook_run(run, questions.get(run.project or "", ""))
+            key = _key(source, results)
+            if _written_key(path) != key:  # rendering reads figures: only when something changed
+                notebook = render_notebook(source, results=results)
+                # A saved file that could not be read: keep a key that never matches, so the next build retries.
+                written = f"{key}-incomplete" if notebook["metadata"].get("schub_incomplete") else key
+                write(path, f"{KEY_PREFIX}{written}\nwindow.SCHUB_NB=window.SCHUB_NB||{{}};"
+                            f"window.SCHUB_NB[{json.dumps(run.run_id)}]={json.dumps(notebook)};\n")
+        except Exception:  # noqa: BLE001 - one odd run must not break the page; keep its last notebook
+            if not path.is_file():
+                continue
         done.add(run.run_id)
     if folder.is_dir():
         # Only finished files: a concurrent build's temporary files (.<name>.<random>) stay.

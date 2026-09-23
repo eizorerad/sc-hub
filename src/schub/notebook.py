@@ -19,6 +19,7 @@ from .bricks import REGISTRY
 from .datasets import dataset_label
 from .hashing import stable_hash
 from .headlines import duration, headline
+from .notebook_results import TABLE_ROWS, Budget, Problems, anndata_summary, csv_head, step_outputs
 from .runs import RunManifest
 from .state import Frozen
 from .stepfile import STEP_FILE, SUCCESS, SUMMARY_FILE
@@ -96,14 +97,24 @@ def _title(run: NotebookRun) -> str:
     return f"sc-hub run {run.run_id}"
 
 
-def _header(run: NotebookRun) -> str:
+def _header(run: NotebookRun, results: bool) -> str:
+    results = results and any(s.completed for s in run.steps)
     question = f"**Question:** {run.question}\n\n" if run.question else ""
+    shown = (
+        f"- **Results are inside:** under each step you see what the pipeline computed in run `{run.run_id}` "
+        "(its numbers and figures, the DE tables, what the final data holds). Running a cell replaces its "
+        "output with what it computes here.\n"
+        if results else
+        "- **No results inside this copy** (the run has not finished a step yet, or it is an older run the "
+        "dashboard keeps light): ask your assistant for `make_notebook`, which writes the notebook with them.\n"
+    )
     version = f" · sc-hub {run.schub_version}" if run.schub_version else ""
     return (
         f"# {_title(run)}\n\n{question}"
         f"Run `{run.run_id}` · dataset `{run.dataset}` · created {run.created_at[:16].replace('T', ' ')}{version}\n\n"
         "This notebook is the pipeline itself. Each step shows the exact code sc-hub ran (the brick) and the "
         "parameters it used. Change a parameter or a line, run the step again, and the steps after it use your result.\n\n"
+        f"{shown}"
         "- **Where it runs:** JupyterLab on the cluster, where the data and every tool are (ask your assistant to open "
         "this notebook in a JupyterLab session, then run `./schub-lab jupyter` on your laptop). Elsewhere you can read it.\n"
         "- **Start at any step:** a step reads your result of the step before it if you ran that step here, otherwise "
@@ -190,20 +201,27 @@ def _run_cell(step: NotebookStep) -> str:
             f"nb.show({step.index}, summary)")
 
 
-def _explore(run: NotebookRun) -> list[dict[str, Any]]:
+def _with(cell: dict[str, Any], outputs: list[dict[str, Any]]) -> dict[str, Any]:
+    return {**cell, "outputs": outputs} if outputs else cell
+
+
+def _explore(run: NotebookRun, results: bool, problems: Problems) -> list[dict[str, Any]]:
     with_output = [s for s in run.steps if s.brick in REGISTRY and not REGISTRY[s.brick].terminal]
     cells = [_cell("markdown", "## Explore the result\n\nThe data after the last step that writes one "
                    "(yours if you re-ran it here), ready for your own analysis.")]
     if with_output:
-        last = with_output[-1].index
-        cells.append(_cell("code", f"adata = nb.load({last})\nadata"))
+        last = with_output[-1]
+        saved = anndata_summary(Path(last.step_dir) / "output.h5ad", problems) if results and last.completed else []
+        cells.append(_with(_cell("code", f"adata = nb.load({last.index})\nadata"), saved))
         cells.append(_cell("code", "import scanpy as sc\n\n"
                            "categorical = [c for c in adata.obs.columns if adata.obs[c].dtype.name == 'category']\n"
                            "if 'X_umap' in adata.obsm:\n    sc.pl.umap(adata, color=categorical[:4], ncols=2)"))
     for step in run.steps:
         if step.brick in TABLES:
-            cells.append(_cell("code", f"import pandas as pd\n\nde = pd.read_csv(nb.file({step.index}, "
-                               f"{TABLES[step.brick]!r}), index_col=0)\nde.head(30)"))
+            table = Path(step.step_dir) / "results" / TABLES[step.brick]
+            head = csv_head(table, problems) if results and step.completed else []
+            cells.append(_with(_cell("code", f"import pandas as pd\n\nde = pd.read_csv(nb.file({step.index}, "
+                                     f"{TABLES[step.brick]!r}), index_col=0)\nde.head({TABLE_ROWS})"), head))
         if step.brick in MODELS:
             folder, cls = MODELS[step.brick]
             cells.append(_cell("code", f"# The trained scvi-tools model of step {step.index} (a GPU session is faster)\n"
@@ -212,8 +230,11 @@ def _explore(run: NotebookRun) -> list[dict[str, Any]]:
     return cells
 
 
-def render_notebook(run: NotebookRun) -> dict[str, Any]:
-    cells = [_cell("markdown", _header(run)), _cell("code", _setup(run))]
+def render_notebook(run: NotebookRun, results: bool = True) -> dict[str, Any]:
+    """The run as a notebook; with `results`, each cell carries the pipeline's saved outputs.
+    Saved files that exist but could not be read are listed in metadata.schub_incomplete."""
+    cells = [_cell("markdown", _header(run, results)), _cell("code", _setup(run))]
+    budget, problems = Budget(), []
     defined: dict[str, int] = {}  # brick -> the step whose section holds its code
     for step in run.steps:
         markdown = _step_markdown(run, step)
@@ -227,21 +248,25 @@ def render_notebook(run: NotebookRun) -> dict[str, Any]:
         if step.brick not in defined:
             cells.append(_cell("code", _code(step, set(defined))))
             defined[step.brick] = step.index
-        cells.append(_cell("code", _run_cell(step)))
-    cells.extend(_explore(run))
+        saved = step_outputs(step.step_dir, budget, problems) if results and step.completed else []
+        cells.append(_with(_cell("code", _run_cell(step)), saved))
+    cells.extend(_explore(run, results, problems))
     for number, cell in enumerate(cells):  # nbformat 4.5 wants stable cell ids
         cell["id"] = f"schub-{number:03d}"
+    metadata: dict[str, Any] = {"kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
+                                "language_info": {"name": "python"}}
+    if problems:
+        metadata["schub_incomplete"] = problems[:20]
     return {
         "cells": cells,
-        "metadata": {"kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
-                     "language_info": {"name": "python"}},
+        "metadata": metadata,
         "nbformat": 4,
         "nbformat_minor": 5,
     }
 
 
-def notebook_text(run: NotebookRun) -> str:
-    notebook = render_notebook(run)
+def notebook_text(run: NotebookRun, results: bool = True) -> str:
+    notebook = render_notebook(run, results)
     notebook["metadata"]["schub_generated"] = _cells_hash(notebook)
     return json.dumps(notebook, indent=1)
 
@@ -251,10 +276,11 @@ def _cells_hash(notebook: dict[str, Any]) -> str:
 
 
 def _touched(notebook: dict[str, Any]) -> bool:
-    """Edited or run by the student: its cells differ from what we wrote, or hold outputs."""
+    """Edited or run by the student: its cells differ from what we wrote, or a cell was run
+    (the pipeline's saved outputs come without execution counts)."""
     if notebook.get("metadata", {}).get("schub_generated") != _cells_hash(notebook):
         return True
-    return any(c.get("outputs") or c.get("execution_count") for c in notebook.get("cells", []))
+    return any(c.get("execution_count") for c in notebook.get("cells", []))
 
 
 def write_notebook(directory: Path, run: NotebookRun) -> Path:

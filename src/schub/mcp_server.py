@@ -150,7 +150,8 @@ def build_server(hub: Hub) -> MCPServer:
     @mcp.tool()
     def make_notebook(run_id: str) -> NotebookInfo:
         """Write the run as a Jupyter notebook: each step with the exact code (the brick) and parameters it
-        ran with, re-runnable from any step on the cluster (results go to notebooks/work/, never the cache)."""
+        ran with and the pipeline's saved results as outputs (numbers, figures, DE tables), re-runnable from
+        any step on the cluster (results go to notebooks/work/, never the cache)."""
         return call("make_notebook", {"run_id": run_id}, lambda: hub.notebook(run_id))
 
     @mcp.tool()

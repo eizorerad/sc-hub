@@ -12,15 +12,16 @@ from __future__ import annotations
 
 import json
 import shutil
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from .bricks.base import StepIO
+from .notebook_results import summary_rows, warning_lines
 from .state import DatasetState
 from .stepfile import STEP_FILE, SUCCESS, SUMMARY_FILE
 
-SCALARS = (str, int, float, bool)
 
 
 class NotebookError(RuntimeError):
@@ -133,13 +134,10 @@ class Pipeline:
         """This step's numbers next to the pipeline's, and its figures."""
         _inline_plots()
         pipeline = _read_json(self.saved_results(index) / SUMMARY_FILE)
-        rows = [
-            (key, _scalar(value), _scalar(pipeline.get(key)) if pipeline else "")
-            for key, value in (summary or {}).items() if key != "warnings" and isinstance(value, SCALARS)
-        ]
+        rows = [(key, _scalar(value), _scalar(pipeline.get(key)) if pipeline else "") for key, value in summary_rows(summary)]
         _display_table(rows)
-        for warning in (summary or {}).get("warnings") or []:
-            print(f"warning: {warning}")
+        for warning in warning_lines(summary):
+            print(f"warning: {warning}", file=sys.stderr)
         for figure in sorted(self.results_dir(index).glob("*.png")):
             if not figure.stem.endswith("_thumb"):
                 _display_image(figure)
