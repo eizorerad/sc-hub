@@ -1,0 +1,240 @@
+#!/usr/bin/env bash
+# sc-hub installer for macOS and Linux (version __VERSION__).
+#
+#   curl -fsSL <this file's URL> | bash -s -- <your-cluster-login>
+#
+# What it does, once, on your laptop:
+#   1. creates an SSH key and an ssh alias `mbzuai-schub` (asks your cluster password once);
+#   2. copies sc-hub to the cluster and sets up your workspace there (in a Slurm job);
+#   3. connects sc-hub to Codex, Claude Code and Claude Desktop, whichever you have;
+#   4. creates ~/sc-hub-workspace with instructions for the assistant and ./schub-view.
+# It never reads or stores your password: ssh asks for it directly.
+set -euo pipefail
+
+VERSION="__VERSION__"
+REMOTE_USER="${1:-${SCHUB_USER:-}}"
+HOST="${SCHUB_HOST:-login-student-lab.mbzu.ae}"
+ALIAS="${SCHUB_ALIAS:-mbzuai-schub}"
+KEY="${SCHUB_SSH_KEY:-$HOME/.ssh/mbzuai_schub_ed25519}"
+SSH_CONFIG="${SCHUB_SSH_CONFIG:-$HOME/.ssh/config}"
+# ssh reads ~/.ssh/config of the real user; an explicit config (tests, custom setups)
+# is passed with -F to every ssh call and to the commands registered in the assistants.
+SSH_F=()
+if [ -n "${SCHUB_SSH_CONFIG:-}" ]; then SSH_F=(-F "$SSH_CONFIG"); fi
+WORKSPACE="${SCHUB_WORKSPACE:-$HOME/sc-hub-workspace}"
+CODEX_CONFIG="${CODEX_HOME:-$HOME/.codex}/config.toml"
+REMOTE_ROOT=""
+BUNDLE_DIR=""
+# Piped through `curl | bash`, stdin is the script; prompts must read the terminal.
+HAVE_TTY=0
+if { exec 3</dev/tty; } 2>/dev/null; then HAVE_TTY=1; exec 3<&-; fi
+
+log() { printf '\033[1m[sc-hub]\033[0m %s\n' "$*"; }
+interactive() {
+  # Run a command with the terminal as stdin when there is one.
+  if [ "$HAVE_TTY" = 1 ]; then "$@" </dev/tty; else "$@"; fi
+}
+die() { printf '[sc-hub] ERROR: %s\n' "$*" >&2; exit 1; }
+# Empty-array-safe expansion for the bash 3.2 that ships with macOS.
+sshx() { ssh ${SSH_F[@]+"${SSH_F[@]}"} "$@"; }
+
+bundle() {
+  # The sc-hub source (src, scripts, templates), gzipped tar, base64.
+  cat <<'SCHUB_BUNDLE'
+__BUNDLE__
+SCHUB_BUNDLE
+}
+
+ask_login() {
+  if [ -z "$REMOTE_USER" ]; then
+    [ "$HAVE_TTY" = 1 ] || die "pass your cluster login: bash -s -- <login>"
+    read -r -p "Your cluster login (e.g. firstname.lastname): " REMOTE_USER </dev/tty
+  fi
+  [[ "$REMOTE_USER" =~ ^[A-Za-z0-9._-]+$ ]] || die "unexpected login '$REMOTE_USER'"
+}
+
+check_tools() {
+  local tool
+  for tool in ssh ssh-keygen rsync tar base64; do
+    command -v "$tool" >/dev/null || die "$tool is missing; install the OpenSSH client and rsync first"
+  done
+}
+
+extract_bundle() {
+  BUNDLE_DIR="$(mktemp -d)"
+  trap 'rm -rf "$BUNDLE_DIR"' EXIT
+  bundle | base64 -d 2>/dev/null | tar -xzf - -C "$BUNDLE_DIR" || bundle | base64 -D | tar -xzf - -C "$BUNDLE_DIR"
+}
+
+create_key() {
+  mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
+  if [ -f "$KEY" ]; then return; fi
+  log "creating an SSH key at $KEY (a passphrase is recommended; the agent remembers it)"
+  interactive ssh-keygen -t ed25519 -f "$KEY" -C "sc-hub $REMOTE_USER@$(hostname -s)"
+}
+
+add_ssh_alias() {
+  touch "$SSH_CONFIG" && chmod 600 "$SSH_CONFIG"
+  if grep -q "^Host $ALIAS\$" "$SSH_CONFIG"; then return; fi
+  local block
+  block="$(mktemp)"
+  {
+    printf '# >>> sc-hub >>>\nHost %s\n    HostName %s\n    User %s\n' "$ALIAS" "$HOST" "$REMOTE_USER"
+    printf '    IdentityFile %s\n    IdentitiesOnly yes\n    AddKeysToAgent yes\n' "$KEY"
+    # UseKeychain exists only in Apple's OpenSSH; IgnoreUnknown keeps other builds working.
+    printf '    IgnoreUnknown UseKeychain\n    UseKeychain yes\n    StrictHostKeyChecking accept-new\n'
+    printf '    ServerAliveInterval 60\n    ServerAliveCountMax 3\n# <<< sc-hub <<<\n\n'
+    cat "$SSH_CONFIG"
+  } >"$block"
+  # Prepended: ssh uses the first matching value, so an earlier `Host *` must not win.
+  mv "$block" "$SSH_CONFIG" && chmod 600 "$SSH_CONFIG"
+  log "added ssh alias '$ALIAS'"
+}
+
+install_key() {
+  if [ "$(uname -s)" = "Darwin" ]; then
+    interactive ssh-add --apple-use-keychain "$KEY" 2>/dev/null || true
+  elif [ -n "${SSH_AUTH_SOCK:-}" ]; then
+    interactive ssh-add "$KEY" 2>/dev/null || true
+  fi
+  if sshx -o BatchMode=yes -o ConnectTimeout=15 "$ALIAS" true 2>/dev/null; then return; fi
+  log "installing your key on $HOST: type your cluster password when asked"
+  # ssh reads the password from the terminal itself, so the key can go through stdin.
+  sshx "$ALIAS" 'umask 077; mkdir -p ~/.ssh; cat >> ~/.ssh/authorized_keys' <"$KEY.pub"
+  sshx -o BatchMode=yes "$ALIAS" true || die "key login still fails (is the key loaded? ssh-add $KEY)"
+}
+
+check_clean_channel() {
+  local noise
+  noise="$(sshx -o BatchMode=yes "$ALIAS" true | wc -c | tr -d ' ')"
+  [ "$noise" = "0" ] || die "your cluster shell prints $noise bytes on non-interactive logins; the assistant
+needs a clean channel. In ~/.bashrc on the cluster, put this line before any echo: [[ \$- == *i* ]] || return"
+}
+
+upload_and_bootstrap() {
+  log "copying sc-hub $VERSION to the cluster"
+  REMOTE_ROOT="$(bundle | sshx -o BatchMode=yes "$ALIAS" 'set -e
+R="${SCHUB_ROOT:-/l/users/$USER/schub}"
+mkdir -p "$R/src"; rm -rf "$R/src/sc-hub.new"; mkdir "$R/src/sc-hub.new"
+base64 -d | tar -xzf - -C "$R/src/sc-hub.new"
+rm -rf "$R/src/sc-hub"; mv "$R/src/sc-hub.new" "$R/src/sc-hub"
+printf "%s" "$R"')"
+  [ -n "$REMOTE_ROOT" ] || die "could not copy sc-hub to the cluster"
+  log "setting up your workspace on the cluster (this runs in a Slurm job; a few minutes)"
+  local tty_flag="-T"
+  if [ "$HAVE_TTY" = 1 ]; then tty_flag="-t"; fi
+  interactive sshx "$tty_flag" "$ALIAS" "bash '$REMOTE_ROOT/src/sc-hub/scripts/bootstrap_cluster.sh'"
+}
+
+mcp_args_toml() {
+  local extra=""
+  if [ -n "${SCHUB_SSH_CONFIG:-}" ]; then extra="\"-F\", \"$SSH_CONFIG\", "; fi
+  printf '["-T", %s"-o", "BatchMode=yes", "%s", "%s"]' "$extra" "$ALIAS" "$REMOTE_ROOT/bin/schub-mcp"
+}
+
+register_codex() {
+  mkdir -p "$(dirname "$CODEX_CONFIG")" && touch "$CODEX_CONFIG"
+  if grep -q '^\[mcp_servers\.schub\]' "$CODEX_CONFIG"; then
+    log "Codex: already connected"
+    return
+  fi
+  cat >>"$CODEX_CONFIG" <<EOF
+
+# >>> sc-hub >>>
+[mcp_servers.schub]
+command = "ssh"
+args = $(mcp_args_toml)
+startup_timeout_sec = 60
+tool_timeout_sec = 180
+# <<< sc-hub <<<
+EOF
+  log "Codex: connected (also used by Codex in the ChatGPT desktop app)"
+}
+
+register_claude_code() {
+  command -v claude >/dev/null || return 0
+  claude mcp remove schub -s user >/dev/null 2>&1 || true
+  claude mcp add -s user schub -- ssh -T ${SSH_F[@]+"${SSH_F[@]}"} -o BatchMode=yes "$ALIAS" "$REMOTE_ROOT/bin/schub-mcp" >/dev/null
+  log "Claude Code: connected"
+}
+
+claude_desktop_config() {
+  case "$(uname -s)" in
+    Darwin) printf '%s' "$HOME/Library/Application Support/Claude/claude_desktop_config.json" ;;
+    *) printf '%s' "${XDG_CONFIG_HOME:-$HOME/.config}/Claude/claude_desktop_config.json" ;;
+  esac
+}
+
+register_claude_desktop() {
+  local config ssh_bin
+  config="$(claude_desktop_config)"
+  if [ ! -d "$(dirname "$config")" ] && [ ! -d /Applications/Claude.app ]; then return 0; fi
+  mkdir -p "$(dirname "$config")"
+  [ -f "$config" ] && cp "$config" "$config.bak-schub"
+  ssh_bin="$(command -v ssh)"
+  export SCHUB_DESKTOP_CONFIG="$config" SCHUB_SSH_BIN="$ssh_bin" SCHUB_MCP_ALIAS="$ALIAS" SCHUB_MCP_CMD="$REMOTE_ROOT/bin/schub-mcp"
+  export SCHUB_MCP_SSH_CONFIG="${SCHUB_SSH_CONFIG:-}"
+  if [ "$(uname -s)" = "Darwin" ]; then
+    osascript -l JavaScript >/dev/null <<'JXA'
+ObjC.import('Foundation');
+const env = $.NSProcessInfo.processInfo.environment;
+const get = k => ObjC.unwrap(env.objectForKey(k));
+const path = get('SCHUB_DESKTOP_CONFIG');
+const text = $.NSString.stringWithContentsOfFileEncodingError(path, $.NSUTF8StringEncoding, null);
+const config = (text && !text.isNil() && ObjC.unwrap(text).trim()) ? JSON.parse(ObjC.unwrap(text)) : {};
+config.mcpServers = config.mcpServers || {};
+const custom = get('SCHUB_MCP_SSH_CONFIG');
+config.mcpServers.schub = {command: get('SCHUB_SSH_BIN'),
+  args: ['-T'].concat(custom ? ['-F', custom] : []).concat(['-o', 'BatchMode=yes', get('SCHUB_MCP_ALIAS'), get('SCHUB_MCP_CMD')])};
+$(JSON.stringify(config, null, 2)).writeToFileAtomicallyEncodingError(path, true, $.NSUTF8StringEncoding, null);
+JXA
+  else
+    python3 - <<'PY'
+import json, os, pathlib
+path = pathlib.Path(os.environ["SCHUB_DESKTOP_CONFIG"])
+config = json.loads(path.read_text()) if path.exists() and path.read_text().strip() else {}
+custom = os.environ.get("SCHUB_MCP_SSH_CONFIG")
+config.setdefault("mcpServers", {})["schub"] = {
+    "command": os.environ["SCHUB_SSH_BIN"],
+    "args": ["-T", *(["-F", custom] if custom else []), "-o", "BatchMode=yes",
+             os.environ["SCHUB_MCP_ALIAS"], os.environ["SCHUB_MCP_CMD"]],
+}
+path.write_text(json.dumps(config, indent=2))
+PY
+  fi
+  log "Claude Desktop: connected (restart Claude Desktop to load it)"
+}
+
+make_workspace() {
+  mkdir -p "$WORKSPACE"
+  cp "$BUNDLE_DIR/templates/AGENTS.workspace.md" "$WORKSPACE/AGENTS.md"
+  cp "$BUNDLE_DIR/templates/AGENTS.workspace.md" "$WORKSPACE/CLAUDE.md"
+  install -m 755 "$BUNDLE_DIR/scripts/schub-view" "$WORKSPACE/schub-view"
+}
+
+main() {
+  log "sc-hub installer $VERSION"
+  ask_login
+  check_tools
+  extract_bundle
+  create_key
+  add_ssh_alias
+  install_key
+  check_clean_channel
+  upload_and_bootstrap
+  register_codex
+  register_claude_code
+  register_claude_desktop
+  make_workspace
+  cat <<EOF
+
+Ready. Start your assistant in the workspace and just ask, for example:
+  "What datasets are in sc-hub? Create a project for my question."
+    Codex:           cd $WORKSPACE && codex
+    Claude Code:     cd $WORKSPACE && claude
+    Claude Desktop:  restart it; the sc-hub tools appear in a new chat
+Watch your jobs and pipelines:  cd $WORKSPACE && ./schub-view
+EOF
+}
+
+main "$@"
