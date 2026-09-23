@@ -16,6 +16,8 @@ from schub.bench.models import Actor, CellEntry, CellRequest
 from schub.bench.runner import EXIT_BUSY, Runner
 from schub.config import Settings
 from schub.projects import ProjectStore
+from schub.slurm import Slurm
+from tests.conftest import FakeCluster
 
 pytestmark = pytest.mark.kernel
 
@@ -154,13 +156,13 @@ def test_sweep_marks_lost_and_requeues_unstarted(bench: Settings) -> None:
     inbox = Inbox(bench.bench_dir)
     started = submit(bench, "print(1)")
     unstarted = submit(bench, "print(2)")
-    claimed = {c.request.cid: c for c in inbox.claim()}
+    claimed = {c.request.cid: c for c in inbox.claim("777")}
     journal = journal_of(bench)
     request = claimed[started].request
     journal.write_cell(CellEntry(ref=f"demo#{started}", project="demo", cid=started, why=request.why,
                                  expect=request.expect, code=request.code, created=request.created,
                                  status="running", kernel_epoch="777.1"))
-    Runner(bench, job_id="906").sweep()
+    assert Runner(bench, job_id="906", slurm=Slurm(runner=FakeCluster())).sweep() == 2
     lost = journal.cell(started)
     assert lost.status == "lost" and "job 777" in lost.message
     assert [r.cid for r in inbox.pending()] == [unstarted]
@@ -169,8 +171,8 @@ def test_sweep_marks_lost_and_requeues_unstarted(bench: Settings) -> None:
 
 def test_a_second_runner_refuses_to_start(bench: Settings) -> None:
     bench.bench_dir.mkdir(parents=True, exist_ok=True)
-    write_json_atomic(bench.bench_dir / "workbench.json", {"state": "running", "job_id": "1", "heartbeat": stamp()})
-    assert Runner(bench, job_id="2").run() == EXIT_BUSY
+    write_json_atomic(bench.bench_dir / "workbench.json", {"state": "retiring", "job_id": "1", "heartbeat": stamp()})
+    assert Runner(bench, job_id="2", wait_for_other_s=0.3).run() == EXIT_BUSY
     write_json_atomic(bench.bench_dir / "workbench.json",
                       {"state": "running", "job_id": "1", "heartbeat": "2020-01-01T00:00:00.000+00:00"})
     assert not Runner(bench, job_id="2").other_runner_alive()

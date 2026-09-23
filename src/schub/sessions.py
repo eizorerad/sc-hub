@@ -238,7 +238,9 @@ def write_connection(folder: Path, node: str, port: int, path: str) -> None:
 
 def jupyter_command(python: str, port: int, root: Path, target: str) -> list[str]:
     command = [
-        python, "-m", "jupyter", "lab", "--no-browser", "--ip=0.0.0.0", f"--port={port}",
+        # The launcher moves the token from the environment into the server's configuration,
+        # so kernels (and a cell printing os.environ) never see it.
+        python, "-m", "schub.jupyter_launch", "--no-browser", "--ip=0.0.0.0", f"--port={port}",
         f"--ServerApp.root_dir={root}", "--ServerApp.port_retries=0",
         "--ServerApp.log_level=WARN",  # INFO prints the URL with the token into the Slurm log
     ]

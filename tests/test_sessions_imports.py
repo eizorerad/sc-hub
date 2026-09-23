@@ -258,3 +258,14 @@ def test_wait_until_listening_sees_only_a_live_server(tmp_path):
     dead = subprocess.Popen([sys.executable, "-c", "pass"])
     dead.wait()
     assert not wait_until_listening(dead, free_port(), timeout_s=3)
+
+
+def test_jupyter_sessions_keep_the_token_out_of_kernels():
+    from schub.jupyter_launch import take_token
+
+    command = jupyter_command("/env/python", 41000, Path("/r"), "")
+    assert command[1:3] == ["-m", "schub.jupyter_launch"]
+    env = {"JUPYTER_TOKEN": "abc", "SCHUB_SESSION_TOKEN": "abc", "PATH": "/bin"}
+    assert take_token(env) == "abc" and env == {"PATH": "/bin"}
+    with pytest.raises(SystemExit):
+        take_token({"PATH": "/bin"})

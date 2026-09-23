@@ -16,18 +16,24 @@ Audience = Literal["human", "agent", "both"]
 DataScope = Literal["twin", "full", "unknown"]
 MAX_CODE_CHARS = 200_000
 MAX_TEXT_CHARS = 4_000
+# The same rules as project names (projects.SEGMENT, at most 3 levels) and journal ids:
+# they become file names, so nothing else may pass.
+PROJECT_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,40}(/[a-z0-9][a-z0-9_-]{0,40}){0,2}$"
+CID_PATTERN = r"^c\d{4,9}$"
+NID_PATTERN = r"^n\d{4,9}$"
+Short = Field(default="", max_length=200)
 
 
 class Actor(Frozen):
     """Who made a record. Filled by the server (MCP client info, lab agent), never by the agent."""
 
     kind: Literal["chat", "lab_agent", "human", "system"] = "chat"
-    client: str = ""
-    client_version: str = ""
-    engine: str = ""
-    model: str = ""
-    effort: str = ""
-    session_id: str = ""
+    client: str = Short
+    client_version: str = Short
+    engine: str = Short
+    model: str = Short
+    effort: str = Short
+    session_id: str = Short
 
 
 class CheckSpec(Frozen):
@@ -45,8 +51,8 @@ def _required_text(value: str, what: str) -> str:
 
 
 class CellRequest(Frozen):
-    project: str
-    cid: str
+    project: str = Field(pattern=PROJECT_PATTERN)
+    cid: str = Field(pattern=CID_PATTERN)
     code: str = Field(max_length=MAX_CODE_CHARS)
     why: str
     expect: str
@@ -122,8 +128,8 @@ class CheckResult(Frozen):
 class CellEntry(Frozen):
     kind: Literal["cell"] = "cell"
     ref: str
-    project: str
-    cid: str
+    project: str = Field(pattern=PROJECT_PATTERN)
+    cid: str = Field(pattern=CID_PATTERN)
     why: str
     expect: str
     code: str
@@ -153,8 +159,8 @@ class CellEntry(Frozen):
 class NoteEntry(Frozen):
     kind: NoteKind
     ref: str
-    project: str
-    nid: str
+    project: str = Field(pattern=PROJECT_PATTERN)
+    nid: str = Field(pattern=NID_PATTERN)
     text: str
     because: tuple[str, ...] = ()  # refs of the cells (or notes) this rests on
     reverses_if: str = ""

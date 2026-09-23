@@ -31,6 +31,8 @@ class BenchConfig:
     background_partition: str = "gpu"
     background_fallback: str = "ws-ia"
     watchdog_every_min: int = 30
+    dormant_after_h: int = 12  # the watchdog stops re-arming itself after this long without work
+    max_running_jobs: int = 2  # per-user running jobs on `partition` when the QOS cannot be read
 
     def __post_init__(self) -> None:
         _check_range("CPUS", self.cpus, 1, 24)
@@ -44,6 +46,8 @@ class BenchConfig:
         _check_range("SNAPSHOT_MAX_FILES", self.snapshot_max_files, 10, 1_000_000)
         _check_range("SNAPSHOT_HASH_MAX_MB", self.snapshot_hash_max_mb, 0, 100_000)
         _check_range("WATCHDOG_EVERY_MIN", self.watchdog_every_min, 5, 24 * 60)
+        _check_range("DORMANT_AFTER_H", self.dormant_after_h, 1, 24 * 30)
+        _check_range("MAX_RUNNING_JOBS", self.max_running_jobs, 1, 1000)
         for name in ("partition", "background_partition", "background_fallback"):
             if not getattr(self, name).replace("-", "").replace("_", "").isalnum():
                 raise ValueError(f"{PREFIX}{name.upper()} must be a partition name, got {getattr(self, name)!r}")

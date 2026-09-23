@@ -1,7 +1,11 @@
 """One Jupyter kernel per project, started with an allowlisted environment.
 
-Anything that looks like a secret never reaches the kernel: a cell that prints
-os.environ must not put a session token or an API key into the chat.
+Anything that looks like a secret never reaches the kernel's environment: a cell
+that prints os.environ must not put a session token or an API key into the chat.
+The runner itself re-executes with the same allowlist (runner_env), so reading
+/proc/<parent>/environ gives nothing more. This covers environment variables only:
+the kernel runs as the student, so files the student can read (~/.netrc, tokens
+under ~/.cache) stay readable to their own code.
 """
 
 from __future__ import annotations
@@ -9,6 +13,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 from typing import Mapping
+from urllib.parse import urlsplit, urlunsplit
 
 from ..config import Settings
 from ..project_env import kernel_ready, slug
@@ -23,13 +28,28 @@ ALLOW_EXACT = frozenset({
 })
 ALLOW_PREFIXES = ("LC_", "SLURM_", "SCHUB_")
 SECRET = re.compile(r"TOKEN|SECRET|PASSW|CREDENTIAL|API_?KEY|_KEY$|COOKIE|AUTH", re.IGNORECASE)
+PROXIES = frozenset({"http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"})
 DEFAULT_KERNEL = "python3"
+RUNNER_CLEAN = "SCHUB_RUNNER_CLEAN"
+
+
+def _without_credentials(url: str) -> str:
+    """http://user:pass@proxy:3128 -> http://proxy:3128."""
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return ""
+    if parts.username is None and parts.password is None:
+        return url
+    host = parts.hostname or ""
+    netloc = f"{host}:{parts.port}" if parts.port else host
+    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
 
 
 def kernel_env(base: Mapping[str, str], extra: Mapping[str, str] | None = None) -> dict[str, str]:
     """The kernel's environment: allowlisted names from `base`, plus `extra`; never secrets."""
     env = {
-        key: value for key, value in base.items()
+        key: _without_credentials(value) if key in PROXIES else value for key, value in base.items()
         if (key in ALLOW_EXACT or key.startswith(ALLOW_PREFIXES)) and not SECRET.search(key)
     }
     for key, value in (extra or {}).items():
@@ -37,6 +57,11 @@ def kernel_env(base: Mapping[str, str], extra: Mapping[str, str] | None = None) 
             raise ValueError(f"refusing to pass {key} into a kernel")
         env[key] = value
     return env
+
+
+def runner_env(base: Mapping[str, str]) -> dict[str, str]:
+    """The environment the runner re-executes with (see the module docstring)."""
+    return kernel_env(base, {RUNNER_CLEAN: "1"})
 
 
 def kernel_name(settings: Settings, project: str) -> str:
@@ -62,10 +87,10 @@ class ProjectKernel:
         manager = KernelManager(kernel_name=self.name)
         manager.start_kernel(cwd=str(self.cwd), env=self.env)
         client = manager.client()
-        client.start_channels()
         try:
+            client.start_channels()
             client.wait_for_ready(timeout=timeout_s)
-        except RuntimeError:
+        except Exception:
             client.stop_channels()
             manager.shutdown_kernel(now=True)
             raise

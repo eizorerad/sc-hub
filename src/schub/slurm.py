@@ -18,6 +18,9 @@ from .state import Frozen
 Runner = Callable[[Sequence[str]], "subprocess.CompletedProcess[str]"]
 
 JOB_NAME = re.compile(r"^[A-Za-z0-9_.-]{1,120}$")
+SIGNAL = re.compile(r"^(B:)?(USR1|USR2|TERM|INT)@\d{1,6}$")
+BEGIN = re.compile(r"^(now(\+\d{1,5}(seconds|minutes|hours)?)?|\d{4}-\d\d-\d\dT\d\d:\d\d(:\d\d)?)$")
+COMMENT = re.compile(r"^[A-Za-z0-9_.:/-]{1,120}$")
 SCONTROL_STATE = re.compile(r"\bJobState=([A-Z_]+)")
 ACTIVE_STATES = frozenset({"PENDING", "RUNNING", "CONFIGURING", "COMPLETING", "REQUEUED", "SUSPENDED"})
 FAILED_STATES = frozenset(
@@ -47,6 +50,9 @@ class JobSpec:
     env: tuple[tuple[str, str], ...] = ()
     dependency: tuple[str, ...] = ()  # after all of these succeed (a pipeline chain)
     after_any: tuple[str, ...] = ()  # after any one of these ends (the queue pump)
+    signal: str = ""  # e.g. "B:USR1@1800": warn the batch shell before the time limit
+    begin: str = ""  # e.g. "now+30minutes": a self-rescheduling job (scrontab is disabled)
+    comment: str = ""  # an idempotency key, found again with squeue %k
 
 
 class PartitionInfo(Frozen):
@@ -96,6 +102,7 @@ def render_script(spec: JobSpec) -> str:
     ]
     if r.gpus:
         lines.append(f"#SBATCH --gres=gpu:{r.gpus}")
+    lines += _optional_lines(spec)
     if spec.dependency and spec.after_any:
         raise ValueError("a job waits either on a chain (dependency) or on any of several jobs (after_any)")
     if spec.dependency:
@@ -108,6 +115,18 @@ def render_script(spec: JobSpec) -> str:
     lines.append(f"cd {shlex.quote(str(spec.workdir))}")
     lines.append("exec " + " ".join(shlex.quote(part) for part in spec.command))
     return "\n".join(lines) + "\n"
+
+
+def _optional_lines(spec: JobSpec) -> list[str]:
+    lines = []
+    for value, pattern, flag in ((spec.signal, SIGNAL, "signal"), (spec.begin, BEGIN, "begin"),
+                                 (spec.comment, COMMENT, "comment")):
+        if not value:
+            continue
+        if not pattern.fullmatch(value):
+            raise ValueError(f"invalid --{flag} value {value!r}")
+        lines.append(f"#SBATCH --{flag}={value}")
+    return lines
 
 
 def parse_job_id(stdout: str) -> str:

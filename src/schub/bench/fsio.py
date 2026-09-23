@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import secrets
@@ -31,6 +32,17 @@ def fsync_dir(folder: Path) -> None:
         os.close(fd)
 
 
+PRIVATE = 0o600  # journals hold code and results; /l/users folders are often world-readable
+NO_LINK = frozenset({errno.EPERM, errno.ENOTSUP, errno.EOPNOTSUPP, errno.EXDEV, errno.EMLINK})
+
+
+def _write_all(fd: int, data: bytes) -> None:
+    view = memoryview(data)
+    while view:
+        written = os.write(fd, view)
+        view = view[written:]
+
+
 def _encode(payload: dict[str, Any]) -> bytes:
     return (json.dumps(payload, indent=1, sort_keys=False, default=str) + "\n").encode()
 
@@ -39,17 +51,14 @@ def _write_temp(folder: Path, name: str, data: bytes, mode: int) -> Path:
     temp = folder / f".{name}.{os.getpid()}.{secrets.token_hex(4)}.tmp"
     fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
     try:
-        view = memoryview(data)
-        while view:
-            written = os.write(fd, view)
-            view = view[written:]
+        _write_all(fd, data)
         os.fsync(fd)
     finally:
         os.close(fd)
     return temp
 
 
-def write_json_atomic(path: Path, payload: dict[str, Any], mode: int = 0o644) -> None:
+def write_json_atomic(path: Path, payload: dict[str, Any], mode: int = PRIVATE) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = _write_temp(path.parent, path.name, _encode(payload), mode)
     try:
@@ -60,7 +69,7 @@ def write_json_atomic(path: Path, payload: dict[str, Any], mode: int = 0o644) ->
     fsync_dir(path.parent)
 
 
-def create_json_exclusive(path: Path, payload: dict[str, Any], mode: int = 0o644) -> bool:
+def create_json_exclusive(path: Path, payload: dict[str, Any], mode: int = PRIVATE) -> bool:
     """Publish `payload` at `path` unless something is already there. True if it was ours."""
     path.parent.mkdir(parents=True, exist_ok=True)
     data = _encode(payload)
@@ -68,11 +77,26 @@ def create_json_exclusive(path: Path, payload: dict[str, Any], mode: int = 0o644
     try:
         os.link(temp, path)
     except FileExistsError:
-        return False
-    except OSError:
+        # On NFS a retried link() can report EEXIST although the first attempt worked.
+        return _linked(temp) and _published(path)
+    except OSError as exc:
+        if exc.errno not in NO_LINK:
+            raise
         return _create_excl(path, data, mode)
     finally:
         temp.unlink(missing_ok=True)
+    fsync_dir(path.parent)
+    return True
+
+
+def _linked(temp: Path) -> bool:
+    try:
+        return temp.stat().st_nlink == 2
+    except OSError:
+        return False
+
+
+def _published(path: Path) -> bool:
     fsync_dir(path.parent)
     return True
 
@@ -83,10 +107,13 @@ def _create_excl(path: Path, data: bytes, mode: int) -> bool:
     except FileExistsError:
         return False
     try:
-        os.write(fd, data)
+        _write_all(fd, data)
         os.fsync(fd)
-    finally:
+    except OSError:
         os.close(fd)
+        path.unlink(missing_ok=True)
+        raise
+    os.close(fd)
     fsync_dir(path.parent)
     return True
 

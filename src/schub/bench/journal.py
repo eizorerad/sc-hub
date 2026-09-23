@@ -24,7 +24,8 @@ from pydantic import ValidationError
 from .clock import Clock, stamp
 from .fsio import create_json_exclusive, read_json, write_json_atomic
 from .models import (
-    MAX_TEXT_CHARS, NOTE_KINDS, Actor, CellEntry, CheckResult, Download, FileChange, JobRef, NoteEntry,
+    CID_PATTERN, FINAL_STATUSES, MAX_TEXT_CHARS, NID_PATTERN, NOTE_KINDS, Actor, CellEntry, CheckResult, Download,
+    FileChange, JobRef, NoteEntry,
 )
 
 REF = re.compile(r"^(?P<project>[a-z0-9][a-z0-9_/-]*)#(?P<id>[cn]\d{4,})$")
@@ -48,6 +49,18 @@ def _number(record_id: str) -> int:
     return int(record_id[1:])
 
 
+def check_cid(cid: str) -> str:
+    if not re.fullmatch(CID_PATTERN, cid):
+        raise JournalError(f"'{cid}' is not a cell id like c0007")
+    return cid
+
+
+def check_nid(nid: str) -> str:
+    if not re.fullmatch(NID_PATTERN, nid):
+        raise JournalError(f"'{nid}' is not a note id like n0003")
+    return nid
+
+
 class Journal:
     def __init__(self, project_dir: Path, project: str, now: Clock = stamp) -> None:
         self.project = project
@@ -66,7 +79,7 @@ class Journal:
         return f"{self.project}#{record_id}"
 
     def artifacts_dir(self, cid: str) -> Path:
-        return self.cells_dir / cid
+        return self.cells_dir / check_cid(cid)
 
     # ---- ids ------------------------------------------------------------------
 
@@ -80,7 +93,7 @@ class Journal:
         while True:
             record_id = f"{prefix}{n:04d}"
             try:
-                os.close(os.open(ids / record_id, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644))
+                os.close(os.open(ids / record_id, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
                 return record_id
             except FileExistsError:
                 n += 1
@@ -89,14 +102,14 @@ class Journal:
 
     def write_cell(self, entry: CellEntry) -> None:
         """Only the runner calls this. A final entry is never rewritten."""
-        path = self.cells_dir / f"{entry.cid}.json"
+        path = self.cells_dir / f"{check_cid(entry.cid)}.json"
         current = read_json(path)
-        if current is not None and current.get("status") in ("ok", "error", "interrupted", "lost", "retired"):
+        if current is not None and current.get("status") in FINAL_STATUSES:
             raise JournalError(f"{entry.ref} is final ({current['status']}); add an addendum instead")
         write_json_atomic(path, entry.model_dump(mode="json"))
 
     def raw_cell(self, cid: str) -> CellEntry | None:
-        data = read_json(self.cells_dir / f"{cid}.json")
+        data = read_json(self.cells_dir / f"{check_cid(cid)}.json")
         try:
             return CellEntry.model_validate(data) if data is not None else None
         except ValidationError:
@@ -120,6 +133,7 @@ class Journal:
 
     def add_addendum(self, cid: str, suffix: str, payload: dict[str, Any]) -> bool:
         """Attach something that happened later (a job ended, a check ran). Once per suffix."""
+        check_cid(cid)
         if not SUFFIX.fullmatch(suffix):
             raise JournalError(f"bad addendum name {suffix!r}")
         if payload.get("kind") not in ADDENDUM_KINDS:
@@ -168,11 +182,13 @@ class Journal:
                 raise JournalError(f"{ref} is not in this journal")
 
     def exists(self, record_id: str) -> bool:
+        if not (re.fullmatch(CID_PATTERN, record_id) or re.fullmatch(NID_PATTERN, record_id)):
+            return False
         folder = self.cells_dir if record_id.startswith("c") else self.notes_dir
         return (folder / f"{record_id}.json").is_file()
 
     def note(self, nid: str) -> NoteEntry | None:
-        data = read_json(self.notes_dir / f"{nid}.json")
+        data = read_json(self.notes_dir / f"{check_nid(nid)}.json")
         try:
             return NoteEntry.model_validate(data) if data is not None else None
         except ValidationError:
@@ -195,11 +211,17 @@ class Journal:
         found.sort(key=lambda e: (e.created, e.ref))
         return found[-limit:] if limit else found
 
+    def latest_cells(self, count: int) -> list[CellEntry]:
+        """The newest `count` cells, oldest first, without reading the whole journal."""
+        ids = [i for i in self._ids() if i.startswith("c")][-count:]
+        return [c for c in (self.raw_cell(i) for i in ids) if c is not None]
+
     def _ids(self) -> list[str]:
         ids: list[str] = []
         for folder in (self.cells_dir, self.notes_dir):
             if folder.is_dir():
-                ids += [p.stem for p in folder.glob("*.json") if "." not in p.stem and p.stem[1:].isdigit()]
+                ids += [p.stem for p in folder.glob("*.json")
+                        if re.fullmatch(CID_PATTERN, p.stem) or re.fullmatch(NID_PATTERN, p.stem)]
         return sorted(ids, key=lambda i: (i[0], _number(i)))
 
 
@@ -213,7 +235,9 @@ def _merge(base: CellEntry, addenda: list[dict[str, Any]]) -> CellEntry:
             kind = addendum.get("kind")
             if kind == "job":
                 job = JobRef.model_validate(addendum["job"])
-                jobs[job.job_id] = jobs[job.job_id].model_copy(update=addendum["job"]) if job.job_id in jobs else job
+                known = jobs.get(job.job_id)
+                jobs[job.job_id] = JobRef.model_validate({**known.model_dump(), **job.model_dump(exclude_unset=True)}) \
+                    if known else job
             elif kind == "check":
                 check = CheckResult.model_validate(addendum["check"])
                 checks[check.name] = check

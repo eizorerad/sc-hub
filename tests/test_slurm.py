@@ -90,3 +90,20 @@ def test_states_without_accounting_database(cluster, tmp_path):
     cluster.recently_finished[finished] = "COMPLETED"
     cluster.jobs[gone] = "COMPLETED"
     assert slurm.states([queued, finished, gone]) == {queued: "PENDING", finished: "COMPLETED"}
+
+
+def test_signal_begin_and_comment_lines():
+    script = render_script(spec(signal="B:USR1@1800", begin="now+30minutes", comment="demo-c0007-3f2a"))
+    assert "#SBATCH --signal=B:USR1@1800" in script
+    assert "#SBATCH --begin=now+30minutes" in script
+    assert "#SBATCH --comment=demo-c0007-3f2a" in script
+    assert "--signal" not in render_script(spec())
+
+
+@pytest.mark.parametrize("field,value", [
+    ("signal", "USR1@1800 --wrap=x"), ("signal", "KILL@10"), ("begin", "tomorrow; rm"), ("comment", "a b"),
+    ("comment", "x" * 121),
+])
+def test_optional_lines_are_validated(field, value):
+    with pytest.raises(ValueError):
+        render_script(spec(**{field: value}))

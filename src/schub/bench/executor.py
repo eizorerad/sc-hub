@@ -1,4 +1,10 @@
-"""Run one cell on a project kernel and collect what it produces."""
+"""Run one cell on a project kernel and collect what it produces.
+
+The loop ends on the kernel's `idle` status for the cell. If that message is lost
+(the iopub buffer can drop messages under heavy output) the execute_reply on the
+shell channel ends it too, after a short grace period. A cell that ignores the
+interrupt while the workbench is retiring is stopped by shutting the kernel down.
+"""
 
 from __future__ import annotations
 
@@ -8,10 +14,13 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Literal
 
 from .kernels import ProjectKernel
+from .ledger import DRAIN_EXPRESSION
 from .outputs import OutputCollector
 
 Status = Literal["ok", "error", "interrupted", "lost"]
 REPLY_TIMEOUT_S = 30.0
+IDLE_GRACE_S = 2.0
+KILL_GRACE_S = 10.0
 
 
 @dataclass(frozen=True)
@@ -19,6 +28,14 @@ class ExecResult:
     status: Status
     user_expressions: dict[str, Any] = field(default_factory=dict)
     interrupted: bool = False
+
+
+@dataclass
+class _Run:
+    msg_id: str
+    interrupted_at: float | None = None
+    reply: dict[str, Any] | None = None
+    reply_at: float = 0.0
 
 
 def execute(
@@ -29,53 +46,82 @@ def execute(
     should_interrupt: Callable[[], bool],
     on_progress: Callable[[], None],
     poll_s: float,
-    user_expressions: dict[str, str] | None = None,
+    should_kill: Callable[[], bool] = lambda: False,
+    clock: Callable[[], float] = time.monotonic,
 ) -> ExecResult:
     client = kernel.client
     if client is None:
         return ExecResult(status="lost")
-    msg_id = client.execute(code, store_history=True, allow_stdin=False, stop_on_error=True,
-                            user_expressions=user_expressions or {})
-    interrupt_sent = False
+    run = _Run(msg_id=client.execute(code, store_history=True, allow_stdin=False, stop_on_error=True))
     while True:
-        if not interrupt_sent and should_interrupt():
-            kernel.interrupt()
-            interrupt_sent = True
+        stopped = _steer(kernel, run, should_interrupt, should_kill, clock)
+        if stopped is not None:
+            return stopped
         try:
             msg = client.get_iopub_msg(timeout=poll_s)
         except queue.Empty:
             if not kernel.alive():
-                return ExecResult(status="lost", interrupted=interrupt_sent)
+                return ExecResult(status="lost", interrupted=run.interrupted_at is not None)
+            if run.reply is None:
+                run.reply, run.reply_at = _poll_reply(kernel, run.msg_id), clock()
+            elif clock() - run.reply_at > IDLE_GRACE_S:
+                break  # the reply came, iopub is drained, the idle status never did
             on_progress()
             continue
-        if msg.get("parent_header", {}).get("msg_id") != msg_id:
+        if msg.get("parent_header", {}).get("msg_id") != run.msg_id:
             continue
         kind, content = msg.get("msg_type", ""), msg.get("content", {})
         if kind == "status" and content.get("execution_state") == "idle":
             break
         collector.add(kind, content)
         on_progress()
-    return _finish(kernel, msg_id, interrupt_sent, collector)
+    reply = run.reply or _shell_reply(kernel, run.msg_id)
+    return _status(kernel, reply, run.interrupted_at is not None, collector)
 
 
-def _finish(kernel: ProjectKernel, msg_id: str, interrupt_sent: bool, collector: OutputCollector) -> ExecResult:
-    reply = _shell_reply(kernel, msg_id)
+def _steer(kernel: ProjectKernel, run: _Run, should_interrupt: Callable[[], bool],
+           should_kill: Callable[[], bool], clock: Callable[[], float]) -> ExecResult | None:
+    if run.interrupted_at is None and should_interrupt():
+        try:
+            kernel.interrupt()
+        except Exception:  # noqa: BLE001 - a dead kernel is found by alive() below
+            pass
+        run.interrupted_at = clock()
+    if run.interrupted_at is not None and should_kill() and clock() - run.interrupted_at > KILL_GRACE_S:
+        kernel.shutdown()
+        return ExecResult(status="lost", interrupted=True)
+    return None
+
+
+def _status(kernel: ProjectKernel, reply: dict[str, Any] | None, interrupted: bool,
+            collector: OutputCollector) -> ExecResult:
     if reply is None:
-        status: Status = "lost" if not kernel.alive() else ("interrupted" if interrupt_sent else "error")
-        return ExecResult(status=status, interrupted=interrupt_sent)
+        status: Status = "lost" if not kernel.alive() else ("interrupted" if interrupted else "error")
+        return ExecResult(status=status, interrupted=interrupted)
     content = reply.get("content", {})
     expressions = content.get("user_expressions") or {}
     if content.get("status") == "ok":
-        return ExecResult(status="ok", user_expressions=expressions, interrupted=interrupt_sent)
+        return ExecResult(status="ok", user_expressions=expressions, interrupted=interrupted)
     error = collector.error()
-    stopped = interrupt_sent or (error is not None and error[0] == "KeyboardInterrupt")
+    stopped = interrupted or (error is not None and error[0] == "KeyboardInterrupt")
     return ExecResult(status="interrupted" if stopped else "error", user_expressions=expressions,
-                      interrupted=interrupt_sent)
+                      interrupted=interrupted)
 
 
-def _shell_reply(kernel: ProjectKernel, msg_id: str) -> dict[str, Any] | None:
+def _poll_reply(kernel: ProjectKernel, msg_id: str) -> dict[str, Any] | None:
     client = kernel.client
-    deadline = time.monotonic() + REPLY_TIMEOUT_S
+    if client is None:
+        return None
+    try:
+        reply = client.get_shell_msg(timeout=0)
+    except queue.Empty:
+        return None
+    return reply if reply.get("parent_header", {}).get("msg_id") == msg_id else None
+
+
+def _shell_reply(kernel: ProjectKernel, msg_id: str, timeout_s: float = REPLY_TIMEOUT_S) -> dict[str, Any] | None:
+    client = kernel.client
+    deadline = time.monotonic() + timeout_s
     while client is not None and time.monotonic() < deadline:
         try:
             reply = client.get_shell_msg(timeout=1.0)
@@ -86,3 +132,19 @@ def _shell_reply(kernel: ProjectKernel, msg_id: str) -> dict[str, Any] | None:
         if reply.get("parent_header", {}).get("msg_id") == msg_id:
             return reply
     return None
+
+
+def drain_ledger(kernel: ProjectKernel, timeout_s: float = 10.0) -> dict[str, Any] | None:
+    """The events helpers recorded in the kernel during the last cell, whatever its outcome
+    (ipykernel skips user_expressions when a cell fails, so they are asked for separately)."""
+    client = kernel.client
+    if client is None or not kernel.alive():
+        return None
+    try:
+        msg_id = client.execute("", silent=True, store_history=False, allow_stdin=False,
+                                user_expressions={"ledger": DRAIN_EXPRESSION})
+    except Exception:  # noqa: BLE001 - no ledger is better than a stuck runner
+        return None
+    reply = _shell_reply(kernel, msg_id, timeout_s)
+    expressions = (reply or {}).get("content", {}).get("user_expressions") or {}
+    return expressions.get("ledger")
