@@ -45,7 +45,8 @@ class JobSpec:
     workdir: Path
     command: tuple[str, ...]
     env: tuple[tuple[str, str], ...] = ()
-    dependency: tuple[str, ...] = ()
+    dependency: tuple[str, ...] = ()  # after all of these succeed (a pipeline chain)
+    after_any: tuple[str, ...] = ()  # after any one of these ends (the queue pump)
 
 
 class PartitionInfo(Frozen):
@@ -95,9 +96,13 @@ def render_script(spec: JobSpec) -> str:
     ]
     if r.gpus:
         lines.append(f"#SBATCH --gres=gpu:{r.gpus}")
+    if spec.dependency and spec.after_any:
+        raise ValueError("a job waits either on a chain (dependency) or on any of several jobs (after_any)")
     if spec.dependency:
         lines.append(f"#SBATCH --dependency=afterok:{':'.join(spec.dependency)}")
         lines.append("#SBATCH --kill-on-invalid-dep=yes")
+    if spec.after_any:
+        lines.append("#SBATCH --dependency=" + "?".join(f"afterany:{job}" for job in spec.after_any))
     lines.append("set -euo pipefail")
     lines += [f"export {key}={shlex.quote(value)}" for key, value in spec.env]
     lines.append(f"cd {shlex.quote(str(spec.workdir))}")

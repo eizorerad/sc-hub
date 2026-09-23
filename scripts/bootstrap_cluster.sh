@@ -102,6 +102,8 @@ $exports
 $guard
 exec "\$SCHUB_PYTHON" -m schub.cli mcp
 EOF
+  # The forced command of the sc-hub SSH key (the installer limits the key to it).
+  install -m 755 "$SRC_DIR/scripts/schub-gate" "$ROOT/bin/schub-gate"
   # Notebooks now open in a Jupyter session (schub session-start jupyter / ./schub-lab).
   rm -f "$ROOT/bin/schub-notebook"
   chmod 755 "$ROOT/bin/schub" "$ROOT/bin/schub-mcp"

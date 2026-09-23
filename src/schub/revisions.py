@@ -16,6 +16,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from .bricks import REGISTRY
 from .planner import StepRequest
 from .projects import BranchSpec, ProjectError, ProjectStore
 from .state import Frozen
@@ -114,11 +115,36 @@ def _check_step(step: int, count: int) -> None:
         raise ProjectError(f"step {step} does not exist; the branch has steps 1-{count}")
 
 
+def _sweep_after(spec: BranchSpec, step: int, params: dict[str, Any], brick: str, brick_replaced: bool) -> dict[str, Any]:
+    """A revision of a sweep's varied step keeps the sweep fields true: the new value (the
+    default when it is reset with None), or no sweep at all once the brick is replaced."""
+    if spec.sweep is None or step != spec.sweep_step:
+        return {}
+    if brick_replaced:
+        return {"sweep": None, "sweep_step": None, "sweep_param": None, "sweep_value": None}
+    if spec.sweep_param not in params:
+        return {}
+    value = params[spec.sweep_param]
+    field = REGISTRY[brick].params_model.model_fields.get(spec.sweep_param or "") if brick in REGISTRY else None
+    return {"sweep_value": field.default if value is None and field is not None else value}
+
+
 def revised_spec(
     store: ProjectStore, project: str, branch: str, step: int,
     params: dict[str, Any] | None = None, brick: str | None = None,
 ) -> BranchSpec:
     """The branch with step `step` changed (params patched, or the brick replaced)."""
+    spec = store.load_branch(project, branch)
+    revised = _revised(store, project, branch, step, params, brick)  # checks that the step exists
+    current = store.resolve(project, branch).steps[step - 1].brick
+    replaced = bool(brick) and brick != current
+    return revised.model_copy(update=_sweep_after(spec, step, params or {}, current, replaced))
+
+
+def _revised(
+    store: ProjectStore, project: str, branch: str, step: int,
+    params: dict[str, Any] | None = None, brick: str | None = None,
+) -> BranchSpec:
     spec = store.load_branch(project, branch)
     resolved = store.resolve(project, branch)
     _check_step(step, len(resolved.steps))
@@ -131,7 +157,8 @@ def revised_spec(
         # Written out in full: the branch no longer follows its parent (from:).
         return BranchSpec(dataset=resolved.dataset, steps=tuple(steps), species=resolved.species,
                           gene_ids=resolved.gene_ids, idea=spec.idea, description=spec.description,
-                          forked_from=spec.forked_from)
+                          forked_from=spec.forked_from, sweep=spec.sweep, sweep_step=spec.sweep_step,
+                          sweep_param=spec.sweep_param, sweep_value=spec.sweep_value)
     inherited = len(resolved.steps) - len(spec.append)
     if step <= inherited and not spec.from_branch and not spec.overrides:
         steps = list(spec.steps)

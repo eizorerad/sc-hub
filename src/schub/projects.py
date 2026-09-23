@@ -67,6 +67,11 @@ class BranchSpec(Frozen):
     saved: str = ""
     reason: str = ""  # why this revision (or fork) was made
     forked_from: str | None = None  # "<branch>@r<N>#<step>" for forks
+    # A member of a sweep: one parameter of one step over several values (schub.sweeps).
+    sweep: str | None = None
+    sweep_step: int | None = None
+    sweep_param: str | None = None
+    sweep_value: Any = None
 
     @model_validator(mode="after")
     def _steps_or_parent(self) -> "BranchSpec":

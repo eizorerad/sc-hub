@@ -21,6 +21,7 @@ from schub.slurm import QueueJob, Slurm
 from schub.stepfile import ERROR_FILE, SUCCESS, SUMMARY_FILE
 
 from .conftest import library_datasets, make_adata
+from .dashboard_helpers import graph_of, templates_of, view_files
 
 MAIN = BranchSpec(dataset="kang2018", steps=({"brick": "qc_filter"}, {"brick": "normalize_embed"}))
 
@@ -68,8 +69,9 @@ def test_snapshot_merges_runs_and_planned_branches(hub, two_branches):
     assert qc_node.labels == ("ifn/main", "ifn/res-2") and qc_node.headline == "55 cells kept"
     step = snap.steps_by_key[qc_node.key]
     assert step.extras.seconds == 125 and step.extras.log_tail[-1] == "red" and step.extras.resources["cpus"] == "8"
-    views = {v.view_id: v for v in pipeline_views(snap.nodes)}
-    assert {"v-all", "v-ifn-main", "v-ifn-res-2"} <= set(views) and views["v-ifn-main"].group == "ifn"
+    views = {v.view_id: v for v in pipeline_views(snap.nodes, ["ifn"])}
+    assert {"p-ifn", "v-ifn-main", "v-ifn-res-2"} == set(views) and views["v-ifn-main"].group == "ifn"
+    assert views["p-ifn"].kind == "project" and set(views["p-ifn"].keys) >= set(views["v-ifn-main"].keys)
 
 
 def test_page_has_every_view_selectors_and_step_templates(hub, two_branches, settings):
@@ -78,14 +80,18 @@ def test_page_has_every_view_selectors_and_step_templates(hub, two_branches, set
     for view in ("projects", "pipelines", "runs", "library", "cluster"):
         assert f'data-view="{view}"' in page
     tabs = re.findall(r'data-tab="([a-z]+)"', page)
-    assert tabs == ["projects", "pipelines", "runs", "library"]  # projects first: they are the root
+    assert tabs == ["projects", "experiments", "pipelines", "runs", "library"]  # projects first: they are the root
     assert 'class="account"' in page and 'id="autorefresh"' in page and 'data-ago="' in page
     assert page.index('class="account"') < page.index('class="tabs"')  # the sc-hub square is the menu
-    assert 'data-pipe="v-ifn-main"' in page and 'data-pipe-view="v-ifn-res-2"' in page
+    files = view_files(settings.view_dir)
+    assert 'data-pipe="p-ifn"' in page and 'id="exp-data"' in page  # graphs load on demand, rows are in the page
+    assert {"br/p-ifn.js", "br/v-ifn-main.js", "br/v-ifn-res-2.js"} == set(files)
+    assert 'data-pipe-view="v-ifn-res-2"' in graph_of(files, "v-ifn-res-2")
     assert f'data-run="{two_branches.run_id}"' in page and 'id="run-search"' in page
     qc_key = two_branches.steps[0].step_key
-    assert f'<template data-node="{qc_key}">' in page and "55 cells kept" in page and "line 39" in page
-    assert "Is clustering resolution-sensitive?" in page and "st-PLANNED" in page
+    assert f'<template data-node="{qc_key}">' in templates_of(files, "v-ifn-main") and f'data-node="{qc_key}"' not in page
+    assert "55 cells kept" in page and "line 39" in page
+    assert "Is clustering resolution-sensitive?" in page and "st-PLANNED" in graph_of(files, "v-ifn-res-2")
     assert (settings.view_dir / "img" / qc_key / "umap_leiden_thumb.png").read_bytes() == b"thumb"
     assert (settings.view_dir / "img" / qc_key / "umap_leiden.png").exists()  # recent run: full size too
     assert info.bytes < 200_000 and "<script>" in page and "http" not in re.sub(r"https?://[a-z./]*sc-hub", "", page.split("<script>")[1])
@@ -180,7 +186,7 @@ def test_similar_labels_get_distinct_pipeline_ids():
         for k, label in (("a", "Proj_1/main"), ("b", "proj-1/main"), ("c", "PROJ 1/main"))
     )
     ids = [v.view_id for v in pipeline_views(nodes)]
-    assert len(set(ids)) == len(ids) == 4 and "v-proj-1-main-2" in ids and "v-proj-1-main-3" in ids
+    assert len(set(ids)) == len(ids) == 3 and "v-proj-1-main-2" in ids and "v-proj-1-main-3" in ids
 
 
 def test_branch_points_show_the_differing_param():
@@ -286,7 +292,7 @@ def test_overview_lists_sessions_with_how_to_open(hub, settings, cluster):
 
 
 def test_revisions_forks_subprojects_and_merges_are_visible(hub, two_branches, settings, write_h5ad):
-    from schub.dashboard.page import render_page
+    from schub.dashboard.page import render_site
     from schub.dashboard.views_projects import render_projects
 
     write_h5ad(make_adata(n_obs=30, seed=2), directory=library_datasets(settings) / "atlas")
@@ -303,8 +309,9 @@ def test_revisions_forks_subprojects_and_merges_are_visible(hub, two_branches, s
     projects = render_projects(snap)
     assert 'data-project="ifn/atlas"' in projects and "fork</span> of <code>main@r2</code> at step 2" in projects
     assert "stricter QC" in projects and "step 1 qc_filter: min_genes default → 20" in projects
-    page = render_page(snap, lambda *_: None)
-    assert "+ atlas" in page and 'data-ref="ifn/atlas/joint#1"' in page and 'data-ask="fork"' in page
+    site = render_site(snap, lambda *_: None)
+    page = site.index + "".join(site.files.values())
+    assert "+ atlas" in page and 'data-ref=\\"ifn/atlas/joint#1\\"' in page and 'data-ask=\\"fork\\"' in page
     assert "revise_branch" in page and "fork_branch" in page and 'href="#cluster"' in page
 
 

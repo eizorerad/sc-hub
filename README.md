@@ -47,13 +47,27 @@ the cluster a step can be changed and re-run; the steps after it read the new
 result, earlier ones come from the pipeline's cache, and nothing is written
 into the cache.
 
-Graphs show each branch as it is now. After an sc-hub update (new code gives
-steps new keys) or a revision, a finished branch shows "needs re-run" and each
-such step names what it gave before; older results stay available behind
-"Show older steps". A branch the planner now refuses shows "can't plan".
+Graphs show each branch as it is now. After a change of a brick's code or a
+scientific package (new step keys) or a revision, a finished branch shows
+"needs re-run" and each such step names what it gave before and why; older
+results stay behind "Show older steps". A branch the planner now refuses shows
+"can't plan". An sc-hub release alone (dashboard, tools) keeps every result.
+
+For many experiments a day: `sweep_branch` tries one parameter over several
+values as one experiment (one branch per value; shared steps computed once),
+and above the cap of active pipelines plans wait in sc-hub's own queue instead
+of failing: a tiny Slurm job submits them, first in first out, when a pipeline
+ends (no daemon). A branch goes as it is at that moment: planned again if sc-hub
+or the branch changed while it waited. Slurm or Lustre hiccups are retried; a
+plan that can no longer run is set aside with the reason (`queue_status`).
+`label_branch` tags, pins and archives branches without new revisions.
 
 The dashboard starts at Projects (the root: question, datasets, branches),
-then Pipelines, Runs (history, queue, interactive sessions) and Library. The
+then Experiments (every branch as one row: filter by project, data, step,
+state, tag or day; only the parameters that differ become columns; sweeps fold
+into one row; tick 2-5 rows to compare steps, numbers and figures side by
+side), Pipelines (one graph at a time: a branch with the branches around it as
+links, or a project map), Runs (history, queue, interactive sessions) and Library. The
 sc-hub square at the top left is the account menu: the cluster overview (Lustre
 quota, home usage, per-user job limits and what is in use, your jobs with
 CPU/RAM/GPU, partition load, logins), sessions, the last update and auto-refresh. Seurat `.rds` objects are
@@ -84,14 +98,27 @@ The installer lives in the pilot owner's shared library on the cluster, so only
 people with a cluster account can download it. It:
 
 1. creates a dedicated SSH key (no passphrase, so the assistants can connect on
-   their own; it opens only this cluster account, delete it to revoke) and the
-   alias `mbzuai-schub`, and installs the key on the login node;
+   their own) and the alias `mbzuai-schub`, and installs the key on the login
+   node; at the end it limits the key to sc-hub (see below);
 2. copies sc-hub to `/l/users/LOGIN/schub` and sets up the workspace there in a
    Slurm job (shared library environment, or a private one as a fallback);
 3. connects sc-hub to every assistant it finds: **Codex** (also Codex inside the
    ChatGPT desktop app), **Claude Code** and **Claude Desktop**;
 4. creates `~/sc-hub-workspace` with instructions for the assistant (`AGENTS.md`,
    `CLAUDE.md`) and `schub-view` for the dashboard (`schub-view.cmd` on Windows).
+
+The key opens sc-hub only: its line in `~/.ssh/authorized_keys` on the cluster
+starts with `restrict,port-forwarding,command="<root>/bin/schub-gate"`, which
+lets through the MCP server, the dashboard mirror (`schub dashboard` + a
+read-only rsync of `view/`) and `schub-lab` sessions (their tunnel), and
+refuses the rest, a shell included; every decision goes to
+`<root>/logs/gate.log`. This keeps an assistant on sc-hub's checked, logged
+tools (quotas and jobs come from `cluster_overview`, not from a shell). It is
+not a sandbox: sc-hub itself runs the student's code (pipelines, Jupyter
+sessions), as it should. The student's own login (password) is unaffected.
+Delete that line to revoke the key; re-running the installer with
+`SCHUB_KEY_UNRESTRICTED=1` makes it a normal key again (not recommended). The
+Windows installer does not limit the key yet.
 
 Running it again is safe: it replaces its own blocks in `~/.ssh/config` and the
 Codex config (between `# >>> sc-hub >>>` markers), so a mistyped login is fixed
@@ -154,7 +181,9 @@ it does not give a lab is the following, which is what sc-hub adds:
   CellTypist can be checked against the authors' labels (`reference_key`).
 - **Scheduler hygiene.** Dependency chains with `--kill-on-invalid-dep`, no
   duplicate submissions on retry, cached step reuse, a per-user cap on active
-  pipelines, nothing heavy on the login node.
+  pipelines with sc-hub's own queue above it, nothing heavy on the login node.
+- **A key that only opens sc-hub.** The agent's passphrase-less key runs the
+  MCP server and the dashboard mirror, nothing else (`schub-gate`).
 - **One environment and one layout for the lab.** Results from different
   students are comparable because they come from the same brick versions.
 - **Provenance and measurement.** Every run keeps plan, params, versions and
@@ -203,16 +232,19 @@ projects/<project>[/<subproject>]/
 ```
 
 A branch is a pipeline variant. Step outputs live in `cache/steps/<key>`, where
-the key hashes the input, brick code and version, params and environment, so
+the key hashes the input, the brick's code and version, params and the versions
+of the scientific packages (not the sc-hub version), so
 branches share their common prefix: `latent-10` (from `main` with
 `integrate_scvi.n_latent: 10`) reuses main's QC and normalization.
 
 ## Dashboard on a weak laptop
 
 `schub dashboard` (about 3 s on the login node) writes `view/`: one static
-`index.html` plus small images, cell maps and run notebooks. Four tabs:
-projects, pipelines, runs, library (and the cluster overview in the menu). Pick
-a branch to see its graph, click a step to see its params, code, job, resources,
+`index.html` plus small images, cell maps, run notebooks and one file per graph
+(`br/<view>.js`, loaded when the graph is opened, rewritten only when it
+changes), so the page stays small with hundreds of branches. Five tabs:
+projects, experiments, pipelines, runs, library (and the cluster overview in
+the menu). Pick a branch to see its graph, click a step to see its params, code, job, resources,
 timing, log tail, figures and results; open a run for its step timeline, top DE
 genes and its notebook. Plain HTML, CSS and a few KB of vanilla JS:
 no server, no framework, no external requests. `./schub-view` mirrors it every

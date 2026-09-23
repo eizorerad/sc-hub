@@ -5,7 +5,7 @@ is a student's sc-hub workspace. Layout:
 
 | Path | Contents |
 |---|---|
-| `bin/` | `schub` (CLI), `schub-mcp` (MCP server on stdio) |
+| `bin/` | `schub` (CLI), `schub-mcp` (MCP server on stdio), `schub-gate` (what the sc-hub SSH key may run) |
 | `projects/<p>[/<sub>]/` | `project.yaml`, `pipelines/<branch>.yaml`, `ideas/<slug>.md`, `logbook.md`, `runs/` links |
 | `data/<name>/` | The student's own datasets: `data.h5ad` + `dataset.yaml`, FASTQ reads + `fastq.yaml` (`schub register-fastq`), imported Seurat objects, or loose `.h5ad` files |
 | `library-local/` | Datasets and models downloaded because the shared library lacked them or was unreadable |
@@ -15,7 +15,8 @@ is a student's sc-hub workspace. Layout:
 | `view/` | Static dashboard (mirrored to the laptop by `schub-view`) |
 | `sessions/<job>/` | Interactive sessions (JupyterLab, cellxgene); private, holds the session token |
 | `notebooks/` | Run notebooks (`schub notebook <run>`: each step's exact code and parameters); `work/` holds what they re-run |
-| `logs/` | Audit log of tool calls; `fetch/` download job logs |
+| `logs/` | Audit log of tool calls; `gate.log` (commands through the sc-hub key); `fetch/` download job logs |
+| `queue/` | Plans waiting for a free slot (sc-hub submits them when a pipeline ends); `failed/` those that could not be submitted |
 | `trash/` | Move things here instead of deleting |
 
 The shared library (`$SCHUB_LIBRARY`, read-only) provides the environment,

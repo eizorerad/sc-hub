@@ -138,7 +138,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         Path(p).expanduser() for p in env.get("SCHUB_EXTRA_ROOTS", "").split(":") if p
     )
     limits = Limits(
-        max_active_runs=int(_number(env, "SCHUB_MAX_ACTIVE_RUNS", Limits.max_active_runs)),
+        max_active_runs=max(1, int(_number(env, "SCHUB_MAX_ACTIVE_RUNS", Limits.max_active_runs))),
         max_gpu_hours_per_plan=_number(
             env, "SCHUB_MAX_GPU_HOURS", Limits.max_gpu_hours_per_plan
         ),

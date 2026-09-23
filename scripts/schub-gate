@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# The forced command of the sc-hub SSH key (authorized_keys: command="<root>/bin/schub-gate").
+#
+# The key has no passphrase so that assistants can connect on their own; this gate
+# keeps what they can do with it to sc-hub itself: the MCP server, the dashboard
+# mirror (schub-view) and interactive sessions (schub-lab). Anything else, a shell
+# included, is refused; the student's own login (password) is unaffected. Every
+# decision is appended to <root>/logs/gate.log.
+#
+# Arguments never go through eval or a shell: each allowed command is matched word
+# by word and started with exec.
+set -uo pipefail
+unset CDPATH  # sshd runs this through the login shell, whose .bashrc may export CDPATH (cd would print)
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+LOG="$ROOT/logs/gate.log"
+REQUEST="${SSH_ORIGINAL_COMMAND:-}"
+# Read-only rsync options that GNU rsync and openrsync (macOS) send to a sending server.
+# Options that write on the cluster (--log-file, --write-batch, --remove-source-files, ...)
+# or read other files (--files-from, --exclude-from, ...) are not in it.
+RSYNC_LONG=" --server --sender --safe-links --links --dirs --recursive --perms --times --group --owner
+ --devices --specials --numeric-ids --hard-links --executability --omit-dir-times --one-file-system
+ --compress --checksum --ignore-times --size-only --no-implied-dirs
+ --delete --delete-before --delete-during --delete-delay --delete-after --delete-excluded "  # deleting is the laptop's side
+RSYNC_VALUED="^--(exclude|include|compress-level|timeout|max-size|min-size)=[^ ]*$"
+# Short options: only letters that take no value and read nothing else (l o g D t p r v z
+# c x H A X u S O J n i); "e.<letters>" is the protocol's capability string, not -e rsh.
+RSYNC_SHORT="^-[logDtprvzcxHAXuSOJni]*(e\.[A-Za-z]*)?$"
+
+note() {
+  mkdir -p "$ROOT/logs" 2>/dev/null
+  printf '%s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "${REQUEST:0:200}" >>"$LOG" 2>/dev/null || true
+}
+
+refuse() {
+  note refused
+  printf 'sc-hub: this key only opens sc-hub (MCP server, dashboard, sessions): %s\n' "$1" >&2
+  printf 'sc-hub: for anything else use your own login (with your password).\n' >&2
+  exit 126
+}
+
+# A path as the client wrote it (absolute, or relative to the home directory), with
+# symlinks of its folder resolved. Empty if that folder does not exist.
+resolve() {
+  local dir base
+  dir="$(dirname -- "$1")" base="$(basename -- "$1")"
+  (cd "$HOME" 2>/dev/null && cd -- "$dir" 2>/dev/null && printf '%s/%s' "$(pwd -P)" "$base")
+}
+
+rsync_view() {  # rsync --server --sender <options> . <root>/view/  (the cluster only sends)
+  local count=$# last="${!#}" word
+  [ "$count" -ge 5 ] && [ "$2" = "--server" ] && [ "$3" = "--sender" ] || refuse "rsync may only send the dashboard"
+  case "$(resolve "${last%/}")" in
+    "$ROOT/view") ;;
+    *) refuse "rsync may only read the dashboard folder" ;;
+  esac
+  local value_next=0
+  for word in "${@:2:$((count - 2))}"; do
+    if [ "$value_next" = 1 ]; then value_next=0; continue; fi  # the pattern of --exclude PATTERN
+    case "$word" in
+      .) ;;
+      --exclude | --include) value_next=1 ;;
+      --*=*) [[ "$word" =~ $RSYNC_VALUED ]] || refuse "unexpected rsync option ${word%%=*}" ;;
+      --*) [[ "$RSYNC_LONG" == *" $word "* ]] || refuse "unexpected rsync option $word" ;;
+      -*) [[ "$word" =~ $RSYNC_SHORT && "$word" != "-" ]] || refuse "unexpected rsync option $word" ;;
+      *) refuse "unexpected rsync argument" ;;
+    esac
+  done
+  note allowed
+  exec rsync "${@:2}"
+}
+
+read -r -a WORDS <<<"$REQUEST"
+[ "${#WORDS[@]}" -gt 0 ] || refuse "no shell"
+
+case "${WORDS[0]}" in
+  true)
+    [ "${#WORDS[@]}" -eq 1 ] || refuse "unexpected arguments"
+    note allowed
+    exit 0 ;;
+  rsync)
+    rsync_view "${WORDS[@]}" ;;
+esac
+
+PROGRAM="$(resolve "${WORDS[0]}")"
+if [ "$PROGRAM" = "$ROOT/bin/schub-mcp" ] && [ "${#WORDS[@]}" -eq 1 ]; then
+  note allowed
+  exec "$ROOT/bin/schub-mcp"
+fi
+if [ "$PROGRAM" = "$ROOT/bin/schub" ]; then
+  case "${WORDS[*]:1}" in
+    "dashboard" | "dashboard >/dev/null")
+      note allowed
+      exec "$ROOT/bin/schub" dashboard >/dev/null ;;
+    "session-info jupyter" | "session-info cellxgene")
+      note allowed
+      exec "$ROOT/bin/schub" session-info "${WORDS[2]}" ;;
+  esac
+fi
+refuse "'${WORDS[0]}' is not an sc-hub command"

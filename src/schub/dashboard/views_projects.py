@@ -8,6 +8,8 @@ from ..projects import ProjectSummary
 from .collect import BRANCH_LABELS, BranchInfo, RunView, Snapshot
 from .html import esc, pill, table
 from .lineage import view_id
+
+RECENT_BRANCHES = 10  # a project card lists pinned and recent branches; Experiments has them all
 from .notebooks import notebook_button
 
 IDEA_COLUMNS = ("open", "planned", "running", "done", "dropped")
@@ -55,13 +57,28 @@ def _history(info: BranchInfo) -> str:
     return f"<details><summary>{len(info.history)} revisions</summary><ul class='plain history'>{items}</ul></details>"
 
 
-def _branch_rows(project: ProjectSummary, snap: Snapshot, runs: tuple[RunView, ...]) -> list[str]:
+def _shown_branches(project: ProjectSummary, snap: Snapshot, latest: dict[str, RunView]) -> list[str]:
+    """Pinned first, then the most recently saved or run; archived ones only in Experiments."""
+    def info(name: str) -> BranchInfo:
+        return snap.branches.get(f"{project.path}/{name}") or BranchInfo(project=project.path, name=name)
+
+    def recency(name: str) -> str:
+        run = latest.get(name)
+        return max(info(name).saved.replace(" ", "T"), run.created_at if run else "")
+
+    live = sorted(n for n in project.branches if not info(n).label.archived)
+    live.sort(key=recency, reverse=True)  # stable: equal times keep the name order
+    live.sort(key=lambda n: not info(n).label.pinned)
+    return live[:RECENT_BRANCHES]
+
+
+def _branch_rows(project: ProjectSummary, snap: Snapshot, runs: tuple[RunView, ...], views: dict[str, str]) -> list[str]:
     latest: dict[str, RunView] = {}
     for run in runs:
         if run.project == project.path and run.branch and run.branch not in latest:
             latest[run.branch] = run
     rows = []
-    for name in project.branches:
+    for name in _shown_branches(project, snap, latest):
         info = snap.branches.get(f"{project.path}/{name}") or BranchInfo(project=project.path, name=name)
         run = latest.get(name)
         # The branch as it is now: a finished run of an older version is not "done".
@@ -75,7 +92,7 @@ def _branch_rows(project: ProjectSummary, snap: Snapshot, runs: tuple[RunView, .
             f"<div class='muted small'>{esc(info.description)}</div></td>"
             f"<td>{_origin(info)}</td><td>{esc(', '.join(info.datasets))}</td>"
             f"<td>{state} {run_cell}</td><td>{_history(info)}</td>"
-            f'<td class="open"><a href="#pipelines/{esc(view_id(project.path + "/" + name))}">graph</a>'
+            f'<td class="open"><a href="#pipelines/{esc(views.get(project.path + "/" + name, view_id(project.path + "/" + name)))}">graph</a>'
             f"{notebook_button(run, snap.notebooks, 'notebook') if run else ''}</td></tr>"
         )
     return rows
@@ -101,8 +118,18 @@ def _software(project: ProjectSummary, snap: Snapshot) -> str:
             f'<span class="muted small">Jupyter kernel "sc-hub: {esc(project.path)}" · built {esc(env.built)}</span></div>')
 
 
-def _project(project: ProjectSummary, snap: Snapshot, children: list[str]) -> str:
-    rows = _branch_rows(project, snap, snap.runs)
+def _links(project: ProjectSummary, shown: int, project_views: dict[str, str]) -> str:
+    total = len(project.branches)
+    more = f"{shown} of {total} shown (pinned and recent) · " if total > shown else ""
+    graph = (f' · <a href="#pipelines/{esc(project_views[project.path])}">project map</a>'
+             if project.path in project_views else "")
+    return (f'<p class="muted small">{more}<a href="#experiments/project={esc(project.path)}">all {total} in '
+            f"Experiments</a> (filter, sort, compare){graph}</p>")
+
+
+def _project(project: ProjectSummary, snap: Snapshot, children: list[str], views: dict[str, str],
+             project_views: dict[str, str]) -> str:
+    rows = _branch_rows(project, snap, snap.runs, views)
     log = "".join(f"<pre class=entry>{esc(e)}</pre>" for e in reversed(project.logbook_tail)) or '<p class="empty">Empty.</p>'
     problems = "".join(f'<p class="note bad">{esc(p)}</p>' for p in project.problems)
     subs = "".join(f'<button type="button" class="chip" data-project-link="{esc(c)}">{esc(c)}</button>' for c in children)
@@ -113,7 +140,7 @@ def _project(project: ProjectSummary, snap: Snapshot, children: list[str]) -> st
         + _inputs(project, snap)
         + _software(project, snap)
         + (f'<div class="chips"><span class="muted small">Subprojects</span>{subs}</div>' if subs else "")
-        + "<h3>Branches</h3>"
+        + "<h3>Branches</h3>" + _links(project, len(rows), project_views)
         + (table(("Branch", "Based on", "Datasets", "Latest run", "History", "Open"), rows) if rows
            else '<p class="empty">No branches yet.</p>')
         + '<p class="muted small">A fix makes a new revision of the same branch (r2, r3…); '
@@ -123,7 +150,8 @@ def _project(project: ProjectSummary, snap: Snapshot, children: list[str]) -> st
     )
 
 
-def render_projects(snap: Snapshot) -> str:
+def render_projects(snap: Snapshot, views: dict[str, str] | None = None, project_views: dict[str, str] | None = None) -> str:
+    views, project_views = views or {}, project_views or {}
     if not snap.projects:
         return '<p class="empty">No projects yet. Ask your assistant to create one with your research question.</p>'
     paths = [p.path for p in snap.projects]
@@ -135,7 +163,8 @@ def render_projects(snap: Snapshot) -> str:
     )
     search = '<input class="tree-filter" type="search" placeholder="Filter projects" aria-label="Filter projects">' if len(paths) > 8 else ""
     cards = "".join(
-        _project(p, snap, [c for c in paths if c.rpartition("/")[0] == p.path]) for p in snap.projects
+        _project(p, snap, [c for c in paths if c.rpartition("/")[0] == p.path], views, project_views)
+        for p in snap.projects
     )
     return (f'<div class="master"><aside class="pipe-list project-tree">{search}{tree}</aside>'
             f'<div class="detail">{cards}</div></div>')

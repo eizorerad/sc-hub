@@ -23,6 +23,7 @@ from schub.service import Hub
 from schub.slurm import Slurm
 
 from .conftest import library_datasets, make_adata
+from .dashboard_helpers import graph_of, templates_of, variant
 from .test_dashboard import MAIN, finish
 
 DESIGN = {"condition_key": "label", "reference": "ctrl", "treatment": "stim", "replicate_key": "donor"}
@@ -60,12 +61,8 @@ def svg_keys(html: str) -> set[str]:
     return set(re.findall(r'<g class="node[^"]*" data-key="([^"]+)"', html))
 
 
-def variant(page: str, view: str, history: bool) -> str:
-    """The graph of one pipeline view, with or without older versions."""
-    start = page.index(f'data-pipe-view="{view}"')
-    graph = page[start:page.index('data-pipe-view="', start + 10)] if page.count('data-pipe-view="', start + 10) else page[start:]
-    part = graph.split(f'data-history="{int(history)}"', 1)
-    return part[1].split("data-history=", 1)[0] if len(part) == 2 else ""
+def pipelines(snap):
+    return render_pipelines(snap, lambda *_: None)
 
 
 def test_a_finished_branch_is_outdated_after_an_update_not_queued(hub, finished_main, monkeypatch):
@@ -87,30 +84,35 @@ def test_a_fork_that_never_ran_is_not_outdated_by_its_parent(hub, finished_main,
     hub.save_branch("ifn", "twin", MAIN)  # same steps as main, so the same new keys
     snap = collect(hub)
     assert snap.branches["ifn/main"].state == "OUTDATED" and snap.branches["ifn/twin"].state == "PLANNED"
-    page = render_pipelines(snap, lambda *_: None)
-    assert "↻" not in variant(page, "v-ifn-twin", history=False)
-    assert "↻" in variant(page, "v-ifn-main", history=False)
-    assert "Not run in ifn/main as the branch is now" in page  # the shared step says which branch
+    page = pipelines(snap)
+    assert "↻" not in variant(graph_of(page.files, "v-ifn-twin"), history=False)
+    assert "↻" in variant(graph_of(page.files, "v-ifn-main"), history=False)
+    # the shared step says which branch ran it before
+    assert "Not run in ifn/main as the branch is now" in templates_of(page.files, "v-ifn-twin")
 
 
 def test_graphs_hide_older_versions_until_asked(hub, finished_main, monkeypatch):
     sdk_update(monkeypatch)
     snap = collect(hub)
-    page = render_pipelines(snap, lambda *_: None)
+    page = pipelines(snap)
     old = {s.step_key for s in finished_main.steps}
     new = set(snap.branches["ifn/main"].keys)
-    for view in ("v-all", "v-ifn-main"):
-        assert svg_keys(variant(page, view, history=False)) & (old | new) == new
-        assert svg_keys(variant(page, view, history=True)) >= old | new
-    assert "↻ 88 cells kept" in page and "QC · needs re-run; before: 88 cells kept" in page
-    assert "sc-hub or a step before it changed" in page  # why the step has to run again
-    button = re.search(r'<button class="pipe" data-pipe="v-ifn-main".*?</button>', page).group(0)
-    assert 'dot OUTDATED' in button and '<span class="muted small">2</span>' in button
-    assert 'data-select-node="' + finished_main.steps[0].step_key + '"' in page  # panel links the old result
+    for view in ("p-ifn", "v-ifn-main"):
+        graph = graph_of(page.files, view)
+        assert svg_keys(variant(graph, history=False)) & (old | new) == new
+        assert svg_keys(variant(graph, history=True)) >= old | new
+    main = graph_of(page.files, "v-ifn-main")
+    assert "↻ 88 cells kept" in main and "QC · needs re-run; before: 88 cells kept" in main
+    assert 'class="pill OUTDATED">needs re-run' in main  # the branch's state in its graph head
+    panel = templates_of(page.files, "v-ifn-main")
+    assert "sc-hub or a step before it changed" in panel  # why the step has to run again
+    assert 'data-select-node="' + finished_main.steps[0].step_key + '"' in panel  # the panel links the old result
+    button = re.search(r'<button class="pipe" data-pipe="p-ifn".*?</button>', page.shell).group(0)
+    assert "dot OUTDATED" in button
 
 
 def test_the_reason_for_a_re_run_names_defaults_the_student_never_set(hub, finished_main, monkeypatch):
-    from schub.dashboard.views_pipelines import _why
+    from schub.dashboard.step_panel import _why
 
     snap = collect(hub)
     qc = next(n for n in snap.nodes if n.brick == "qc_filter")
@@ -121,14 +123,11 @@ def test_the_reason_for_a_re_run_names_defaults_the_student_never_set(hub, finis
     assert _why(revised, qc, snap) == "its parameters changed"
 
 
-def test_all_pipelines_shows_current_state_without_history(hub, finished_main):
-    snap = collect(hub)
-    page = render_pipelines(snap, lambda *_: None)
-    assert variant(page, "v-all", history=True) == ""  # nothing is older, so no second graph
-    button = re.search(r'<button class="pipe" data-pipe="v-ifn-main".*?</button>', page).group(0)
-    assert "dot COMPLETED" in button
-    everything = re.search(r'<button class="pipe" data-pipe="v-all".*?</button>', page).group(0)
-    assert "dot COMPLETED" in everything  # the state of all branches, not of a mix of steps
+def test_a_project_map_shows_current_state_without_history(hub, finished_main):
+    page = pipelines(collect(hub))
+    assert variant(graph_of(page.files, "p-ifn"), history=True) == ""  # nothing is older, so no second graph
+    button = re.search(r'<button class="pipe" data-pipe="p-ifn".*?</button>', page.shell).group(0)
+    assert "dot COMPLETED" in button  # the state of the project's branches, not of a mix of steps
 
 
 def test_plan_warnings_and_step_warnings_reach_the_step_panel(hub, finished_main):
@@ -138,11 +137,13 @@ def test_plan_warnings_and_step_warnings_reach_the_step_panel(hub, finished_main
     snap = collect(hub)
     de = next(n for n in snap.nodes if n.brick == "pseudobulk_de")
     assert [i.code for i in de.issues] == ["upstream_unused"]
-    page = render_pipelines(snap, lambda *_: None)
-    template = page[page.index(f'<template data-node="{de.key}">'):]
+    page = pipelines(snap)
+    panels = templates_of(page.files, "v-ifn-labels")
+    template = panels[panels.index(f'<template data-node="{de.key}">'):]
     assert "celltypist_majority_voting" in template.split("</template>")[0]
-    assert re.search(rf'class="node [^"]*flagged[^"]*" data-key="{de.key}"', page)
-    qc = page[page.index(f'<template data-node="{finished_main.steps[0].step_key}">'):].split("</template>")[0]
+    assert re.search(rf'class="node [^"]*flagged[^"]*" data-key="{de.key}"', graph_of(page.files, "v-ifn-labels"))
+    main_panels = templates_of(page.files, "v-ifn-main")
+    qc = main_panels[main_panels.index(f'<template data-node="{finished_main.steps[0].step_key}">'):].split("</template>")[0]
     assert "no MT- genes: filter had no effect" in qc
 
 

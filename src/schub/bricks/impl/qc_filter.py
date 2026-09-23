@@ -75,7 +75,8 @@ def run(io: StepIO, p: QcParams) -> dict[str, Any]:
         "genes_final": int(adata.n_vars),
         "mt_genes_found": mt_genes,
         "median_genes_per_cell": float(np.median(adata.obs["n_genes_by_counts"])),
-        "median_pct_mt": float(np.nanmedian(pct)) if pct.notna().any() else None,
+        # Without MT- genes the % is 0 everywhere by construction: report no value, not 0.
+        "median_pct_mt": float(np.nanmedian(pct)) if measurable and pct.notna().any() else None,
         "cells_without_mito_measure": int(unmeasured.sum()),
     }
 

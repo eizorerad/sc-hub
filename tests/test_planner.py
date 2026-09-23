@@ -182,3 +182,57 @@ def test_missing_mito_genes_refuse_a_mito_filter(write_h5ad, ctx):
     assert "no_mito_genes" in codes(build_plan(profile, "fp", [QC], ctx), "warning")
     off = StepRequest(brick="qc_filter", params={"max_pct_mt": 100})
     assert build_plan(profile, "fp", [off], ctx).ok
+
+
+def test_an_sc_hub_release_alone_keeps_step_keys(monkeypatch):
+    import schub
+    from schub import provenance
+
+    provenance.env_id.cache_clear()
+    before = provenance.env_id()
+    monkeypatch.setattr(schub, "__version__", "99.0.0")
+    provenance.env_id.cache_clear()
+    try:
+        assert provenance.env_id() == before  # only brick code and scientific packages count
+    finally:
+        provenance.env_id.cache_clear()
+
+
+def test_a_brick_s_key_follows_every_module_its_job_code_can_reach():
+    from schub.bricks import REGISTRY
+    from schub.provenance import code_modules
+
+    de = code_modules(REGISTRY["pseudobulk_de"])
+    assert {"schub.aggregate", "schub.bricks.impl.common", "schub.execute"} <= set(de)
+    assert "schub.bricks.impl.integrate_scvi" in code_modules(REGISTRY["integrate_scanvi"])  # borrowed guard
+    assert "schub.bricks.impl.pseudobulk_de" in code_modules(REGISTRY["memento_de"])
+    assert "schub.bricks.impl.integrate_scvi" not in de and "schub.config" not in de  # not everything
+
+
+def test_code_ids_follow_a_release_whose_files_all_have_mtime_zero(tmp_path, monkeypatch):
+    """The installer's reproducible archive sets every mtime to 0: a cache keyed on the
+    mtime alone would keep a long-running MCP server on the old code after an update."""
+    import os
+    import shutil
+    import sys
+    from pathlib import Path
+
+    from schub import provenance
+
+    copy = tmp_path / "schub"
+    shutil.copytree(Path(provenance.__file__).parent, copy, ignore=shutil.ignore_patterns("__pycache__"))
+    for path in copy.rglob("*.py"):
+        os.utime(path, ns=(0, 0))
+    monkeypatch.syspath_prepend(str(tmp_path))
+    for name in [m for m in sys.modules if m == "schub" or m.startswith("schub.")]:
+        monkeypatch.delitem(sys.modules, name)
+    from schub.bricks import REGISTRY as fresh
+    from schub.provenance import code_id as fresh_code_id
+
+    before = fresh_code_id(fresh["qc_filter"])
+    common = copy / "bricks" / "impl" / "common.py"
+    moved = common.with_name("common.new")
+    moved.write_text(common.read_text() + "\n# a release changed this file\n")
+    os.utime(moved, ns=(0, 0))
+    moved.replace(common)  # like tar: a new file, same mtime 0
+    assert fresh_code_id(fresh["qc_filter"]) != before

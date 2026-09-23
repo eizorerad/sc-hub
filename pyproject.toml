@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "schub"
-version = "0.4.0"
+version = "0.5.0"
 description = "Single-cell pipeline hub for Slurm clusters, driven by coding agents over MCP"
 requires-python = ">=3.11"
 dependencies = [
@@ -50,4 +50,5 @@ markers = ["cluster: needs the analysis extras (scanpy, scvi-tools, ...)"]
 
 [tool.coverage.run]
 source = ["schub"]
-omit = ["*/schub/bricks/impl/*", "*/schub/fetch.py", "*/schub/cellxgene_session.py"]
+# pytest-of-*: a test imports a copy of the package from a temporary folder
+omit = ["*/schub/bricks/impl/*", "*/schub/fetch.py", "*/schub/cellxgene_session.py", "*/pytest-of-*/*"]

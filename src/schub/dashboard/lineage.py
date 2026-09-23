@@ -45,35 +45,45 @@ KEY_PARAMS = {
 
 class PipelineView(Frozen):
     view_id: str
-    label: str
+    label: str  # the entry: a branch, a run, or a project
     group: str
     keys: tuple[str, ...]
+    kind: str = "branch"  # "branch", "run" (outside any branch) or "project" (every branch of it)
+    full: str = ""  # "<project>/<branch>", the run label, or the project path
 
 
-def view_id(label: str) -> str:
-    return "v-" + re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-")
+STUB = "__stub__"  # a pseudo-step: another branch that shares steps with the one shown
 
 
-def pipeline_views(nodes: tuple[NodeView, ...]) -> list[PipelineView]:
-    views = [PipelineView(view_id="v-all", label="All pipelines", group="All", keys=tuple(n.key for n in nodes))]
-    taken = {"v-all"}
-    for label in sorted({label for n in nodes for label in n.labels}):
+def view_id(label: str, prefix: str = "v") -> str:
+    return f"{prefix}-" + re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-")
+
+
+def _unique(base: str, taken: set[str]) -> str:
+    """Labels differing only in case or punctuation get -2, -3 (stable: callers sort)."""
+    unique, suffix = base, 2
+    while unique in taken:
+        unique, suffix = f"{base}-{suffix}", suffix + 1
+    taken.add(unique)
+    return unique
+
+
+def pipeline_views(nodes: tuple[NodeView, ...], projects: Iterable[str] = ()) -> list[PipelineView]:
+    """A graph per project (all its branches), per branch and per run outside a branch."""
+    taken: set[str] = set()
+    labels = sorted({label for n in nodes for label in n.labels})
+    views = []
+    for project in sorted(set(projects)):
+        keys = tuple(n.key for n in nodes if any(label.rsplit("/", 1)[0] == project for label in n.labels))
+        views.append(PipelineView(view_id=_unique(view_id(project, "p"), taken), label=project, group="Projects",
+                                  keys=keys, kind="project", full=project))
+    for label in labels:
         # The project (or subproject, a/b) is the group; the branch is the entry.
         group = label.rsplit("/", 1)[0] if "/" in label else "Other runs"
-        # Labels differing only in case or punctuation get -2, -3 (stable: labels are sorted).
-        base = unique = view_id(label)
-        suffix = 2
-        while unique in taken:
-            unique, suffix = f"{base}-{suffix}", suffix + 1
-        taken.add(unique)
-        views.append(
-            PipelineView(
-                view_id=unique,
-                label=label.rsplit("/", 1)[1] if "/" in label else label,
-                group=group,
-                keys=tuple(n.key for n in nodes if label in n.labels),
-            )
-        )
+        views.append(PipelineView(
+            view_id=_unique(view_id(label), taken), label=label.rsplit("/", 1)[-1], group=group,
+            keys=tuple(n.key for n in nodes if label in n.labels), kind="branch" if "/" in label else "run", full=label,
+        ))
     return views
 
 
@@ -156,12 +166,14 @@ def _fit(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
-def _box(x: int, y: int, css: str, title: str, subtitle: str, key: str, path: str, flag: str = "") -> str:
+def _box(x: int, y: int, css: str, title: str, subtitle: str, key: str, path: str, flag: str = "",
+         href: str = "") -> str:
     said = f"needs re-run; before: {subtitle[2:]}" if subtitle.startswith("↻ ") else subtitle
     hover = f"{title} · {said}" + (f" · {flag}" if flag else "")
     mark = f'<text class="flag" x="{x + NODE_W - 14}" y="{y + 16}">!</text>' if flag else ""
+    link = f' data-href="{escape(href, quote=True)}"' if href else ""
     return (
-        f'<g class="node {escape(css, quote=True)}" data-key="{escape(key, quote=True)}" '
+        f'<g class="node {escape(css, quote=True)}" data-key="{escape(key, quote=True)}"{link} '
         f'data-path="{escape(path, quote=True)}" tabindex="0" role="button">'
         f"<title>{escape(hover)}</title>"
         f'<rect x="{x}" y="{y}" width="{NODE_W}" height="{NODE_H}" rx="8"/>'
@@ -201,14 +213,17 @@ def _edge(start: tuple[int, int], end: tuple[int, int], vertical: bool, css: str
     return f'<path class="{css}" data-to="{escape(to, quote=True)}" d="M{x1},{y1} {curve} {x2},{y2}"/>'
 
 
-def render_graph(nodes: tuple[NodeView, ...], keys: Iterable[str], vertical: bool = False, label: str | None = None) -> str:
+def render_graph(nodes: tuple[NodeView, ...], keys: Iterable[str], vertical: bool = False, label: str | None = None,
+                 index: dict[str, NodeView] | None = None) -> str:
     """The lineage of `keys`. Vertical suits one branch next to the step panel;
-    horizontal suits the forest of every branch. `label`: the branch this graph shows."""
+    horizontal suits the forest of every branch. `label`: the branch this graph shows.
+    `index` (every node by key) saves rebuilding it for each of many graphs."""
+    everything = index if index is not None else {n.key: n for n in nodes}
+    extra = {n.key: n for n in nodes if n.key not in everything}  # stubs made for this graph
     wanted = set(keys)
-    subset = tuple(n for n in nodes if n.key in wanted)
+    subset = tuple(found for k in dict.fromkeys(keys) if (found := everything.get(k) or extra.get(k)) is not None)
     if not subset:
         return '<p class="muted">Nothing to show yet.</p>'
-    everything = {n.key: n for n in nodes}
     by_key = {n.key: n for n in subset}
     shown = set(by_key)
     positions, children = _layout(subset)
@@ -218,14 +233,18 @@ def render_graph(nodes: tuple[NodeView, ...], keys: Iterable[str], vertical: boo
     edges, boxes = [], []
     for parent, kids in children.items():
         for kid in kids:
-            dashed = " dashed" if by_key[kid].state == "PLANNED" else ""
-            edges.append(_edge(origin[parent], origin[kid], vertical, f"edge{dashed}", kid))
+            kind = " stub" if by_key[kid].brick == STUB else (" dashed" if by_key[kid].state == "PLANNED" else "")
+            edges.append(_edge(origin[parent], origin[kid], vertical, f"edge{kind}", kid))
     for key, (x, y) in origin.items():
         if key.startswith("ds:"):
             boxes.append(_box(x, y, "ds", key[3:], "dataset", key, key))
             continue
         node = by_key[key]
-        siblings = [by_key[k] for k in children.get(_parent_in(node, shown), [])]
+        if node.brick == STUB:  # another branch: a link to its own graph
+            boxes.append(_box(x, y, f"stub st-{node.state}", f"→ {node.params.get('name', '')}", node.headline,
+                              key, _path(key, by_key), href=str(node.params.get("href", ""))))
+            continue
+        siblings = [by_key[k] for k in children.get(_parent_in(node, shown), []) if by_key[k].brick != STUB]
         boxes.append(_box(x, y, _css(node, label), SHORT.get(node.brick, node.brick),
                           _subtitle(node, siblings, everything, label), key, _path(key, by_key), _flag(node)))
     return (

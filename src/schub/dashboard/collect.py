@@ -17,7 +17,9 @@ from ..datasets import DatasetEntry, dataset_label
 from ..h5ad_profile import UnsupportedFile
 from ..headlines import headline
 from ..library import AssetLocation, celltypist_dirs, find_tool, kallisto_ref, library_mode
+from ..labels import BranchLabel
 from ..projects import ProjectError, ProjectSummary
+from ..queue import QueuedSubmission, QueueFailure
 from ..provenance import KEY_PACKAGES, _version, env_id
 from ..runs import RunManifest
 from ..bricks.merge_datasets import label_of
@@ -120,6 +122,14 @@ class BranchInfo(Frozen):
     keys: tuple[str, ...] = ()  # step keys of the branch as it is now
     problem: str = ""
     state: str = "PLANNED"  # of the branch as it is now; see branch_state
+    plan_id: str = ""  # of the branch as it is now (a queued submission has the same id)
+    idea: str | None = None
+    saved: str = ""  # when this revision was saved
+    label: BranchLabel = BranchLabel()
+    sweep: str | None = None
+    sweep_step: int | None = None
+    sweep_param: str | None = None
+    sweep_value: Any = None
 
 
 class Snapshot(Frozen):
@@ -144,6 +154,8 @@ class Snapshot(Frozen):
     nodes: tuple[NodeView, ...]
     steps_by_key: dict[str, StepView] = {}
     notebooks: frozenset[str] = frozenset()  # runs with nb/<run_id>.js (set when the page is built)
+    queue: tuple[QueuedSubmission, ...] = ()  # plans waiting in sc-hub's queue
+    queue_failed: tuple[QueueFailure, ...] = ()
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:
@@ -294,7 +306,7 @@ def _settle(node: NodeView, now: dict[str, set[str]], history: set[str],
 # What a branch's state means to a student (pill and dot colours come from the state).
 BRANCH_LABELS = {
     "COMPLETED": "done", "RUNNING": "running", "PENDING": "queued", "FAILED": "failed",
-    "PLANNED": "not run yet", "OUTDATED": "needs re-run", "BLOCKED": "can't plan",
+    "PLANNED": "not run yet", "OUTDATED": "needs re-run", "BLOCKED": "can't plan", "WAITING": "waiting for a slot",
 }
 
 
@@ -351,9 +363,10 @@ def _references(hub: Any) -> tuple[Reference, ...]:
 
 
 def _branches(hub: Any, projects: list[ProjectSummary], previews: dict[str, Any],
-              nodes: dict[str, NodeView]) -> dict[str, BranchInfo]:
+              nodes: dict[str, NodeView], queued: set[str]) -> dict[str, BranchInfo]:
     found = {}
     for project in projects:
+        labels = _labels(hub, project.path)
         for name in project.branches:
             key = f"{project.path}/{name}"
             try:
@@ -369,11 +382,34 @@ def _branches(hub: Any, projects: list[ProjectSummary], previews: dict[str, Any]
                     history=tuple(history(hub.projects, project.path, name)),
                     keys=_keys(previews.get(key)),
                     problem=str(previews[key])[:200] if isinstance(previews.get(key), Exception) else "",
-                    state=branch_state(previews.get(key), nodes, key),
+                    state=_waiting(branch_state(previews.get(key), nodes, key), previews.get(key), queued),
+                    plan_id=getattr(previews.get(key), "plan_id", ""), idea=spec.idea, saved=spec.saved,
+                    label=labels.get(name, BranchLabel()), sweep=spec.sweep, sweep_step=spec.sweep_step,
+                    sweep_param=spec.sweep_param, sweep_value=spec.sweep_value,
                 )
             except (ProjectError, UnsupportedFile, ValueError, OSError, KeyError) as exc:
                 found[key] = BranchInfo(project=project.path, name=name, problem=str(exc)[:200], state="BLOCKED")
     return found
+
+
+def _labels(hub: Any, project: str) -> dict[str, BranchLabel]:
+    try:
+        return hub.branch_labels(project)
+    except (ProjectError, OSError, ValueError, AttributeError):
+        return {}
+
+
+def _waiting(state: str, plan: Any, queued: set[str]) -> str:
+    """A branch whose plan waits in sc-hub's queue says so, even if a step it shares
+    with another branch is already queued or running in Slurm for that branch."""
+    return "WAITING" if state != "COMPLETED" and getattr(plan, "plan_id", None) in queued else state
+
+
+def _submit_queue(hub: Any) -> tuple[tuple[QueuedSubmission, ...], tuple[QueueFailure, ...]]:
+    try:
+        return tuple(hub.queued()), tuple(hub.queue_failures())
+    except (OSError, ValueError, AttributeError):
+        return (), ()
 
 
 def _keys(plan: Any) -> tuple[str, ...]:
@@ -424,6 +460,7 @@ def collect(hub: Any) -> Snapshot:
     for run in reversed(runs):  # the newest run wins for a shared step
         steps_by_key.update({s.key: s for s in run.steps})
     nodes = _nodes(runs, previews)
+    waiting, waiting_failed = _submit_queue(hub)
     return Snapshot(
         generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         user=os.environ.get("USER", ""),
@@ -439,7 +476,9 @@ def collect(hub: Any) -> Snapshot:
         trained_models=tuple(_trained_models(runs)),
         references=_references(hub),
         sessions=_sessions(hub, queue, not jobs_error),
-        branches=_branches(hub, projects, previews, {n.key: n for n in nodes}),
+        branches=_branches(hub, projects, previews, {n.key: n for n in nodes}, {q.plan_id for q in waiting}),
+        queue=waiting,
+        queue_failed=waiting_failed,
         kernels={p.path: env for p in projects if (env := built(hub.settings, p.path)) is not None},
         env_builds=tuple(p.path for p in projects if f"{hub.settings.job_prefix}-env-{slug(p.path)}" in {j.name for j in jobs}),
         overview=_overview(hub),

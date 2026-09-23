@@ -69,7 +69,19 @@ alternative from here" buttons that copy a request for you).
   `celltypist_majority_voting` to test the computed labels.
 - scANVI: quote `holdout_accuracy` (labels hidden during training), never the
   agreement with training labels.
-- After an sc-hub update, finished branches show "needs re-run" on the
+- Many variants: `sweep_branch(project, branch, step, param, values, sweep,
+  reason)` makes one branch per value (shared steps computed once), then
+  `submit_sweep`. Above the cap of active pipelines `submit_plan` and
+  `submit_sweep` answer `status: "queued"`: sc-hub submits those plans itself
+  when a pipeline ends (a branch goes as it is at that moment, re-planned if sc-hub
+  or the branch changed meanwhile). Do not resubmit them; `queue_status` shows the
+  queue and plans that could not be submitted, with the reason.
+- Bookkeeping without new revisions: `label_branch` (tags, pinned, archived).
+  The dashboard's Experiments tab lists every branch and compares them.
+- The SSH key only opens sc-hub (MCP server, dashboard, sessions). Do not try to
+  ssh in for quotas, jobs or files: use `cluster_overview`, `run_status`,
+  `run_logs`, `inspect_step`. If a request needs more, tell the student.
+- After a change of a brick's code or a scientific package, finished branches show "needs re-run" on the
   dashboard: plan and submit them again. New code gives steps new keys, so most
   steps (GPU ones too) run again; say so before submitting.
 - A subproject (`create_project("parent/child")`) may use another dataset; a

@@ -237,7 +237,7 @@ def _history(snap: Snapshot) -> str:
 
 
 def render_runs(snap: Snapshot, image_url: ImageUrl) -> str:
-    queued = sum(j.name.startswith("schub-") for j in snap.jobs)
+    queued = sum(j.name.startswith("schub-") for j in snap.jobs) + len(snap.queue)
     sections = subtabs("runs", [
         ("history", "History", len(snap.runs), _history(snap)),
         ("queue", "Queue", queued, render_queue(snap)),

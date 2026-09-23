@@ -35,7 +35,8 @@ SCRIPT = r"""
     $$('details.account').forEach(d => { d.open = false; });
     if (name === 'runs' && RUN_SECTIONS.includes(arg)) { pickers.runs?.(arg); showRun(null); }
     else if (name === 'runs') showRun(arg ? decode(arg) : null);
-    if (name === 'pipelines') selectPipe(arg || keep.get('pipe') || 'v-all');
+    if (name === 'pipelines') selectPipe(arg || keep.get('pipe') || $('[data-pipe]')?.dataset.pipe || '');
+    if (name === 'experiments' && window.SCHUB_EXPERIMENTS) window.SCHUB_EXPERIMENTS.route(decode(arg));
     if (name === 'projects') selectProject(arg ? decode(arg) : keep.get('project'));
     if (!restoring) window.scrollTo(0, 0);
   }
@@ -69,6 +70,11 @@ SCRIPT = r"""
       return `In sc-hub, open run ${run} as a notebook: write it with make_notebook("${run}"), start a JupyterLab `
         + `session${gpu} with that notebook as the target, and tell me when I can run ./schub-lab jupyter on my laptop.`;
     }
+    if (kind === 'pin') return `In sc-hub, pin branch ${ref} with label_branch (pinned=true).`;
+    if (kind === 'archive') return `In sc-hub, archive branch ${ref} with label_branch (archived=true): `
+      + 'it stays on disk and in the history, and leaves the Experiments table unless I ask for archived ones.';
+    if (kind === 'sweep') return `In sc-hub, from branch ${ref}, try step <N> with <parameter> = <values> as a sweep: `
+      + 'use sweep_branch with a short name and reason, show me the plans, and submit them with submit_sweep when I confirm.';
     if (kind === 'fix') return `In sc-hub, fix step ${ref} (${brick}): <what is wrong and what it should do>. `
       + `Look at it with inspect_step("${ref}"), then use revise_branch (same branch, new revision) with a short reason, `
       + 'show me the plan, and submit it when I confirm.';
@@ -178,14 +184,26 @@ SCRIPT = r"""
     });
   }
 
+  // One graph at a time: br/<view>.js (a script: file:// pages cannot fetch) registers it.
   function selectPipe(id) {
-    if (!$(sel('data-pipe-view', id))) id = 'v-all';
-    $$('[data-pipe-view]').forEach(v => { v.hidden = v.dataset.pipeView !== id; });
+    const slot = $('#pipe-slot');
+    if (!slot || !/^[a-z0-9-]+$/.test(id)) return;
     $$('[data-pipe]').forEach(b => b.classList.toggle('active', b.dataset.pipe === id));
     keep.set('pipe', id);
-    showHistory(keep.get('history') === '1');
-    const node = keep.get('node');
-    if (node) selectNode(node, false); else clearNode(false);
+    const show = data => {
+      if (keep.get('pipe') !== id) return;  // the student opened another graph meanwhile
+      if (!data) { slot.textContent = 'This graph is not in this copy of the dashboard; it appears after the next refresh.'; clearNode(false); return; }
+      slot.innerHTML = data.graph;  // written by sc-hub itself; every text in it was escaped when it was built
+      const templates = $('#node-templates');
+      if (templates) templates.innerHTML = data.templates;
+      showHistory(keep.get('history') === '1');
+      const node = keep.get('node');
+      if (node) selectNode(node, false); else clearNode(false);
+    };
+    const have = () => window.SCHUB_BR && window.SCHUB_BR[id];
+    if (have()) return show(have());
+    slot.textContent = 'Loading…';
+    loadScript(`br/${id}.js`, have, show);
   }
 
   // Older versions of steps (history) sit in a second graph per view, shown on request.
@@ -326,6 +344,8 @@ SCRIPT = r"""
       if (kept) selectNode(kept, false); else clearNode(false);  // keep the step if the other graph has it
       return;
     }
+    const stub = e.target.closest('.node.stub[data-href]');
+    if (stub) { location.hash = stub.dataset.href.replace(/^#/, ''); return; }
     const older = e.target.closest('[data-select-node]');
     if (older) { showHistory(true); selectNode(older.dataset.selectNode); return; }
     if (e.target.closest('[data-close-node]')) { clearNode(); return; }
@@ -340,7 +360,8 @@ SCRIPT = r"""
   });
   document.addEventListener('keydown', e => {
     const node = e.key === 'Enter' && e.target.closest && e.target.closest('.node[data-key]');
-    if (node && !node.classList.contains('ds')) selectNode(node.dataset.key);
+    if (node && node.dataset.href) location.hash = node.dataset.href.replace(/^#/, '');
+    else if (node && !node.classList.contains('ds')) selectNode(node.dataset.key);
   });
   ['input', 'change'].forEach(t => document.addEventListener(t, e => { if (e.target.closest('#run-filters')) filterRuns(); }));
   const filterTree = input => {

@@ -12,13 +12,18 @@ from .views_activity import status_chip
 from .views_cluster import render_cluster
 from .views_library import render_library
 from .views_projects import render_projects
+from ..state import Frozen
+from .script_experiments import EXPERIMENTS_SCRIPT
+from .views_experiments import render_experiments
 from .views_pipelines import render_pipelines
 from .views_runs import ImageUrl, render_runs
 
-# Projects are the root: a question, its datasets and branches. Pipelines show the
-# branches as graphs, Runs what ran and what runs now, Library what there is to use.
+# Projects are the root: a question, its datasets and branches. Experiments list every
+# branch to filter and compare, Pipelines show one graph at a time, Runs what ran and
+# what runs now, Library what there is to use.
 TABS = (
     ("projects", "Projects"),
+    ("experiments", "Experiments"),
     ("pipelines", "Pipelines"),
     ("runs", "Runs"),
     ("library", "Library"),
@@ -26,7 +31,12 @@ TABS = (
 
 
 def _counts(snap: Snapshot) -> dict[str, int]:
-    return {"projects": len(snap.projects), "runs": len(snap.runs)}
+    return {"projects": len(snap.projects), "experiments": len(snap.branches), "runs": len(snap.runs)}
+
+
+class Site(Frozen):
+    index: str  # index.html
+    files: dict[str, str]  # other text files of the view folder (br/<view>.js), by relative path
 
 
 def _initials(user: str) -> str:
@@ -60,24 +70,31 @@ def _account(snap: Snapshot) -> str:
 
 
 def render_page(snap: Snapshot, image_url: ImageUrl) -> str:
+    return render_site(snap, image_url).index
+
+
+def render_site(snap: Snapshot, image_url: ImageUrl) -> Site:
     counts = _counts(snap)
+    pipelines = render_pipelines(snap, image_url)
     tabs = "".join(
         f'<a href="#{key}" data-tab="{key}">{esc(label)}'
         f'{f"<span class=count>{counts[key]}</span>" if key in counts else ""}</a>'
         for key, label in TABS
     )
     views = {
-        "projects": render_projects(snap),
-        "pipelines": render_pipelines(snap, image_url),
+        "projects": render_projects(snap, pipelines.views, pipelines.project_views),
+        "experiments": render_experiments(snap, pipelines.views, image_url),
+        "pipelines": pipelines.shell,
         "runs": render_runs(snap, image_url),
         "library": render_library(snap),
         "cluster": render_cluster(snap.overview),
     }
     sections = "".join(f'<section class="view" data-view="{key}">{html}</section>' for key, html in views.items())
-    return (
+    index = (
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
         f"<title>sc-hub · {esc(snap.user)}</title><style>{CSS}</style></head><body>"
         f'<header class="top">{_account(snap)}<nav class="tabs">{tabs}</nav>{status_chip(snap)}</header>'
-        f"<main>{sections}</main>{code_templates(snap)}<script>{SCRIPT}</script></body></html>"
+        f"<main>{sections}</main>{code_templates(snap)}<script>{EXPERIMENTS_SCRIPT}</script><script>{SCRIPT}</script></body></html>"
     )
+    return Site(index=index, files=pipelines.files)

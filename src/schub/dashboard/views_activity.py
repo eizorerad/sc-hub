@@ -75,13 +75,31 @@ def status_chip(snap: Snapshot) -> str:
     return f'<a class="status" href="{target}"><span class="dot {state}"></span>{esc(text)}</a>'
 
 
+def _waiting(snap: Snapshot) -> str:
+    """Plans in sc-hub's own queue: above the cap of active pipelines they wait here and
+    are submitted when a pipeline ends (see schub.queue)."""
+    if not snap.queue and not snap.queue_failed:
+        return ""
+    rows = [(f"{q.project or ''} {q.branch or ''} {q.plan_id}",
+             f"<td class=num>{q.position}</td><td>{esc(f'{q.project}/{q.branch}' if q.branch else q.plan_id)}</td>"
+             f"<td><code>{esc(q.plan_id)}</code></td><td class=muted>{esc(q.queued_at)}</td>") for q in snap.queue]
+    html = ("<h3>Waiting in sc-hub</h3><p class=\"muted small\">Above the limit of active pipelines, plans wait here; "
+            "sc-hub submits them in order when a pipeline ends. Nothing to do.</p>"
+            + (listing(("#", "Branch", "Plan", "Since"), rows, "Filter waiting plans", key="waiting") if rows else ""))
+    for failed in snap.queue_failed:
+        where = f"{failed.project}/{failed.branch}" if failed.branch else failed.plan_id
+        html += f'<p class="note bad">Not submitted: {esc(where)} ({esc(failed.failed_at)}): {esc(failed.message)}</p>'
+    return html + "<h3>In Slurm</h3>"
+
+
 def render_queue(snap: Snapshot) -> str:
     if snap.jobs_error:
         return f'<p class="note bad">The queue could not be read: {esc(snap.jobs_error)}</p>'
     ours = _ours(snap)
     others = [j for j in snap.jobs if not j.name.startswith("schub-")]
     headers = ("Job", "Name", "State", "Partition", "Progress or why it waits")
-    html = listing(headers, _job_rows(ours), "Filter jobs", key="jobs-schub") if ours else '<p class="empty">No sc-hub jobs in the queue.</p>'
+    html = _waiting(snap) + (listing(headers, _job_rows(ours), "Filter jobs", key="jobs-schub") if ours
+                             else '<p class="empty">No sc-hub jobs in the queue.</p>')
     if others:
         html += f"<details><summary>{len(others)} other jobs of yours</summary>{listing(headers, _job_rows(others), 'Filter jobs', key='jobs-other')}</details>"
     return html + (

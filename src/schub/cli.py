@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 from .config import load_settings
 from .cli_projects import add_parsers, handlers, read_arg
+from .cli_experiments import add_experiment_parsers, experiment_handlers
 from .cli_tools import add_tool_parsers, tool_handlers
 from .h5ad_profile import UnsupportedFile
 from .library import celltypist_dirs, library_mode
@@ -136,6 +137,7 @@ def _parser() -> argparse.ArgumentParser:
     sub.add_parser("mcp", help="run the MCP server on stdio")
     add_parsers(sub)
     add_tool_parsers(sub)
+    add_experiment_parsers(sub)
     return parser
 
 
@@ -159,6 +161,7 @@ def _dispatch(hub: Hub, args: argparse.Namespace) -> Any:
         "doctor": lambda: _doctor(hub),
         **handlers(hub, args),
         **tool_handlers(hub, args),
+        **experiment_handlers(hub, args),
     }
     return table[args.command]()
 
