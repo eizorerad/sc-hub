@@ -144,9 +144,10 @@ def test_a_project_card_lists_pinned_and_recent_branches_and_links_the_rest(hub)
     hub.label_branch("ifn", "main", pinned=True)
     hub.label_branch("ifn", "v00", archived=True)
     card = render_projects(collect(hub))
-    shown = re.findall(r"<tr><td><code>([^<]+)</code>", card)
+    shown = re.findall(r'<a class="row-name" href="#pipelines/[^"]+">([^<]+)</a>', card)
     assert len(shown) == RECENT_BRANCHES and shown[0] == "main" and "v00" not in shown
-    assert f"all {RECENT_BRANCHES + 3} in Experiments" in card and "#experiments/project=ifn" in card
+    assert f"Compare all {RECENT_BRANCHES + 3}" in card and "#experiments/project=ifn" in card
+    assert f"{RECENT_BRANCHES} of {RECENT_BRANCHES + 3}" in card
 
 
 def test_a_diverged_model_s_nan_does_not_break_the_page(hub, cluster):

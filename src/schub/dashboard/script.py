@@ -32,13 +32,18 @@ SCRIPT = r"""
     const name = $$('.view').some(v => v.dataset.view === view) ? view : 'projects';
     $$('.view').forEach(v => v.classList.toggle('active', v.dataset.view === name));
     $$('[data-tab]').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
-    $$('details.account').forEach(d => { d.open = false; });
+    $$('details.account .brand').forEach(b => b.classList.toggle('here', $$('[data-tab]').every(t => t.dataset.tab !== name)));
+    closeMenus();
     if (name === 'runs' && RUN_SECTIONS.includes(arg)) { pickers.runs?.(arg); showRun(null); }
     else if (name === 'runs') showRun(arg ? decode(arg) : null);
     if (name === 'pipelines') selectPipe(arg || keep.get('pipe') || $('[data-pipe]')?.dataset.pipe || '');
     if (name === 'experiments' && window.SCHUB_EXPERIMENTS) window.SCHUB_EXPERIMENTS.route(decode(arg));
     if (name === 'projects') selectProject(arg ? decode(arg) : keep.get('project'));
     if (!restoring) window.scrollTo(0, 0);
+  }
+
+  function closeMenus(except) {
+    $$('details.account[open], details.menu-pop[open]').forEach(d => { if (d !== except) d.open = false; });
   }
 
   function selectProject(path) {
@@ -63,7 +68,9 @@ SCRIPT = r"""
 
   // The requests the step buttons copy (built here so the page stays small).
   function askText(kind, box) {
-    const ref = box.dataset.ref, brick = box.dataset.brick, branch = box.dataset.branch;
+    const picked = $('select.ask-ref', box)?.value;
+    const ref = picked || box.dataset.ref, brick = box.dataset.brick;
+    const branch = picked ? picked.split('#')[0].split('/').pop() : box.dataset.branch;
     if (kind === 'ref') return ref;
     if (kind === 'jupyter') {
       const run = box.dataset.nbRun, gpu = box.dataset.nbGpu ? ' with a GPU' : '';
@@ -72,7 +79,7 @@ SCRIPT = r"""
     }
     if (kind === 'pin') return `In sc-hub, pin branch ${ref} with label_branch (pinned=true).`;
     if (kind === 'archive') return `In sc-hub, archive branch ${ref} with label_branch (archived=true): `
-      + 'it stays on disk and in the history, and leaves the Experiments table unless I ask for archived ones.';
+      + 'it stays on disk and in the history, and leaves the Compare table unless I ask for archived ones.';
     if (kind === 'sweep') return `In sc-hub, from branch ${ref}, try step <N> with <parameter> = <values> as a sweep: `
       + 'use sweep_branch with a short name and reason, show me the plans, and submit them with submit_sweep when I confirm.';
     if (kind === 'fix') return `In sc-hub, fix step ${ref} (${brick}): <what is wrong and what it should do>. `
@@ -248,6 +255,11 @@ SCRIPT = r"""
     // The panel narrows the graph: bring a clicked step into view once the layout settled
     // (not on restore after an auto-refresh, which keeps the student's scroll position).
     if (remember) requestAnimationFrame(() => hit.scrollIntoView({block: 'nearest', inline: 'center'}));
+    // The request is about the branch the student picked for this step, else the graph's branch.
+    const label = graph.closest('[data-label]')?.dataset.label, pick = $('select.ask-ref', panel);
+    const options = pick ? [...pick.options].map(o => o.value) : [];
+    const chosen = options.find(v => v === keep.get('ask-ref-' + key)) || options.find(v => label && v.startsWith(label + '#'));
+    if (chosen) pick.value = chosen;
     $$('.cellmap:not(.drawn)', panel).forEach(drawMap);
     $$('details.code[open]', panel).forEach(fillCode);
     if (remember) keep.set('node', key);
@@ -314,6 +326,9 @@ SCRIPT = r"""
   }
 
   document.addEventListener('click', e => {
+    // Menus: one open at a time; a click outside, or on one of its links, closes it.
+    const inMenu = e.target.closest('details.account, details.menu-pop');
+    closeMenus(inMenu && !e.target.closest('.menu a, .pop a') ? inMenu : null);
     const nb = e.target.closest('[data-notebook]');
     if (nb) { downloadNotebook(nb); return; }
     const ask = e.target.closest('[data-ask]');
@@ -334,10 +349,6 @@ SCRIPT = r"""
     if (e.target.id === 'runs-more') { runsExpanded = true; keep.set('runs-all', '1'); filterRuns(); return; }
     const project = e.target.closest('[data-project-link]');
     if (project) { location.hash = 'projects/' + project.dataset.projectLink; return; }
-    // Outside the menu, or on one of its links (also when the address does not change): close it.
-    if (!e.target.closest('details.account') || e.target.closest('details.account .menu a')) {
-      $$('details.account').forEach(d => { d.open = false; });
-    }
     if (e.target.closest('[data-history-toggle]')) {
       showHistory(keep.get('history') !== '1');
       const kept = keep.get('node');
@@ -353,17 +364,21 @@ SCRIPT = r"""
     if (node && !node.classList.contains('ds')) return selectNode(node.dataset.key);
     const pipe = e.target.closest('[data-pipe]');
     if (pipe) { location.hash = 'pipelines/' + pipe.dataset.pipe; return; }
-    const metric = e.target.closest('[data-filter-state]');
-    if (metric && $('#run-state')) { $('#run-state').value = metric.dataset.filterState; setTimeout(filterRuns); }
-    const row = e.target.closest('tr[data-href]');
-    if (row && !e.target.closest('a')) location.hash = row.dataset.href;
+    // A whole row opens what it names (not when a link, button or menu inside it was used).
+    const row = e.target.closest('tr[data-href], .row-link[data-href]');
+    if (row && !inMenu && !e.target.closest('a, button, select, input, summary')) location.hash = row.dataset.href;
   });
   document.addEventListener('keydown', e => {
+    const open = e.key === 'Escape' && $('details.account[open], details.menu-pop[open]');
+    if (open) { closeMenus(); $('summary', open)?.focus(); return; }
     const node = e.key === 'Enter' && e.target.closest && e.target.closest('.node[data-key]');
     if (node && node.dataset.href) location.hash = node.dataset.href.replace(/^#/, '');
     else if (node && !node.classList.contains('ds')) selectNode(node.dataset.key);
   });
   ['input', 'change'].forEach(t => document.addEventListener(t, e => { if (e.target.closest('#run-filters')) filterRuns(); }));
+  document.addEventListener('change', e => {
+    if (e.target.matches('#node-panel select.ask-ref')) keep.set('ask-ref-' + keep.get('node'), e.target.value);
+  });
   const filterTree = input => {
     const q = input.value.toLowerCase();
     keep.set('tree-' + (input.closest('[data-tree]')?.dataset.tree || input.placeholder), q);

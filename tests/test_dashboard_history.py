@@ -88,7 +88,7 @@ def test_a_fork_that_never_ran_is_not_outdated_by_its_parent(hub, finished_main,
     assert "↻" not in variant(graph_of(page.files, "v-ifn-twin"), history=False)
     assert "↻" in variant(graph_of(page.files, "v-ifn-main"), history=False)
     # the shared step says which branch ran it before
-    assert "Not run in ifn/main as the branch is now" in templates_of(page.files, "v-ifn-twin")
+    assert "Needs a re-run in ifn/main: " in templates_of(page.files, "v-ifn-twin")
 
 
 def test_graphs_hide_older_versions_until_asked(hub, finished_main, monkeypatch):

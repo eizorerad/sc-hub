@@ -4,7 +4,7 @@ sub-tabs, each a filterable list (100 datasets never push the models out of sigh
 from __future__ import annotations
 
 from .collect import Snapshot
-from .html import esc, listing, pill, subtabs
+from .html import esc, hint, listing, pill, subtabs
 
 
 def render_library(snap: Snapshot) -> str:
@@ -17,7 +17,7 @@ def render_library(snap: Snapshot) -> str:
          f"<td><b>{esc(d.name)}</b>{'<span class=tag>FASTQ</span>' if d.kind == 'fastq' else ''}"
          f"<div class='muted small'>{esc(d.title)}</div></td><td>{esc(d.source)}</td>"
          f"<td class=num>{d.size_mb:g} MB</td><td>{esc(d.organism)}</td><td class=num>{used.get(d.name, 0)}</td>"
-         f"<td class='muted small'>{esc(d.license)}</td>")
+         f"<td>{hint('License: ' + d.license, end=True) if d.license else ''}</td>")
         for d in snap.datasets
     ]
     models = [
@@ -40,7 +40,7 @@ def render_library(snap: Snapshot) -> str:
                    f'<p class="small">Environment <code>{esc(snap.env_id)}</code>: {esc(versions)}</p>')
     return subtabs("library", [
         ("datasets", "Datasets", len(datasets),
-         listing(("Dataset", "Where", "Size", "Organism", "Runs", "License"), datasets, "Filter datasets", key="library-datasets")
+         listing(("Dataset", "Where", "Size", "Organism", "Runs", ""), datasets, "Filter datasets", key="library-datasets")
          if datasets else '<p class="empty">No datasets yet.</p>'),
         ("models", "Models", len(models),
          listing(("Model", "Kind", "From", "Size"), models, "Filter models", key="library-models") if models else '<p class="empty">None yet.</p>'),

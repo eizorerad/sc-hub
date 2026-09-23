@@ -1,5 +1,7 @@
-"""The step panel of a pipeline graph: what a step is, did and must do, one
-<template> per step (rendered once per build, shared by every graph showing it)."""
+"""The step panel of a pipeline graph, one <template> per step (rendered once per
+build, shared by every graph showing it). In reading order: what the step gave (its
+headline, problems, figures, cells, numbers), then asking the assistant to fix it or
+try an alternative; parameters, code, log and the technical details are folded."""
 
 from __future__ import annotations
 
@@ -37,57 +39,79 @@ def _why(node: NodeView, earlier: NodeView, snap: Snapshot) -> str:
     return "sc-hub or a step before it changed"
 
 
+def _labels(labels: list[str]) -> str:
+    return esc(", ".join(labels)) if len(labels) <= 3 else f"{len(labels)} branches (see Details)"
+
+
 def _notes(node: NodeView, snap: Snapshot, nodes: dict[str, NodeView]) -> str:
-    """What the planner says, and how this step relates to each branch as it is now."""
+    """What the planner says, and whether the step must run again (one line per reason,
+    however many branches share it)."""
     notes = [f'<p class="note {"bad" if i.level == "error" else "warn"}">{esc(i.message)}</p>'
              for i in sorted(node.issues, key=lambda i: i.level != "error")]
+    reruns: dict[tuple[str, str], tuple[str, list[str]]] = {}  # (why, earlier key) -> (what it gave, branches)
     for label, key in sorted(node.earlier.items()):
         earlier = nodes.get(key)
-        if earlier is None:
-            continue
-        where = f"in {label} " if len(node.labels) > 1 else ""
+        if earlier is not None:
+            found = reruns.setdefault((_why(node, earlier, snap), key), (earlier.headline or earlier.state.lower(), []))
+            found[1].append(label)
+    for (why, key), (before, labels) in reruns.items():
+        where = f" in {_labels(labels)}" if len(node.labels) > 1 else ""
         notes.append(
-            f"<p class=\"note\">Not run {esc(where)}as the branch is now: {esc(_why(node, earlier, snap))}. "
-            f"Before, it gave <b>{esc(earlier.headline or earlier.state.lower())}</b>. "
-            f'<button type="button" class="quiet" data-select-node="{esc(earlier.key)}">Show that result</button></p>')
+            f"<p class=\"note\">Needs a re-run{where}: {esc(why)}. Before, it gave <b>{esc(before)}</b>. "
+            f'<button type="button" class="link" data-select-node="{esc(key)}">Show that result</button></p>')
     if not node.current:
-        notes.append('<p class="note">An older version: no branch uses this result as it is now '
+        notes.append('<p class="note">An older version: no branch uses this result now '
                      "(the branch was revised, or sc-hub was updated since).</p>")
     return "".join(notes)
+
+
+def _ask(node: NodeView, snap: Snapshot) -> str:
+    """One 'ask your assistant' box; with several branches using the step, a picker."""
+    if not node.refs:
+        return ""
+    label = node.refs[0].rpartition("#")[0]
+    stale = any((info := snap.branches.get(r.rpartition("#")[0])) and info.keys and node.key not in info.keys
+                for r in node.refs)
+    note = ("This result comes from an earlier version of the branch; the request refers to the "
+            "branch as it is now.") if stale else ""
+    return ask_block(node.refs[0], node.brick, label.rsplit("/", 1)[-1], note, refs=node.refs)
+
+
+def _folded(title: str, body: str) -> str:
+    return f'<details class="fold"><summary>{esc(title)}</summary>{body}</details>' if body else ""
+
+
+def _details(node: NodeView, step, run_of: dict[str, str]) -> str:
+    """Where and how it ran: job, resources, timing, which branches use it, the step key."""
+    facts = step_facts(step) if step is not None else ""
+    used = "".join(f"<li>{esc(label)}</li>" for label in node.labels)
+    run = (f'<a href="#runs/{esc(run_of[node.key])}">Open the run →</a>' if node.key in run_of else "")
+    return (f"{facts}<h4>Used by</h4><ul class=plain>{used or '<li class=muted>no branch</li>'}</ul>"
+            f'<p class="small">{run}</p><p class="muted small">Step key {esc(node.key)}</p>')
 
 
 def node_template(node: NodeView, snap: Snapshot, run_of: dict[str, str], image_url: ImageUrl,
                    nodes: dict[str, NodeView]) -> str:
     step = snap.steps_by_key.get(node.key)
     summary = (step.summary if step is not None else None) or {}
-    branches = "".join(f"<li>{esc(label)}</li>" for label in node.labels)
     state = pill("OUTDATED", "needs re-run") if node.earlier else pill(node.state)
     body = [f'<div class="panel-head"><h3>{esc(SHORT.get(node.brick, node.brick))}</h3>{state}</div>']
     if node.headline:
         body.append(f'<p class="headline">{esc(node.headline)}</p>')
     body.append(_notes(node, snap, nodes) + warnings(summary))
-    if step is not None:
-        body.append(step_facts(step))
-    body.append(f"<h4>Used by</h4><ul class=plain>{branches}</ul>")
-    body.append("<h4>Parameters</h4>" + (kv(node.params) or '<p class="muted">defaults</p>'))
-    body.append(code_section(node.brick, step.code_id if step is not None else ""))
+    if step is not None and step.message:
+        body.append(f'<p class="note bad">{esc(step.message)}</p>')
+    if node.state == "PLANNED":
+        body.append('<p class="muted">Not run yet. Ask your assistant to submit the branch.</p>')
     if step is not None:
         body.append(figures(step, image_url))
         body.append(cell_map(step, image_url, folded=False))
         if summary:
-            body.append("<h4>Result</h4>" + kv(summary) + result_tables(step, summary))
-        body.append(log_block(step))
-        if step.message:
-            body.append(f'<p class="note bad">{esc(step.message)}</p>')
-    for ref in node.refs[:4]:  # one per branch that uses this step
-        label, _, index = ref.rpartition("#")
-        info = snap.branches.get(label)
-        note = ("This result comes from an earlier version of the branch; the request refers to the "
-                "branch as it is now.") if info and info.keys and node.key not in info.keys else ""
-        body.append(ask_block(ref, node.brick, label.rsplit("/", 1)[-1], note))
-    if node.key in run_of:
-        body.append(f'<a class="button" href="#runs/{esc(run_of[node.key])}">Open the run →</a>')
-    if node.state == "PLANNED":
-        body.append('<p class="muted">Saved in a branch, not run yet. Ask your assistant to submit it.</p>')
-    body.append(f'<p class="muted small">Step key {esc(node.key)}</p>')
+            body.append('<div class="result">' + kv(summary) + result_tables(step, summary) + "</div>")
+    body.append(_ask(node, snap))
+    body.append('<div class="folds">'
+                + _folded("Parameters", kv(node.params) or '<p class="muted small">defaults</p>')
+                + code_section(node.brick, step.code_id if step is not None else "")
+                + (log_block(step) if step is not None else "")
+                + _folded("Details", _details(node, step, run_of)) + "</div>")
     return f'<template data-node="{esc(node.key)}">{"".join(body)}</template>'

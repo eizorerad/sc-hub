@@ -14,7 +14,7 @@ import json
 
 from ..state import Frozen
 from .collect import BRANCH_LABELS, BranchInfo, NodeView, RunView, Snapshot, run_label
-from .html import esc, pill
+from .html import esc, hint_html, menu, pill
 from .lineage import PipelineView, pipeline_views, render_graph
 from .notebooks import notebook_button
 from .relatives import relative_stubs
@@ -82,21 +82,28 @@ def _selector(snap: Snapshot, views: list[PipelineView], nodes: dict[str, NodeVi
             for v in members for s in (_state(snap, v, nodes),)
         )
         parts.append(f'<div class="pipe-group"><h4>{esc(title)}</h4>{buttons}</div>')
-    hint = '<p class="muted small pipe-hint">Open a branch from <a href="#experiments">Experiments</a> or a project map.</p>'
     search = ('<input class="tree-filter" type="search" placeholder="Filter" aria-label="Filter graphs">'
               if len(views) > 12 else "")
-    return search + "".join(parts) + hint
+    return search + "".join(parts)
 
 
 def _requests(label: str) -> str:
     """Bookkeeping the page cannot do itself (it is read-only): copy a request for the assistant."""
     branch = label.rsplit("/", 1)[-1]
-    return (f'<div class="ask inline" data-ref="{esc(label)}" data-brick="" data-branch="{esc(branch)}">'
-            '<div class="ask-buttons"><button type="button" data-ask="sweep">Sweep a parameter</button>'
-            '<button type="button" data-ask="pin" class="quiet">Pin</button>'
-            '<button type="button" data-ask="archive" class="quiet">Archive</button></div>'
+    return (f'<div class="pop-section ask" data-ref="{esc(label)}" data-brick="" data-branch="{esc(branch)}">'
+            '<div class="pop-label">Ask your assistant to</div>'
+            '<button type="button" data-ask="sweep">Sweep a parameter</button>'
+            '<button type="button" data-ask="pin">Pin this branch</button>'
+            '<button type="button" data-ask="archive">Archive this branch</button>'
             '<p class="muted small copied" hidden>Copied: paste it into Codex or Claude.</p>'
             '<textarea class="manual" readonly hidden rows="3" aria-label="Request to copy"></textarea></div>')
+
+
+def _legend() -> str:
+    pills = "".join(pill(s, label) for s, label in LEGEND)
+    return hint_html(f'<span class="legend">{pills}</span><br>Click a step for its result, parameters, code and log. ↻ means the step must run again '
+                     "(it shows what it gave before); a → box opens the branch that parts there.",
+                     "What the colours mean", end=True)
 
 
 def _head(view: PipelineView, snap: Snapshot, nodes: dict[str, NodeView], latest: dict[str, RunView],
@@ -105,17 +112,22 @@ def _head(view: PipelineView, snap: Snapshot, nodes: dict[str, NodeView], latest
     title = f"{view.group} · {view.label}" if view.kind == "branch" else view.label
     parts = [f"<h3>{esc(title)}</h3>", pill(state, BRANCH_LABELS.get(state))]
     info = snap.branches.get(view.full)
-    if info is not None:
+    if info is not None and info.revision > 1:
         parts.append(f'<span class="tag">r{info.revision}</span>')
+    items, actions = [], []
     if (run := latest.get(view.full)) is not None:
-        parts.append(f'<a href="#runs/{esc(run.run_id)}">latest run</a>{notebook_button(run, snap.notebooks, "Notebook")}')
+        actions.append(notebook_button(run, snap.notebooks, "Notebook"))
+        items.append(f'<a href="#runs/{esc(run.run_id)}">Latest run</a>')
     project = view.full if view.kind == "project" else view.group
     if view.kind != "run":
-        parts.append(f'<a href="#experiments/project={esc(project)}">in Experiments</a>')
+        items.append(f'<a href="#experiments/project={esc(project)}">Compare in a table</a>')
     if view.kind == "branch" and project in project_views:
-        parts.append(f'<a href="#pipelines/{esc(project_views[project])}">project map</a>')
-    head = f'<div class="graph-head">{"".join(parts)}{toggle}</div>'
-    return head + (_requests(view.full) if view.kind == "branch" else "")
+        items.append(f'<a href="#pipelines/{esc(project_views[project])}">Open the project map</a>')
+    items.append(toggle)
+    if view.kind == "branch":
+        items.append(_requests(view.full))
+    side = f'<span class="graph-actions">{"".join(actions)}{_legend()}{menu("".join(items), "More about this pipeline")}</span>'
+    return f'<div class="graph-head">{"".join(parts)}{side}</div>'
 
 
 def _graph(view: PipelineView, snap: Snapshot, nodes: dict[str, NodeView], all_views: dict[str, str],
@@ -126,11 +138,11 @@ def _graph(view: PipelineView, snap: Snapshot, nodes: dict[str, NodeView], all_v
     info = snap.branches.get(view.full) if view.kind == "branch" else None
     stubs = relative_stubs(info, peers.get(info.project, []), nodes, all_views) if info is not None else []
     older = len(view.keys) - len(now)
-    toggle = (f'<button type="button" class="quiet history-toggle" data-history-toggle '
+    toggle = (f'<button type="button" class="history-toggle" data-history-toggle '
               f'data-count="{older}">Show {older} older step{"s" if older != 1 else ""}</button>') if older else ""
     history = (f'<div data-history="1" hidden>{render_graph((), view.keys, vertical, label, nodes)}</div>'
                if older else "")
-    return (f'<div class="graph" data-pipe-view="{esc(view.view_id)}">'
+    return (f'<div class="graph" data-pipe-view="{esc(view.view_id)}" data-label="{esc(label or "")}">'
             + _head(view, snap, nodes, latest, project_views, toggle)
             + f'<div data-history="0">{render_graph(tuple(stubs), (*now, *(s.key for s in stubs)), vertical, label, nodes)}</div>'
             + f"{history}</div>")
@@ -169,12 +181,10 @@ def render_pipelines(snap: Snapshot, image_url: ImageUrl) -> PipelinePage:
                                         "".join(template(k) for k in v.keys if k in nodes))
         for v in views
     }
-    legend = "".join(pill(s, label) for s, label in LEGEND)
     empty = '<p class="empty">No pipelines yet. Ask your assistant to save a branch in a project.</p>'
     shell = (
         f'<div class="pipes no-node"><aside class="pipe-list">{_selector(snap, views, nodes)}</aside>'
-        f'<div class="pipe-main"><div class="legend">{legend}<span class="muted small">Click a step for params, job, '
-        f'log and outputs; a → box opens that branch</span></div><div id="pipe-slot">{"" if views else empty}</div></div>'
+        f'<div class="pipe-main"><div id="pipe-slot">{"" if views else empty}</div></div>'
         '<aside class="panel" id="node-panel"><p class="muted">Select a step in the graph.</p></aside></div>'
         '<div id="node-templates" hidden></div>'
     )

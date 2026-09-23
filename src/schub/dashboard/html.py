@@ -61,6 +61,23 @@ def listing(headers: Iterable[str], rows: list[tuple[str, str]], placeholder: st
             f'<table class="{esc(css)}"><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>{more}</div>')
 
 
+def hint(text: str, end: bool = False) -> str:
+    """A small '?' that explains on hover or focus, in place of a paragraph on the page."""
+    return hint_html(esc(text), text, end)
+
+
+def hint_html(body: str, label: str, end: bool = False) -> str:
+    """hint() with markup inside (e.g. the colour legend); body must be escaped already."""
+    return (f'<span class="hint{" end" if end else ""}" tabindex="0" role="button" aria-label="{esc(label)}">'
+            f'<span class="hint-mark" aria-hidden="true">?</span><span class="tip" role="tooltip">{body}</span></span>')
+
+
+def menu(items: str, label: str = "More", end: bool = True) -> str:
+    """A '⋯' button that opens secondary actions and details (closes on an outside click)."""
+    return (f'<details class="menu-pop{" end" if end else ""}"><summary class="dots" title="{esc(label)}" '
+            f'aria-label="{esc(label)}"><span aria-hidden="true">⋯</span></summary><div class="pop">{items}</div></details>')
+
+
 def subtabs(group: str, sections: list[tuple[str, str, int | None, str]]) -> str:
     """Sections of one view behind pills, so a long first section never buries the
     others. sections: (id, label, count or None, html)."""
@@ -74,17 +91,27 @@ def subtabs(group: str, sections: list[tuple[str, str, int | None, str]]) -> str
     return f'<div class="subtabs" data-subtabs="{esc(group)}">{buttons}</div>{views}'
 
 
-def ask_block(ref: str, brick: str, branch: str, note: str = "") -> str:
+ASK_HINT = ("The button copies a ready request: paste it into Codex or Claude and replace the part in <…>. "
+            "A fix makes a new revision of the same branch (r2, r3…); an alternative from this step on is a "
+            "new branch, the old one stays as it is.")
+
+
+def ask_block(ref: str, brick: str, branch: str, note: str = "", refs: tuple[str, ...] = ()) -> str:
     """Buttons that copy a ready request for Codex / Claude about one step: fix it in
     place (a new revision of the branch) or try an alternative from here (a new
-    branch). The page script writes the text from these attributes on click."""
+    branch). The page script writes the text from these attributes on click. With
+    several branches using the step, a picker chooses which one the request is about."""
+    choices = refs if len(refs) > 1 else ()
+    picker = ("".join(f'<option value="{esc(r)}">{esc(r.rpartition("#")[0])}</option>' for r in choices))
+    target = (f'<select class="ask-ref" aria-label="Which branch">{picker}</select>' if choices
+              else f'<code class="ref">{esc(ref)}</code>')
+    warning = f'<p class="note warn small">{esc(note)}</p>' if note else ""  # stays visible: it changes the request
     return (
         f'<div class="ask" data-ref="{esc(ref)}" data-brick="{esc(brick)}" data-branch="{esc(branch)}">'
-        f'<div class="ask-head"><span class="muted small">Ask your assistant about</span> <code class="ref">{esc(ref)}</code></div>'
-        '<div class="ask-buttons"><button type="button" data-ask="fix">Fix this step</button>'
-        '<button type="button" data-ask="fork">Try an alternative from here</button>'
-        '<button type="button" data-ask="ref" class="quiet">Copy reference</button></div>'
-        + (f'<p class="muted small">{esc(note)}</p>' if note else "")
-        + '<p class="muted small copied" hidden>Copied: paste it into Codex or Claude and replace the part in &lt;…&gt;.</p>'
+        f'<div class="ask-head"><b>Ask your assistant</b>{hint(ASK_HINT, end=True)}</div>{warning}'
+        '<div class="ask-buttons"><button type="button" class="primary" data-ask="fix">Fix this step</button>'
+        '<button type="button" data-ask="fork">Try an alternative</button></div>'
+        f'<div class="ask-foot">{target}<button type="button" data-ask="ref" class="link">copy reference</button></div>'
+        '<p class="muted small copied" hidden>Copied: paste it into Codex or Claude.</p>'
         '<textarea class="manual" readonly hidden rows="4" aria-label="Request to copy"></textarea></div>'
     )

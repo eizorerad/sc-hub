@@ -1,4 +1,4 @@
-"""Experiments: every branch as one row, to filter, sort, group and compare.
+"""Compare (#experiments): every branch as one row, to filter, sort, group and compare.
 
 The rows travel as JSON inside the page (no request needed on file:// pages); the
 page script (script_experiments.py) builds the table with text nodes only.
@@ -12,6 +12,7 @@ from typing import Any
 
 from .collect import Snapshot
 from .experiments import experiments_payload
+from .html import hint
 from .views_runs import ImageUrl
 
 
@@ -37,13 +38,13 @@ def render_experiments(snap: Snapshot, views: dict[str, str], image_url: ImageUr
     if not payload["rows"]:
         return ('<p class="empty">No experiments yet. Ask your assistant to create a project and save a branch; '
                 "every branch becomes a row here.</p>")
+    help_text = ("A row is a branch as it is now. Tick 2-5 rows to compare them side by side; click a name for "
+                 "its pipeline. Grey numbers come from an older version (it needs a re-run). Pin, archive, tag "
+                 "and sweeps: ask your assistant (the ⋯ menu on a branch's pipeline copies the request).")
     return (
         '<div class="exp">'
-        '<div class="exp-bar" id="exp-bar"></div>'
+        f'<div class="exp-top"><div class="exp-bar" id="exp-bar"></div>{hint(help_text, end=True)}</div>'
         '<div class="exp-compare" id="exp-compare" hidden></div>'
         '<div class="exp-table" id="exp-table"></div>'
-        '<p class="muted small">A row is a branch as it is now. Grey numbers come from an older version '
-        "(it needs a re-run). Tick 2-5 rows to compare them; click a name for its graph. Pin, archive, tag "
-        "and sweeps: ask your assistant (the buttons on a branch's graph copy the request).</p>"
         f'<script type="application/json" id="exp-data">{embedded_json(payload)}</script></div>'
     )

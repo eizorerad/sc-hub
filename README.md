@@ -62,16 +62,21 @@ or the branch changed while it waited. Slurm or Lustre hiccups are retried; a
 plan that can no longer run is set aside with the reason (`queue_status`).
 `label_branch` tags, pins and archives branches without new revisions.
 
-The dashboard starts at Projects (the root: question, datasets, branches),
-then Experiments (every branch as one row: filter by project, data, step,
-state, tag or day; only the parameters that differ become columns; sweeps fold
-into one row; tick 2-5 rows to compare steps, numbers and figures side by
-side), Pipelines (one graph at a time: a branch with the branches around it as
-links, or a project map), Runs (history, queue, interactive sessions) and Library. The
-sc-hub square at the top left is the account menu: the cluster overview (Lustre
-quota, home usage, per-user job limits and what is in use, your jobs with
-CPU/RAM/GPU, partition load, logins), sessions, the last update and auto-refresh. Seurat `.rds` objects are
-converted with `import_seurat`; Seurat is for compatibility, not the default.
+The dashboard shows only what research needs, in three tabs: Projects (the
+root: the question and its branches; click a branch for its pipeline),
+Pipelines (one graph at a time: a branch with the branches around it as links,
+or a project map; a step's panel leads with its result, then "ask your
+assistant", with parameters, code, log and job details folded) and Compare
+(every branch as one row with its numbers; filters, steps and the parameters
+that differ appear on request; sweeps fold into one row; tick 2-5 rows to
+compare steps, numbers and figures side by side). Explanations sit behind a
+'?' and secondary actions (latest run, notebook, revisions, sweep, pin,
+archive) behind a '⋯'. The sc-hub square at the top left is the menu for the
+rest: Runs (history, queue, interactive sessions), Library, the cluster
+overview (Lustre quota, home usage, per-user job limits and what is in use,
+your jobs with CPU/RAM/GPU, partition load, logins), the last update and
+auto-refresh. Seurat `.rds` objects are converted with `import_seurat`;
+Seurat is for compatibility, not the default.
 
 Starter assets fetched by bootstrap: 10x PBMC 3k, Kang 2018 (IFN-beta
 stimulated PBMCs, 8 donors), CellTypist immune models. The library also holds
@@ -242,9 +247,9 @@ branches share their common prefix: `latent-10` (from `main` with
 `schub dashboard` (about 3 s on the login node) writes `view/`: one static
 `index.html` plus small images, cell maps, run notebooks and one file per graph
 (`br/<view>.js`, loaded when the graph is opened, rewritten only when it
-changes), so the page stays small with hundreds of branches. Five tabs:
-projects, experiments, pipelines, runs, library (and the cluster overview in
-the menu). Pick a branch to see its graph, click a step to see its params, code, job, resources,
+changes), so the page stays small with hundreds of branches. Three tabs:
+projects, pipelines, compare (runs, library and the cluster overview in the
+menu). Pick a branch to see its graph, click a step to see its params, code, job, resources,
 timing, log tail, figures and results; open a run for its step timeline, top DE
 genes and its notebook. Plain HTML, CSS and a few KB of vanilla JS:
 no server, no framework, no external requests. `./schub-view` mirrors it every

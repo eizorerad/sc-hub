@@ -1,39 +1,44 @@
 """Projects: a tree of projects and subprojects on the left, one project at a time on
-the right (question, input datasets, branches with revisions and forks, ideas,
-logbook). Scales to many projects without burying anything below a long list."""
+the right: the question, then its branches as a calm list (click one for its graph).
+The rest waits behind a '⋯' or a '?': a branch's latest run, notebook and revisions;
+the project's software and logbook; what a fix or a fork means. Scales to many
+projects without burying anything below a long list."""
 
 from __future__ import annotations
 
 from ..projects import ProjectSummary
 from .collect import BRANCH_LABELS, BranchInfo, RunView, Snapshot
-from .html import esc, pill, table
+from .html import esc, hint, menu, pill
 from .lineage import view_id
-
-RECENT_BRANCHES = 10  # a project card lists pinned and recent branches; Experiments has them all
 from .notebooks import notebook_button
 
-IDEA_COLUMNS = ("open", "planned", "running", "done", "dropped")
+RECENT_BRANCHES = 10  # a project lists pinned and recent branches; Compare has them all
+
 IDEA_STATE = {"open": "PENDING", "planned": "PLANNED", "running": "RUNNING", "done": "COMPLETED", "dropped": "FAILED"}
+LIVE_IDEAS = ("running", "planned", "open")  # on the page; done and dropped fold away
 PROJECT_STATE = {"active": "ACTIVE", "paused": "PENDING", "done": "COMPLETED"}  # active is not a running job
+BRANCHES_HINT = ("A branch is one way to analyse the data. Click it for its pipeline and each step's result. "
+                 "A fix makes a new revision of the same branch (r2, r3…); an alternative from some step on "
+                 "is a new branch. Ask your assistant from any step.")
+IDEAS_HINT = "Questions to try, noted by your assistant. Ask it to note one when a question comes up."
 
 
-def _idea_card(idea) -> str:
+def _idea(idea) -> str:
     hypothesis = f'<div class="muted small">{esc(idea.hypothesis)}</div>' if idea.hypothesis else ""
-    branches = f'<div class="small">branches: {esc(", ".join(idea.branches))}</div>' if idea.branches else ""
-    return f'<div class="idea" title="{esc(idea.hypothesis)}"><b>{esc(idea.title)}</b>{hypothesis}{branches}</div>'
+    branches = f'<div class="muted small">branches: {esc(", ".join(idea.branches))}</div>' if idea.branches else ""
+    return (f'<li class="idea"><div><b>{esc(idea.title)}</b>{hypothesis}{branches}</div>'
+            f"{pill(IDEA_STATE[idea.status], idea.status)}</li>")
 
 
 def _ideas(project: ProjectSummary) -> str:
     if not project.ideas:
-        return '<p class="muted small">No ideas yet. Ask your assistant to note one when a question comes up.</p>'
-    columns = []
-    for status in IDEA_COLUMNS:
-        items = [i for i in project.ideas if i.status == status]
-        if not items and status == "dropped":
-            continue
-        cards = "".join(_idea_card(i) for i in items)
-        columns.append(f"<div class=column>{pill(IDEA_STATE[status], status)}{cards or '<p class=empty>none</p>'}</div>")
-    return f'<div class="board">{"".join(columns)}</div>'
+        return ""
+    live = [i for status in LIVE_IDEAS for i in project.ideas if i.status == status]
+    closed = [i for i in project.ideas if i.status not in LIVE_IDEAS]
+    folded = (f'<details class="quiet-details"><summary>{len(closed)} done or dropped</summary>'
+              f'<ul class="ideas">{"".join(_idea(i) for i in closed)}</ul></details>') if closed else ""
+    return (f'<div class="section-head"><h3>Ideas</h3>{hint(IDEAS_HINT)}</div>'
+            + (f'<ul class="ideas">{"".join(_idea(i) for i in live)}</ul>' if live else "") + folded)
 
 
 def _origin(info: BranchInfo) -> str:
@@ -42,23 +47,23 @@ def _origin(info: BranchInfo) -> str:
         return f'<span class="tag">fork</span> of <code>{esc(parent)}</code> at step {esc(step)}'
     if info.from_branch:
         return f'variant of <code>{esc(info.from_branch)}</code>'
-    return '<span class="muted">own steps</span>'
+    return ""
 
 
-def _history(info: BranchInfo) -> str:
+def _revisions(info: BranchInfo) -> str:
     if len(info.history) <= 1:
-        return '<span class="muted small">r1 only</span>'
+        return ""
     items = "".join(
         f"<li><b>r{r.revision}</b> <span class='muted small'>{esc(r.saved)}</span>"
         f"{' · ' + esc(r.reason) if r.reason else ''}<ul class=plain>"
         + "".join(f"<li class='small'>{esc(c)}</li>" for c in r.changes) + "</ul></li>"
         for r in reversed(info.history)
     )
-    return f"<details><summary>{len(info.history)} revisions</summary><ul class='plain history'>{items}</ul></details>"
+    return f'<div class="pop-section"><div class="pop-label">{len(info.history)} revisions</div><ul class="plain history">{items}</ul></div>'
 
 
 def _shown_branches(project: ProjectSummary, snap: Snapshot, latest: dict[str, RunView]) -> list[str]:
-    """Pinned first, then the most recently saved or run; archived ones only in Experiments."""
+    """Pinned first, then the most recently saved or run; archived ones only in Compare."""
     def info(name: str) -> BranchInfo:
         return snap.branches.get(f"{project.path}/{name}") or BranchInfo(project=project.path, name=name)
 
@@ -72,81 +77,95 @@ def _shown_branches(project: ProjectSummary, snap: Snapshot, latest: dict[str, R
     return live[:RECENT_BRANCHES]
 
 
+def _branch_menu(name: str, href: str, info: BranchInfo, run: RunView | None, snap: Snapshot) -> str:
+    items = [f'<a href="#{esc(href)}">Open the pipeline</a>']
+    if run is not None:
+        # The branch as it is now: a finished run of an older version is not "done".
+        stale = bool(info.keys) and bool(run.steps) and run.steps[-1].key not in info.keys
+        older = f' <span class="muted small">{esc(run.state.lower())}, older version</span>' if stale else ""
+        items.append(f'<a href="#runs/{esc(run.run_id)}">Latest run · r{esc(run.revision or "?")}{older}</a>')
+        items.append(notebook_button(run, snap.notebooks, "Download notebook"))
+    items.append(_revisions(info))
+    return menu("".join(items), f"More about {name}")
+
+
 def _branch_rows(project: ProjectSummary, snap: Snapshot, runs: tuple[RunView, ...], views: dict[str, str]) -> list[str]:
     latest: dict[str, RunView] = {}
     for run in runs:
         if run.project == project.path and run.branch and run.branch not in latest:
             latest[run.branch] = run
+    everything = set(_datasets(project, snap))
     rows = []
     for name in _shown_branches(project, snap, latest):
-        info = snap.branches.get(f"{project.path}/{name}") or BranchInfo(project=project.path, name=name)
-        run = latest.get(name)
-        # The branch as it is now: a finished run of an older version is not "done".
-        state = pill(info.state, BRANCH_LABELS.get(info.state))
-        stale = run is not None and bool(info.keys) and bool(run.steps) and run.steps[-1].key not in info.keys
-        run_cell = (f'<a href="#runs/{esc(run.run_id)}">r{esc(run.revision or "?")} run</a>'
-                    + (f' <span class="tag">{esc(run.state.lower())}, older version</span>' if stale else "")) if run else ""
+        full = f"{project.path}/{name}"
+        info = snap.branches.get(full) or BranchInfo(project=project.path, name=name)
+        href = "pipelines/" + views.get(full, view_id(full))
+        revision = f'<span class="tag">r{info.revision}</span>' if info.revision > 1 else ""
+        # A branch's data is worth a word only when it is not simply the project's data.
+        data = " + ".join(info.datasets) if info.datasets and set(info.datasets) != everything else ""
+        origin = " · ".join(p for p in (_origin(info), esc(data)) if p)
         problem = f'<div class="note bad small">{esc(info.problem)}</div>' if info.problem else ""
+        pinned = '<span class="star" title="pinned">★</span>' if info.label.pinned else ""
         rows.append(
-            f"<tr><td><code>{esc(name)}</code> <span class='tag'>r{info.revision}</span>{problem}"
-            f"<div class='muted small'>{esc(info.description)}</div></td>"
-            f"<td>{_origin(info)}</td><td>{esc(', '.join(info.datasets))}</td>"
-            f"<td>{state} {run_cell}</td><td>{_history(info)}</td>"
-            f'<td class="open"><a href="#pipelines/{esc(views.get(project.path + "/" + name, view_id(project.path + "/" + name)))}">graph</a>'
-            f"{notebook_button(run, snap.notebooks, 'notebook') if run else ''}</td></tr>"
+            f'<div class="row-link" data-href="{esc(href)}"><div class="row-main">'
+            f'<div class="row-title">{pinned}<a class="row-name" href="#{esc(href)}">{esc(name)}</a>{revision}'
+            f'{f"<span class=origin>{origin}</span>" if origin else ""}</div>'
+            f"{f'<div class=desc>{esc(info.description)}</div>' if info.description else ''}{problem}</div>"
+            f'<div class="row-side">{pill(info.state, BRANCH_LABELS.get(info.state))}'
+            f"{_branch_menu(name, href, info, latest.get(name), snap)}</div></div>"
         )
     return rows
 
 
-def _inputs(project: ProjectSummary, snap: Snapshot) -> str:
-    used = {d for key, info in snap.branches.items() if info.project == project.path for d in info.datasets}
-    names = sorted(used | set(project.meta.datasets))
-    chips = "".join(f'<a class="chip" href="#library">{esc(n)}</a>' for n in names)
-    return f'<div class="chips"><span class="muted small">Datasets</span>{chips or "<span class=muted>none yet</span>"}</div>'
+def _datasets(project: ProjectSummary, snap: Snapshot) -> list[str]:
+    used = {d for info in snap.branches.values() if info.project == project.path for d in info.datasets}
+    return sorted(used | set(project.meta.datasets))
+
+
+def _meta(project: ProjectSummary, snap: Snapshot) -> str:
+    data = " + ".join(f'<a href="#library">{esc(n)}</a>' for n in _datasets(project, snap)) or "no data yet"
+    count = len(project.branches)
+    return f'<p class="meta">{data} · {count} branch{"es" if count != 1 else ""}</p>'
 
 
 def _software(project: ProjectSummary, snap: Snapshot) -> str:
     env = snap.kernels.get(project.path)
-    building = project.path in snap.env_builds
-    status = pill("RUNNING", "building") if building else ""
+    building = " · building…" if project.path in snap.env_builds else ""
     if env is None:
-        return (f'<div class="chips"><span class="muted small">Software</span><span class="chip">shared sc-hub environment</span>'
-                f"{status}</div>")
-    chips = "".join(f'<span class="chip">{esc(e)}</span>' for e in (*env.pip, *(f"{c} (conda)" for c in env.conda)))
-    return (f'<div class="chips"><span class="muted small">Software</span><span class="chip">shared environment</span>'
-            f'<span class="muted small">+</span>{chips}{status or pill("COMPLETED", "kernel ready")}'
-            f'<span class="muted small">Jupyter kernel "sc-hub: {esc(project.path)}" · built {esc(env.built)}</span></div>')
+        return f'<div class="pop-section"><div class="pop-label">Software</div><div class="small">shared sc-hub environment{building}</div></div>'
+    extra = ", ".join((*env.pip, *(f"{c} (conda)" for c in env.conda)))
+    return (f'<div class="pop-section"><div class="pop-label">Software</div><div class="small">shared environment + '
+            f'{esc(extra)}{building}</div><div class="muted small">Jupyter kernel "sc-hub: {esc(project.path)}" · '
+            f"built {esc(env.built)}</div></div>")
+
+
+def _project_menu(project: ProjectSummary, snap: Snapshot) -> str:
+    log = "".join(f"<pre class=entry>{esc(e)}</pre>" for e in reversed(project.logbook_tail))
+    logbook = f'<div class="pop-section"><div class="pop-label">Logbook, latest first</div>{log}</div>' if log else ""
+    return menu(_software(project, snap) + logbook, f"More about {project.path}")
 
 
 def _links(project: ProjectSummary, shown: int, project_views: dict[str, str]) -> str:
     total = len(project.branches)
-    more = f"{shown} of {total} shown (pinned and recent) · " if total > shown else ""
-    graph = (f' · <a href="#pipelines/{esc(project_views[project.path])}">project map</a>'
-             if project.path in project_views else "")
-    return (f'<p class="muted small">{more}<a href="#experiments/project={esc(project.path)}">all {total} in '
-            f"Experiments</a> (filter, sort, compare){graph}</p>")
+    more = f'<span class="muted small">{shown} of {total}</span>' if total > shown else ""
+    graph = (f'<a href="#pipelines/{esc(project_views[project.path])}">Map</a>' if project.path in project_views else "")
+    return (f'<span class="links">{more}<a href="#experiments/project={esc(project.path)}" '
+            f'title="Filter, sort and compare every branch">Compare all {total}</a>{graph}</span>')
 
 
-def _project(project: ProjectSummary, snap: Snapshot, children: list[str], views: dict[str, str],
-             project_views: dict[str, str]) -> str:
+def _project(project: ProjectSummary, snap: Snapshot, views: dict[str, str], project_views: dict[str, str]) -> str:
     rows = _branch_rows(project, snap, snap.runs, views)
-    log = "".join(f"<pre class=entry>{esc(e)}</pre>" for e in reversed(project.logbook_tail)) or '<p class="empty">Empty.</p>'
     problems = "".join(f'<p class="note bad">{esc(p)}</p>' for p in project.problems)
-    subs = "".join(f'<button type="button" class="chip" data-project-link="{esc(c)}">{esc(c)}</button>' for c in children)
+    status = "" if project.meta.status == "active" else pill(PROJECT_STATE[project.meta.status], project.meta.status)
     return (
-        f'<div class="card project" data-project="{esc(project.path)}" hidden><div class="run-title"><h2>{esc(project.path)}</h2>'
-        f"{pill(PROJECT_STATE[project.meta.status], project.meta.status)}</div>"
+        f'<div class="project" data-project="{esc(project.path)}" hidden>'
+        f'<div class="project-head"><h2>{esc(project.path)}</h2>{status}{_project_menu(project, snap)}</div>'
         f'<p class="question">{esc(project.meta.question or "No question written yet.")}</p>'
-        + _inputs(project, snap)
-        + _software(project, snap)
-        + (f'<div class="chips"><span class="muted small">Subprojects</span>{subs}</div>' if subs else "")
-        + "<h3>Branches</h3>" + _links(project, len(rows), project_views)
-        + (table(("Branch", "Based on", "Datasets", "Latest run", "History", "Open"), rows) if rows
-           else '<p class="empty">No branches yet.</p>')
-        + '<p class="muted small">A fix makes a new revision of the same branch (r2, r3…); '
-          "an alternative from some step on is a fork (a new branch). Ask your assistant from any step's panel.</p>"
-        + f"<h3>Ideas</h3>{problems}{_ideas(project)}"
-        + f"<details><summary>Logbook, latest first</summary>{log}</details></div>"
+        + _meta(project, snap) + problems
+        + f'<div class="section-head"><h3>Branches</h3>{hint(BRANCHES_HINT)}{_links(project, len(rows), project_views)}</div>'
+        + (f'<div class="rows">{"".join(rows)}</div>' if rows
+           else '<p class="empty">No branches yet. Ask your assistant to save one.</p>')
+        + _ideas(project) + "</div>"
     )
 
 
@@ -154,17 +173,13 @@ def render_projects(snap: Snapshot, views: dict[str, str] | None = None, project
     views, project_views = views or {}, project_views or {}
     if not snap.projects:
         return '<p class="empty">No projects yet. Ask your assistant to create one with your research question.</p>'
-    paths = [p.path for p in snap.projects]
     tree = "".join(
         f'<button type="button" class="pipe" data-project-link="{esc(p.path)}" data-text="{esc(p.path.lower() + " " + p.meta.question.lower())}" '
         f'style="padding-left:{8 + 16 * p.path.count("/")}px"><span class="dot {esc(PROJECT_STATE[p.meta.status])}"></span>'
-        f'{esc(p.path.rsplit("/", 1)[-1])}<span class="muted small">{len(p.branches)}</span></button>'
+        f'{esc(p.path.rsplit("/", 1)[-1])}</button>'
         for p in snap.projects
     )
-    search = '<input class="tree-filter" type="search" placeholder="Filter projects" aria-label="Filter projects">' if len(paths) > 8 else ""
-    cards = "".join(
-        _project(p, snap, [c for c in paths if c.rpartition("/")[0] == p.path], views, project_views)
-        for p in snap.projects
-    )
+    search = '<input class="tree-filter" type="search" placeholder="Filter projects" aria-label="Filter projects">' if len(snap.projects) > 8 else ""
+    cards = "".join(_project(p, snap, views, project_views) for p in snap.projects)
     return (f'<div class="master"><aside class="pipe-list project-tree">{search}{tree}</aside>'
             f'<div class="detail">{cards}</div></div>')

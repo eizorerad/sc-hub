@@ -1,5 +1,6 @@
-"""The single-page shell: the header (the sc-hub square is the account menu, then
-the tabs, then a one-line status), the views, inline CSS and JS."""
+"""The single-page shell: the header (the sc-hub square is the menu with everything
+besides research: runs, library, sessions, cluster; then three tabs, then a one-line
+status), the views, inline CSS and JS."""
 
 from __future__ import annotations
 
@@ -18,20 +19,16 @@ from .views_experiments import render_experiments
 from .views_pipelines import render_pipelines
 from .views_runs import ImageUrl, render_runs
 
-# Projects are the root: a question, its datasets and branches. Experiments list every
-# branch to filter and compare, Pipelines show one graph at a time, Runs what ran and
-# what runs now, Library what there is to use.
+# What a researcher needs sits in three tabs: Projects are the root (a question, its
+# datasets and branches), Pipelines show one graph at a time with each step's result,
+# Compare lists every branch to filter and compare. Runs, Library, sessions and the
+# cluster are one click away in the menu under the sc-hub square.
 TABS = (
     ("projects", "Projects"),
-    ("experiments", "Experiments"),
     ("pipelines", "Pipelines"),
-    ("runs", "Runs"),
-    ("library", "Library"),
+    ("experiments", "Compare"),
 )
-
-
-def _counts(snap: Snapshot) -> dict[str, int]:
-    return {"projects": len(snap.projects), "experiments": len(snap.branches), "runs": len(snap.runs)}
+MENU_VIEWS = {"runs": "Runs", "library": "Library"}  # the cluster overview has its own title
 
 
 class Site(Frozen):
@@ -50,16 +47,18 @@ def _iso(generated_at: str) -> str:
 
 
 def _account(snap: Snapshot) -> str:
-    """The sc-hub square: who you are, the cluster overview, sessions, and page refresh."""
+    """The sc-hub square: who you are, runs, library, sessions, the cluster, and page refresh."""
     where = f"login node {snap.overview.login_node}" if snap.overview and snap.overview.login_node else "the cluster"
     initials = esc(_initials(snap.user))
     return (
-        f'<details class="account"><summary class="brand" title="{esc(snap.user)}: account, cluster and refresh">'
+        f'<details class="account"><summary class="brand" title="{esc(snap.user)}: runs, library, cluster and refresh">'
         f'<span class="logo">{initials}</span><b>sc-hub</b><span class="caret" aria-hidden="true"></span></summary>'
         f'<div class="menu"><div class="who"><span class="logo big">{initials}</span>'
         f'<div><b>{esc(snap.user)}</b><div class="muted small">on {esc(where)}</div></div></div>'
-        '<a href="#cluster"><b>Cluster overview</b><span class="muted small">quotas, limits, your jobs, storage</span></a>'
+        '<a href="#runs"><b>Runs</b><span class="muted small">history, queue, what runs now</span></a>'
+        '<a href="#library"><b>Library</b><span class="muted small">datasets, models, tools</span></a>'
         '<a href="#runs/sessions"><b>Interactive sessions</b><span class="muted small">JupyterLab and cellxgene</span></a>'
+        '<a href="#cluster"><b>Cluster overview</b><span class="muted small">quotas, limits, your jobs, storage</span></a>'
         '<hr><div class="menu-row"><span>Updated</span>'
         f'<span title="{esc(snap.generated_at)}"><b>{esc(snap.generated_at[11:])}</b> '
         f'<span class="muted small" data-ago="{esc(_iso(snap.generated_at))}"></span></span></div>'
@@ -73,14 +72,15 @@ def render_page(snap: Snapshot, image_url: ImageUrl) -> str:
     return render_site(snap, image_url).index
 
 
+def _titled(key: str, html: str) -> str:
+    """Views opened from the menu get a title, so it is clear where you are."""
+    title = MENU_VIEWS.get(key)
+    return f'<h1 class="view-title">{esc(title)}</h1>{html}' if title else html
+
+
 def render_site(snap: Snapshot, image_url: ImageUrl) -> Site:
-    counts = _counts(snap)
     pipelines = render_pipelines(snap, image_url)
-    tabs = "".join(
-        f'<a href="#{key}" data-tab="{key}">{esc(label)}'
-        f'{f"<span class=count>{counts[key]}</span>" if key in counts else ""}</a>'
-        for key, label in TABS
-    )
+    tabs = "".join(f'<a href="#{key}" data-tab="{key}">{esc(label)}</a>' for key, label in TABS)
     views = {
         "projects": render_projects(snap, pipelines.views, pipelines.project_views),
         "experiments": render_experiments(snap, pipelines.views, image_url),
@@ -89,7 +89,7 @@ def render_site(snap: Snapshot, image_url: ImageUrl) -> Site:
         "library": render_library(snap),
         "cluster": render_cluster(snap.overview),
     }
-    sections = "".join(f'<section class="view" data-view="{key}">{html}</section>' for key, html in views.items())
+    sections = "".join(f'<section class="view" data-view="{key}">{_titled(key, html)}</section>' for key, html in views.items())
     index = (
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'

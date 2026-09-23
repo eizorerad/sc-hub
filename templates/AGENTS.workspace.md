@@ -77,7 +77,7 @@ alternative from here" buttons that copy a request for you).
   or the branch changed meanwhile). Do not resubmit them; `queue_status` shows the
   queue and plans that could not be submitted, with the reason.
 - Bookkeeping without new revisions: `label_branch` (tags, pinned, archived).
-  The dashboard's Experiments tab lists every branch and compares them.
+  The dashboard's Compare tab lists every branch and compares them.
 - The SSH key only opens sc-hub (MCP server, dashboard, sessions). Do not try to
   ssh in for quotas, jobs or files: use `cluster_overview`, `run_status`,
   `run_logs`, `inspect_step`. If a request needs more, tell the student.

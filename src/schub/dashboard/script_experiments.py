@@ -1,4 +1,6 @@
-"""Page script of the Experiments view: filter, sort, group, fold sweeps, compare.
+"""Page script of the Compare view (#experiments): filter, sort, group, fold sweeps, compare.
+Filters wait behind one button and the Data, Steps and parameter columns behind another,
+so the table first shows only branches, their state and their numbers.
 
 Rows come from <script id="exp-data" type="application/json">; everything is built
 with text nodes (never innerHTML), so names and parameters cannot inject markup.
@@ -19,7 +21,8 @@ EXPERIMENTS_SCRIPT = r"""
   const byId = new Map(ROWS.map(r => [r.id, r]));
   const STORE = 'exp-state';
   const DEFAULTS = {q: '', project: '', dataset: '', brick: '', status: '', tag: '', sweep: '', period: 'all',
-                    hidden: false, group: 'none', fold: true, sort: 'updated', dir: -1, selected: [], open: []};
+                    hidden: false, group: 'none', fold: true, sort: 'updated', dir: -1, selected: [], open: [],
+                    filters: false, details: false};
   let S = (() => { try { return {...DEFAULTS, ...JSON.parse(sessionStorage.getItem(STORE) || '{}')}; } catch (e) { return {...DEFAULTS}; } })();
   const save = () => { try { sessionStorage.setItem(STORE, JSON.stringify(S)); } catch (e) {} };
 
@@ -112,10 +115,12 @@ EXPERIMENTS_SCRIPT = r"""
     const v = PARAMS.get(r.id)[key.slice(2)];
     return v === undefined ? null : (isNaN(Number(v)) ? v : Number(v));
   }
+  const sortKey = () => (!S.details && S.sort.startsWith('p:')) ? 'updated' : S.sort;  // a hidden column does not sort
   function sorted(rows) {
+    const key = sortKey();
     return [...rows].sort((a, b) => {
       if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
-      const x = sortValue(a, S.sort), y = sortValue(b, S.sort);
+      const x = sortValue(a, key), y = sortValue(b, key);
       if (x === y) return a.id.localeCompare(b.id);
       if (x === null) return 1;
       if (y === null) return -1;
@@ -143,7 +148,7 @@ EXPERIMENTS_SCRIPT = r"""
   }
 
   function header(key, label, hint) {
-    const mark = S.sort === key ? (S.dir < 0 ? ' ↓' : ' ↑') : '';
+    const mark = sortKey() === key ? (S.dir < 0 ? ' ↓' : ' ↑') : '';
     return h('th', {class: 'sortable', title: hint || 'sort'},
       on(h('button', {type: 'button', text: label + mark}), 'click', () => {
         S.dir = S.sort === key ? -S.dir : (key === 'branch' ? 1 : -1); S.sort = key; save(); renderTable();
@@ -163,13 +168,13 @@ EXPERIMENTS_SCRIPT = r"""
     const issues = r.issues.length ? h('span', {class: 'flag', title: r.issues.map(x => `step ${x.step}: ${x.text}`).join('\n'), text: ' !'}) : null;
     return h('tr', {class: member ? 'member' : null, 'data-id': r.id},
       h('td', {class: 'sel'}, box),
-      h('td', {class: 'name'}, r.pinned ? h('span', {class: 'star', title: 'pinned', text: '★ '}) : null, name,
+      h('td', {class: 'name'}, r.pinned ? h('span', {class: 'star', title: 'pinned', text: '★ '}) : null, name, issues,
         r.archived ? h('span', {class: 'tag', text: 'archived'}) : null,
         h('div', {class: 'muted small', text: [r.project, r.origin].filter(Boolean).join(' · ')}),
         r.tags.length ? h('div', {class: 'chips'}, r.tags.map(t => h('span', {class: 'chip', text: t}))) : null),
       h('td', {}, pill(r.state, r.state_label)),
-      h('td', {class: 'small', text: r.datasets.join(' + ')}),
-      h('td', {class: 'steps small'}, steps, issues),
+      S.details ? h('td', {class: 'small', text: r.datasets.join(' + ')}) : null,
+      S.details ? h('td', {class: 'steps small'}, steps) : null,
       params.map(p => h('td', {class: 'small', text: PARAMS.get(r.id)[p] ?? '—'})),
       metrics.map(m => h('td', {class: 'num' + (r.stale.includes(m.key) ? ' stale' : ''),
                                 title: r.stale.includes(m.key) ? 'from an older version of this branch' : null, text: fmt(m, r.metrics[m.key])})),
@@ -202,8 +207,8 @@ EXPERIMENTS_SCRIPT = r"""
       h('td', {class: 'name'}, toggle, h('b', {text: ` sweep ${u.name}`}),
         h('div', {class: 'muted small', text: `step ${u.step} ${u.param}: ${u.rows.map(r => String(r.sweep.value)).join(', ')}`})),
       h('td', {}, Object.entries(counts).map(([s, n]) => pill(s, `${n} ${DATA.states[s] || s.toLowerCase()}`))),
-      h('td', {class: 'small', text: u.rows[0].datasets.join(' + ')}),
-      h('td', {class: 'small muted', text: `${u.rows.length} branches`}),
+      S.details ? h('td', {class: 'small', text: u.rows[0].datasets.join(' + ')}) : null,
+      S.details ? h('td', {class: 'small muted', text: `${u.rows.length} branches`}) : null,
       params.map(() => h('td')),
       metrics.map(m => h('td', {class: 'num', text: range(m, u.rows)})),
       h('td', {class: 'small muted', text: ago(latest)}));
@@ -212,8 +217,8 @@ EXPERIMENTS_SCRIPT = r"""
   function renderTable() {
     const target = document.getElementById('exp-table');
     const shown = sorted(ROWS.filter(matches));
-    const params = paramColumns(shown), metrics = metricColumns(shown);
-    const width = 6 + params.length + metrics.length;
+    const params = S.details ? paramColumns(shown) : [], metrics = metricColumns(shown);
+    const width = (S.details ? 6 : 4) + params.length + metrics.length;
     const body = h('tbody');
     const sections = new Map();
     shown.forEach(r => { const s = section(r); if (!sections.has(s)) sections.set(s, []); sections.get(s).push(r); });
@@ -226,13 +231,13 @@ EXPERIMENTS_SCRIPT = r"""
       }
     }
     const hidden = ROWS.filter(r => (r.archived || inactive(r)) && !S.hidden).length;
-    const note = h('p', {class: 'muted small', text: `${shown.length} of ${ROWS.length} experiments` +
+    const note = h('p', {class: 'muted small', text: `${shown.length} of ${ROWS.length} branches` +
       (hidden && !S.hidden ? ` · ${hidden} archived or untouched for 14 days are hidden` : '')});
     if (!shown.length) note.append(' · ', on(h('button', {type: 'button', class: 'quiet', text: 'Show all'}), 'click', () => {
-      S = {...DEFAULTS, sort: S.sort, dir: S.dir}; save(); renderAll();
+      S = {...DEFAULTS, sort: S.sort, dir: S.dir, filters: S.filters, details: S.details}; save(); renderAll();
     }));
-    const head = h('tr', {}, h('th', {class: 'sel'}), header('branch', 'Branch'), header('state', 'State'), h('th', {text: 'Data'}),
-      h('th', {text: 'Steps'}), params.map(p => header('p:' + p, p, 'differs between the rows shown')),
+    const head = h('tr', {}, h('th', {class: 'sel'}), header('branch', 'Branch'), header('state', 'State'),
+      S.details ? h('th', {text: 'Data'}) : null, S.details ? h('th', {text: 'Steps'}) : null, params.map(p => header('p:' + p, p, 'differs between the rows shown')),
       metrics.map(m => header('m:' + m.key, m.label, m.hint)), header('updated', 'Updated'));
     target.replaceChildren(note, h('div', {class: 'scroll'}, h('table', {class: 'exp-rows'}, h('thead', {}, head), body)));
   }
@@ -292,33 +297,55 @@ EXPERIMENTS_SCRIPT = r"""
         figures.length ? h('tr', {class: 'section'}, h('td', {colspan: rows.length + 1, text: 'Figures'})) : null, figures))));
   }
 
+  // The bar is built once per render of the view: a filter change only repaints the
+  // Filters button, so keyboard focus stays on the control the student is using.
+  const EMPTY = {period: 'all', group: 'none'};  // what the first option ('Any time', 'No grouping') means
+  let bar = {};
+  function activeFilters() {
+    return ['project', 'dataset', 'brick', 'status', 'tag', 'sweep'].filter(k => S[k]).length
+      + (S.period !== 'all') + (S.group !== 'none') + S.hidden + !S.fold;
+  }
+  function paintBar() {
+    const active = activeFilters();
+    bar.filters.className = 'toggle' + (S.filters || active ? ' on' : '');
+    bar.filters.setAttribute('aria-expanded', String(S.filters));
+    bar.filters.textContent = active ? `Filters · ${active}` : 'Filters';
+    bar.details.className = 'toggle' + (S.details ? ' on' : '');
+    bar.details.setAttribute('aria-pressed', String(S.details));
+    bar.row.hidden = !S.filters;
+  }
+  function changed() { save(); paintBar(); renderTable(); }
+
   function control(label, key, options) {
     const el = h('select', {'aria-label': label}, h('option', {value: '', text: label}), options.map(([v, t]) => h('option', {value: v, text: t})));
-    el.value = S[key];
-    return on(el, 'change', () => { S[key] = el.value; save(); renderTable(); });
+    el.value = S[key] === EMPTY[key] ? '' : S[key];
+    return on(el, 'change', () => { S[key] = el.value || EMPTY[key] || ''; changed(); });
   }
   const uniq = values => [...new Set(values)].filter(Boolean).sort().map(v => [v, v]);
 
   function renderBar() {
-    const search = on(h('input', {type: 'search', placeholder: 'Filter: name, tag, idea, sweep', 'aria-label': 'Filter experiments'}), 'input', e => { S.q = e.target.value; save(); renderTable(); });
+    const search = on(h('input', {type: 'search', placeholder: 'Filter: name, tag, idea, sweep', 'aria-label': 'Filter branches'}), 'input', e => { S.q = e.target.value; save(); renderTable(); });
     search.value = S.q;
-    const period = control('Any time', 'period', [['today', 'today'], ['week', 'last 7 days']]);
-    if (S.period === 'all') period.value = '';
-    period.addEventListener('change', () => { S.period = period.value || 'all'; save(); renderTable(); });
-    const group = control('No grouping', 'group', [['project', 'by project'], ['idea', 'by idea'], ['dataset', 'by dataset'], ['tag', 'by tag']]);
-    if (S.group === 'none') group.value = '';
-    group.addEventListener('change', () => { S.group = group.value || 'none'; save(); renderTable(); });
-    const check = (key, text) => { const box = on(h('input', {type: 'checkbox'}), 'change', e => { S[key] = e.target.checked; save(); renderTable(); }); box.checked = S[key]; return h('label', {class: 'small'}, box, ' ' + text); };
-    const reset = on(h('button', {type: 'button', class: 'quiet', text: 'Reset'}), 'click', () => { S = {...DEFAULTS}; save(); renderAll(); });
+    const check = (key, text) => { const box = on(h('input', {type: 'checkbox'}), 'change', e => { S[key] = e.target.checked; changed(); }); box.checked = S[key]; return h('label', {class: 'small'}, box, ' ' + text); };
+    const reset = on(h('button', {type: 'button', class: 'quiet', text: 'Reset'}), 'click', () => { S = {...DEFAULTS, filters: true, details: S.details}; save(); renderAll(); });
     const sweeps = uniq(ROWS.map(r => r.sweep && r.sweep.name));
-    document.getElementById('exp-bar').replaceChildren(search,
-      control('All projects', 'project', uniq(ROWS.map(r => r.project))),
-      control('All data', 'dataset', uniq(ROWS.flatMap(r => r.datasets))),
-      control('Any step', 'brick', uniq(ROWS.flatMap(r => r.steps.map(s => s.short)))),
-      control('Any state', 'status', uniq(ROWS.map(r => r.state)).map(([v]) => [v, DATA.states[v] || v.toLowerCase()])),
-      control('Any tag', 'tag', uniq(ROWS.flatMap(r => r.tags))),
-      sweeps.length ? control('Any sweep', 'sweep', sweeps) : null,
-      period, group, check('fold', 'fold sweeps'), check('hidden', 'show archived'), reset);
+    bar = {
+      filters: on(h('button', {type: 'button'}), 'click', () => { S.filters = !S.filters; save(); paintBar(); }),
+      details: on(h('button', {type: 'button', title: 'Show the data, the steps and the parameters that differ', text: 'Steps & parameters'}),
+        'click', () => { S.details = !S.details; changed(); }),
+      row: h('div', {class: 'exp-filters'},
+        control('All projects', 'project', uniq(ROWS.map(r => r.project))),
+        control('All data', 'dataset', uniq(ROWS.flatMap(r => r.datasets))),
+        control('Any step', 'brick', uniq(ROWS.flatMap(r => r.steps.map(s => s.short)))),
+        control('Any state', 'status', uniq(ROWS.map(r => r.state)).map(([v]) => [v, DATA.states[v] || v.toLowerCase()])),
+        control('Any tag', 'tag', uniq(ROWS.flatMap(r => r.tags))),
+        sweeps.length ? control('Any sweep', 'sweep', sweeps) : null,
+        control('Any time', 'period', [['today', 'today'], ['week', 'last 7 days']]),
+        control('No grouping', 'group', [['project', 'by project'], ['idea', 'by idea'], ['dataset', 'by dataset'], ['tag', 'by tag']]),
+        check('fold', 'fold sweeps'), check('hidden', 'show archived'), reset),
+    };
+    document.getElementById('exp-bar').replaceChildren(h('div', {class: 'exp-line'}, search, bar.filters, bar.details), bar.row);
+    paintBar();
   }
 
   function renderAll() { renderBar(); renderCompare(); renderTable(); }

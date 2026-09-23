@@ -1,5 +1,5 @@
-"""Runs: what is happening (numbers, queue, sessions), the history of runs, and one
-detail view per run (step timeline, its notebook)."""
+"""Runs: the history of runs, what is happening (queue, sessions), and one detail
+view per run (step timeline, its notebook)."""
 
 from __future__ import annotations
 
@@ -9,10 +9,10 @@ from typing import Callable
 
 from ..bricks import REGISTRY
 from .collect import BranchInfo, RunView, Snapshot, StepView
-from .html import ask_block, dot, esc, kv, pill, subtabs, table, warnings
+from .html import ask_block, dot, esc, hint, kv, pill, subtabs, table, warnings
 from .notebooks import code_section, notebook_button
 from .steps import duration
-from .views_activity import metrics, render_queue, render_sessions
+from .views_activity import render_queue, render_sessions
 
 DE_TOP = 12
 ImageUrl = Callable[[StepView, str, bool], str | None]
@@ -193,8 +193,8 @@ def _notebook(run: RunView, notebooks: frozenset[str]) -> str:
     gpu = any(s.brick in REGISTRY and REGISTRY[s.brick].uses_gpu for s in run.steps)
     return (
         f'<div class="nb-box" data-nb-run="{esc(run.run_id)}" data-nb-gpu="{"1" if gpu else ""}">'
-        '<div><b>Notebook</b> <span class="muted small">every step with the exact code and parameters it ran with; '
-        "change a step and run it again from there</span></div>"
+        '<div><b>Notebook</b>' + hint("Every step with the exact code and parameters it ran with; change a step "
+                                         "and run it again from there.") + "</div>"
         f'<div class="ask-buttons">{button}<button type="button" data-ask="jupyter">Open in JupyterLab on the cluster</button></div>'
         '<p class="muted small copied" hidden>Copied: paste it into Codex or Claude.</p>'
         '<textarea class="manual" readonly hidden rows="3" aria-label="Request to copy"></textarea></div>'
@@ -226,7 +226,7 @@ def _row(run: RunView) -> str:
 
 
 def _history(snap: Snapshot) -> str:
-    states = sorted({r.state for r in snap.runs} | {"COMPLETED", "FAILED"})  # the metrics filter by these
+    states = sorted({r.state for r in snap.runs} | {"COMPLETED", "FAILED"})  # always offered as filters
     options = '<option value="">All states</option>' + "".join(f'<option value="{esc(s)}">{esc(s.lower())}</option>' for s in states)
     rows = table(("Run", "Dataset", "State", "Steps", "Latest result"), [_row(r) for r in snap.runs], "runs clickable") \
         if snap.runs else '<p class="empty">No runs yet. Ask your assistant to plan and submit a branch.</p>'
@@ -244,6 +244,6 @@ def render_runs(snap: Snapshot, image_url: ImageUrl) -> str:
         ("sessions", "Sessions", len(snap.sessions), render_sessions(snap)),
     ])
     return (
-        f'<div id="run-list">{metrics(snap)}{sections}</div>'
+        f'<div id="run-list">{sections}</div>'
         + "".join(run_detail(r, image_url, snap.branches.get(f"{r.project}/{r.branch}"), snap.notebooks) for r in snap.runs)
     )
