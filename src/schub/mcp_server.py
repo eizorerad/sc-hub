@@ -39,6 +39,8 @@ run(project, code, why, expect) runs a cell (Python; %%bash for shell):
   Both are required; the student reads them.
 - Short cells; look at each result before the next step. Variables persist between
   cells until the kernel restarts; files persist always, so save what matters.
+- A cell starts in the project's work/ folder (bench.work_dir()): it writes
+  "table.csv", which checks and files() call "work/table.csv" (project-relative).
 - Status "queued" or "running": call wait(ref). Never run the same code again.
 - Try things on a small twin first (`bench.twin(path, stratify=..., keep=[controls])`,
   skills('twins')), then the full data; say which with data_scope="twin"/"full".

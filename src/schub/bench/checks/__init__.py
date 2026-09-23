@@ -69,7 +69,8 @@ def _run_one(settings: Settings, project: str, checks: dict[str, CheckDef], spec
 def describe() -> str:
     """Markdown list of the checks with their parameters (the `checks` skill)."""
     lines = ["# Checks", "", "Pass them to run(..., checks=[{\"name\": ..., \"params\": {...}}]). Paths are relative "
-             "to the project folder. A failed check marks the cell; do not build on it until it passes.", ""]
+             "to the project folder ('work/table.csv'), while a cell starts in work/ (it writes 'table.csv'). "
+             "A failed check marks the cell; do not build on it until it passes.", ""]
     for check in registry().values():
         fields = ", ".join(
             f"{name}{'' if field.is_required() else '=' + repr(field.default)}"
