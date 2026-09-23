@@ -1,11 +1,15 @@
 # sc-hub installer for Windows 10/11 (PowerShell 5+ and the built-in OpenSSH client).
 # Version __VERSION__.
 #
-#   irm <this file's URL> | iex
+#   ssh LOGIN@login-student-lab.mbzu.ae cat <library>/install/install-sc-hub.ps1 | Out-String | iex
 #
 # Creates an SSH key and the ssh alias `mbzuai-schub` (asks your cluster password
 # once), copies sc-hub to the cluster and sets up your workspace there, connects
 # sc-hub to Codex, Claude Code and Claude Desktop, and creates ~\sc-hub-workspace.
+#
+# Everything runs inside one script block, so nothing leaks into your session
+# and a failure ends the installer, not your PowerShell window.
+& {
 $ErrorActionPreference = 'Stop'
 
 $Version = '__VERSION__'
@@ -18,12 +22,46 @@ $SshDir = Join-Path $HOME '.ssh'
 $Key = if ($env:SCHUB_SSH_KEY) { $env:SCHUB_SSH_KEY } else { Join-Path $SshDir 'mbzuai_schub_ed25519' }
 $SshConfig = Join-Path $SshDir 'config'
 $Workspace = Join-Path $HOME 'sc-hub-workspace'
+$Utf8 = New-Object Text.UTF8Encoding $false
+# Adds the key once, on its own line; strips the CR that Windows pipes append.
+# No double quotes anywhere: Windows PowerShell 5.1 mangles them in native arguments.
+$AddKeyRemote = 'umask 077; mkdir -p ~/.ssh; f=~/.ssh/authorized_keys; touch $f; t=$(mktemp); ' +
+    'tr -d ''\r'' > $t; if ! grep -qxFf $t $f; then if test -s $f && test $(tail -c1 $f | wc -l) -eq 0; ' +
+    'then echo >> $f; fi; cat $t >> $f; fi; rm -f $t'
 
 function Log($Text) { Write-Host "[sc-hub] $Text" -ForegroundColor Cyan }
-function Fail($Text) { Write-Host "[sc-hub] ERROR: $Text" -ForegroundColor Red; throw $Text }
+function Fail($Text) { Write-Host "[sc-hub] ERROR: $Text" -ForegroundColor Red; throw "sc-hub: $Text" }
+
+function Invoke-Native([scriptblock]$Command) {
+    # In Windows PowerShell 5.1 any stderr line of a native tool becomes an error
+    # record, which 'Stop' turns into an exception: judge by the exit code instead.
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { & $Command } finally { $ErrorActionPreference = $previous }
+}
+
+function Read-Text($Path) {
+    if (Test-Path $Path) { [IO.File]::ReadAllText($Path, $Utf8) } else { '' }
+}
+
+function Remove-Block($Text) {
+    # Drop the block a previous run wrote, so a re-run replaces it. Codex inserts
+    # new tables before a trailing comment, so they can land inside our block:
+    # stop at any table header that is not ours.
+    $kept = New-Object Collections.Generic.List[string]
+    $skip = $false
+    foreach ($line in ($Text -split '\r?\n')) {
+        if ($line -eq '# >>> sc-hub >>>') { $skip = $true; continue }
+        if ($line -eq '# <<< sc-hub <<<') { $skip = $false; continue }
+        if ($skip -and $line -match '^\[' -and $line -notmatch '^\[mcp_servers\.schub(\]|\.)') { $skip = $false }
+        if (-not $skip) { $kept.Add($line) }
+    }
+    return ($kept -join "`n")
+}
 
 function Get-Login {
     $login = if ($env:SCHUB_USER) { $env:SCHUB_USER } else { Read-Host 'Your cluster login (e.g. firstname.lastname)' }
+    $login = "$login".Trim()
     if ($login -notmatch '^[A-Za-z0-9._-]+$') { Fail "unexpected login '$login'" }
     return $login
 }
@@ -41,54 +79,62 @@ function Expand-Bundle {
     New-Item -ItemType Directory -Path $dir | Out-Null
     $archive = Join-Path $dir 'bundle.tgz'
     [IO.File]::WriteAllBytes($archive, [Convert]::FromBase64String(($Bundle -replace '\s', '')))
-    tar -xzf $archive -C $dir
+    Invoke-Native { tar -xzf $archive -C $dir }
+    if ($LASTEXITCODE -ne 0) { Fail 'could not unpack the installer (tar failed)' }
     return $dir
 }
 
 function New-Key($Login) {
     New-Item -ItemType Directory -Force -Path $SshDir | Out-Null
     if (Test-Path $Key) { return }
-    Log "creating an SSH key at $Key"
-    ssh-keygen -t ed25519 -f $Key -C "sc-hub $Login@$env:COMPUTERNAME"
+    # A dedicated key without a passphrase: the assistants connect non-interactively,
+    # also after a reboot. It only opens this cluster account; delete it to revoke.
+    Log "creating a dedicated SSH key at $Key"
+    # Legacy argument passing (PowerShell 5.1, 7.0-7.2) drops an empty argument
+    # unless it is written as '""'; standard passing (7.3+) takes '' as is.
+    $modern = $null -ne $PSNativeCommandArgumentPassing -and "$PSNativeCommandArgumentPassing" -ne 'Legacy'
+    $empty = if ($modern) { '' } else { '""' }
+    Invoke-Native { ssh-keygen -q -t ed25519 -N $empty -f $Key -C "sc-hub $Login@$env:COMPUTERNAME" }
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $Key)) { Fail 'ssh-keygen could not create the key' }
 }
 
 function Add-Alias($Login) {
-    $existing = if (Test-Path $SshConfig) { Get-Content $SshConfig -Raw } else { '' }
-    if ($existing -match "(?m)^Host $([regex]::Escape($Alias))\s*$") { return }
+    New-Item -ItemType Directory -Force -Path $SshDir | Out-Null
+    $existing = Remove-Block (Read-Text $SshConfig)
+    # `Host *` at the end of the block: settings that were at the top of the file
+    # keep applying to every host. Prepended: ssh uses the first matching value.
     $block = @"
 # >>> sc-hub >>>
 Host $Alias
     HostName $ClusterHost
     User $Login
-    IdentityFile $Key
+    IdentityFile "$Key"
     IdentitiesOnly yes
     AddKeysToAgent yes
     StrictHostKeyChecking accept-new
     ServerAliveInterval 60
     ServerAliveCountMax 3
+Host *
 # <<< sc-hub <<<
 
 "@
-    # Prepended: ssh uses the first matching value, so an earlier `Host *` must not win.
-    [IO.File]::WriteAllText($SshConfig, $block + $existing, (New-Object Text.UTF8Encoding $false))
-    Log "added ssh alias '$Alias'"
+    [IO.File]::WriteAllText($SshConfig, $block + $existing, $Utf8)
+    Log "ssh alias '$Alias' -> $Login@$ClusterHost"
 }
 
 function Install-Key {
-    $agent = Get-Service ssh-agent -ErrorAction SilentlyContinue
-    if ($agent -and $agent.Status -eq 'Running') { ssh-add $Key 2>$null }
-    ssh -o BatchMode=yes -o ConnectTimeout=15 $Alias true 2>$null
+    Invoke-Native { ssh -o BatchMode=yes -o ConnectTimeout=15 $Alias true 2>$null }
     if ($LASTEXITCODE -eq 0) { return }
     Log "installing your key on ${ClusterHost}: type your cluster password when asked"
-    Get-Content "$Key.pub" | ssh $Alias "umask 077; mkdir -p ~/.ssh; cat >> ~/.ssh/authorized_keys"
-    ssh -o BatchMode=yes $Alias true
-    if ($LASTEXITCODE -ne 0) {
-        Fail "key login still fails. If your key has a passphrase, enable the 'OpenSSH Authentication Agent' service and run: ssh-add $Key"
-    }
+    Invoke-Native { Get-Content "$Key.pub" | ssh $Alias $AddKeyRemote }
+    if ($LASTEXITCODE -ne 0) { Fail 'could not install the key (wrong password or login?)' }
+    Invoke-Native { ssh -o BatchMode=yes $Alias true }
+    if ($LASTEXITCODE -ne 0) { Fail "key login still fails; check that $Key has no passphrase" }
 }
 
 function Test-CleanChannel {
-    $noise = (ssh -o BatchMode=yes $Alias true | Out-String).Length
+    $noise = (Invoke-Native { ssh -o BatchMode=yes $Alias true } | Out-String).Length
+    if ($LASTEXITCODE -ne 0) { Fail 'cannot log in with the key' }
     if ($noise -ne 0) {
         Fail "your cluster shell prints text on non-interactive logins. In ~/.bashrc on the cluster, put this line before any echo: [[ `$- == *i* ]] || return"
     }
@@ -96,27 +142,35 @@ function Test-CleanChannel {
 
 function Send-Bundle {
     Log "copying sc-hub $Version to the cluster"
-    # No double quotes: Windows PowerShell 5.1 mangles them in native arguments.
-    # Cluster paths contain no spaces, so the remote shell needs no quoting.
+    # Cluster paths contain no spaces, so the remote shell needs no quoting. The
+    # bundle goes as one line; base64 -i ignores the CR PowerShell appends.
     $remote = 'set -e; R=${SCHUB_ROOT:-/l/users/$USER/schub}; mkdir -p $R/src; rm -rf $R/src/sc-hub.new; ' +
-        'mkdir $R/src/sc-hub.new; base64 -d | tar -xzf - -C $R/src/sc-hub.new; ' +
+        'mkdir $R/src/sc-hub.new; base64 -di | tar -xzf - -C $R/src/sc-hub.new; ' +
         'rm -rf $R/src/sc-hub; mv $R/src/sc-hub.new $R/src/sc-hub; printf %s $R'
-    $root = ($Bundle | ssh -o BatchMode=yes $Alias $remote | Out-String).Trim()
-    if (-not $root) { Fail 'could not copy sc-hub to the cluster' }
-    Log 'setting up your workspace on the cluster (this runs in a Slurm job; a few minutes)'
-    ssh -t $Alias "bash '$root/src/sc-hub/scripts/bootstrap_cluster.sh'"
-    if ($LASTEXITCODE -ne 0) { Fail 'the cluster setup failed; see the messages above' }
+    $oneLine = $Bundle -replace '\s', ''
+    $root = (Invoke-Native { $oneLine | ssh -o BatchMode=yes $Alias $remote } | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or -not $root) { Fail 'could not copy sc-hub to the cluster' }
     return $root
+}
+
+function Invoke-Bootstrap($Root) {
+    # Called as a statement, not captured: the student sees the progress live.
+    Log 'setting up your workspace on the cluster (this runs in a Slurm job; a few minutes)'
+    Invoke-Native { ssh -t $Alias "bash '$Root/src/sc-hub/scripts/bootstrap_cluster.sh'" }
+    if ($LASTEXITCODE -ne 0) { Fail 'the cluster setup failed; see the messages above' }
 }
 
 function Register-Codex($Root) {
     $codexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME '.codex' }
     New-Item -ItemType Directory -Force -Path $codexHome | Out-Null
     $config = Join-Path $codexHome 'config.toml'
-    $text = if (Test-Path $config) { Get-Content $config -Raw } else { '' }
-    if ($text -match '(?m)^\[mcp_servers\.schub\]') { Log 'Codex: already connected'; return }
+    $text = Remove-Block (Read-Text $config)
+    if ($text -match '(?m)^\[mcp_servers\.schub\]') {
+        Log 'Codex: your config already defines [mcp_servers.schub] by hand; left unchanged'
+        return
+    }
+    if ($text -and -not $text.EndsWith("`n")) { $text += "`n" }
     $block = @"
-
 # >>> sc-hub >>>
 [mcp_servers.schub]
 command = "ssh"
@@ -124,39 +178,63 @@ args = ["-T", "-o", "BatchMode=yes", "$Alias", "$Root/bin/schub-mcp"]
 startup_timeout_sec = 60
 tool_timeout_sec = 180
 # <<< sc-hub <<<
+
 "@
-    [IO.File]::AppendAllText($config, $block, (New-Object Text.UTF8Encoding $false))
+    [IO.File]::WriteAllText($config, $text + $block, $Utf8)
     Log 'Codex: connected'
 }
 
 function Register-ClaudeCode($Root) {
-    if (-not (Get-Command claude -ErrorAction SilentlyContinue)) { return }
-    claude mcp remove schub -s user 2>$null | Out-Null
-    claude mcp add -s user schub -- ssh -T -o BatchMode=yes $Alias "$Root/bin/schub-mcp" | Out-Null
-    Log 'Claude Code: connected'
+    # The .exe or .cmd shim, never claude.ps1: scripts may be blocked by the execution policy.
+    $claude = Get-Command claude -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $claude) { return }
+    Invoke-Native { & $claude.Source mcp remove schub -s user 2>$null | Out-Null }
+    # '--' quoted: Windows PowerShell 5.1 swallows a bare -- before native commands.
+    $global:LASTEXITCODE = 1
+    Invoke-Native { & $claude.Source mcp add -s user schub '--' ssh -T -o BatchMode=yes $Alias "$Root/bin/schub-mcp" | Out-Null }
+    if ($LASTEXITCODE -eq 0) { Log 'Claude Code: connected' }
+    else { Log "Claude Code: could not register; run: claude mcp add -s user schub -- ssh -T -o BatchMode=yes $Alias $Root/bin/schub-mcp" }
+}
+
+function Get-DesktopConfigDirs {
+    # The regular installer uses %APPDATA%\Claude; a Store (MSIX) install keeps
+    # its roaming data inside the package folder.
+    $dirs = @(Join-Path $env:APPDATA 'Claude')
+    $packages = Join-Path $env:LOCALAPPDATA 'Packages'
+    if (Test-Path $packages) {
+        $dirs += Get-ChildItem $packages -Directory -Filter 'Claude_*' -ErrorAction SilentlyContinue |
+            ForEach-Object { Join-Path $_.FullName 'LocalCache\Roaming\Claude' }
+    }
+    return @($dirs | Where-Object { Test-Path $_ })
 }
 
 function Register-ClaudeDesktop($Root) {
-    $dir = Join-Path $env:APPDATA 'Claude'
-    if (-not (Test-Path $dir)) { return }
-    $config = Join-Path $dir 'claude_desktop_config.json'
-    $data = if ((Test-Path $config) -and (Get-Content $config -Raw).Trim()) {
-        Copy-Item $config "$config.bak-schub"
-        Get-Content $config -Raw | ConvertFrom-Json
-    } else { New-Object PSObject }
-    if (-not $data.PSObject.Properties['mcpServers']) { $data | Add-Member mcpServers (New-Object PSObject) }
     $ssh = (Get-Command ssh).Source
-    $server = [PSCustomObject]@{ command = $ssh; args = @('-T', '-o', 'BatchMode=yes', $Alias, "$Root/bin/schub-mcp") }
-    $data.mcpServers | Add-Member -Force schub $server
-    [IO.File]::WriteAllText($config, ($data | ConvertTo-Json -Depth 20), (New-Object Text.UTF8Encoding $false))
-    Log 'Claude Desktop: connected (restart Claude Desktop to load it)'
+    foreach ($dir in Get-DesktopConfigDirs) {
+        $config = Join-Path $dir 'claude_desktop_config.json'
+        try {
+            $raw = Read-Text $config
+            $data = if ($raw.Trim()) { $raw | ConvertFrom-Json } else { New-Object PSObject }
+            # Keep the original the student had before sc-hub touched it.
+            if ($raw.Trim() -and -not (Test-Path "$config.bak-schub")) { Copy-Item $config "$config.bak-schub" }
+            if (-not $data.PSObject.Properties['mcpServers']) { $data | Add-Member mcpServers (New-Object PSObject) }
+            $server = [PSCustomObject]@{ command = $ssh; args = @('-T', '-o', 'BatchMode=yes', $Alias, "$Root/bin/schub-mcp") }
+            $data.mcpServers | Add-Member -Force schub $server
+            [IO.File]::WriteAllText($config, ($data | ConvertTo-Json -Depth 20), $Utf8)
+            Log 'Claude Desktop: connected (quit and reopen Claude Desktop to load it)'
+        } catch {
+            Log "Claude Desktop: could not update $config ($($_.Exception.Message)); add the schub server by hand"
+        }
+    }
 }
 
 function New-Workspace($BundleDir) {
     New-Item -ItemType Directory -Force -Path $Workspace | Out-Null
     Copy-Item (Join-Path $BundleDir 'templates/AGENTS.workspace.md') (Join-Path $Workspace 'AGENTS.md') -Force
     Copy-Item (Join-Path $BundleDir 'templates/AGENTS.workspace.md') (Join-Path $Workspace 'CLAUDE.md') -Force
-    Copy-Item (Join-Path $BundleDir 'scripts/schub-view.ps1') (Join-Path $Workspace 'schub-view.ps1') -Force
+    foreach ($name in 'schub-view.ps1', 'schub-view.cmd') {
+        Copy-Item (Join-Path $BundleDir "scripts/$name") (Join-Path $Workspace $name) -Force
+    }
 }
 
 Log "sc-hub installer $Version"
@@ -169,6 +247,7 @@ try {
     Install-Key
     Test-CleanChannel
     $root = Send-Bundle
+    Invoke-Bootstrap $root
     Register-Codex $root
     Register-ClaudeCode $root
     Register-ClaudeDesktop $root
@@ -182,6 +261,7 @@ Ready. Start your assistant in the workspace and just ask, for example:
   "What datasets are in sc-hub? Create a project for my question."
     Codex:           cd $Workspace; codex
     Claude Code:     cd $Workspace; claude
-    Claude Desktop:  restart it; the sc-hub tools appear in a new chat
-Watch your jobs and pipelines:  cd $Workspace; .\schub-view.ps1
+    Claude Desktop:  quit and reopen it; the sc-hub tools appear in a new chat
+Watch your jobs and pipelines:  cd $Workspace; .\schub-view.cmd
 "@
+}

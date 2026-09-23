@@ -92,7 +92,7 @@ def test_old_layout_and_unused_images_are_removed(hub, settings):
         path.parent.mkdir(parents=True)
         path.write_text("old")
     build_dashboard(hub)
-    assert not stale_page.exists() and not stale_img.exists()
+    assert not stale_page.exists() and not stale_img.exists() and not stale_img.parent.exists()
 
 
 def test_step_and_run_states(tmp_path):
@@ -147,6 +147,34 @@ def test_run_detail_lists_top_de_genes_and_groups(tmp_path):
     html = run_detail(run, lambda _s, _n, _f: None)
     assert html.index("ISG15") < html.index("IFI6") and "1.0e-28" in html and "ACTB" not in html.split("Top 12")[1]
     assert "ad-hoc run" in html and "stim vs ctrl" in html and "30s" in html
+
+
+def test_broken_step_files_do_not_break_the_run_page(tmp_path, monkeypatch):
+    step_dir = tmp_path / "step"
+    (step_dir / "results").mkdir(parents=True)
+    (step_dir / "results" / "de_all.csv").write_text(",log2FoldChange,padj,group\nISG15,abc,1e-3,B\n")
+    de = StepView(index=1, brick="pseudobulk_de", key="k", state="COMPLETED", step_dir=str(step_dir))
+    other = StepView(index=2, brick="qc_filter", key="q", state="COMPLETED", step_dir=str(step_dir),
+                     extras=StepExtras(figures=("umap.png",)))
+    run = RunView(run_id="r", project=None, branch=None, created_at="now", dataset="d", state="COMPLETED", steps=(de, other))
+
+    def unreadable(step, _name, _full):
+        if step.index == 2:
+            raise PermissionError("no access")
+        return None
+
+    html = run_detail(run, unreadable)
+    assert "Could not read de_all.csv (ValueError)" in html
+    assert "Could not show this step (PermissionError)" in html and "1. pseudobulk_de" in html
+
+
+def test_similar_labels_get_distinct_pipeline_ids():
+    nodes = tuple(
+        NodeView(key=k, parent="ds:d", dataset="d", brick="qc_filter", state="COMPLETED", labels=(label,))
+        for k, label in (("a", "Proj_1/main"), ("b", "proj-1/main"), ("c", "PROJ 1/main"))
+    )
+    ids = [v.view_id for v in pipeline_views(nodes)]
+    assert len(set(ids)) == len(ids) == 4 and "v-proj-1-main-2" in ids and "v-proj-1-main-3" in ids
 
 
 def test_branch_points_show_the_differing_param():

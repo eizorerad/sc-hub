@@ -25,6 +25,7 @@ WORKSPACE="${SCHUB_WORKSPACE:-$HOME/sc-hub-workspace}"
 CODEX_CONFIG="${CODEX_HOME:-$HOME/.codex}/config.toml"
 REMOTE_ROOT=""
 BUNDLE_DIR=""
+ADD_KEY_REMOTE='umask 077; mkdir -p ~/.ssh; f=~/.ssh/authorized_keys; touch $f; t=$(mktemp); tr -d '"'"'\r'"'"' > $t; if ! grep -qxFf $t $f; then if test -s $f && test $(tail -c1 $f | wc -l) -eq 0; then echo >> $f; fi; cat $t >> $f; fi; rm -f $t'
 # Piped through `curl | bash`, stdin is the script; prompts must read the terminal.
 HAVE_TTY=0
 if { exec 3</dev/tty; } 2>/dev/null; then HAVE_TTY=1; exec 3<&-; fi
@@ -37,6 +38,15 @@ interactive() {
 die() { printf '[sc-hub] ERROR: %s\n' "$*" >&2; exit 1; }
 # Empty-array-safe expansion for the bash 3.2 that ships with macOS.
 sshx() { ssh ${SSH_F[@]+"${SSH_F[@]}"} "$@"; }
+strip_block() {
+  # Remove the block a previous run wrote (between the sc-hub markers), if any.
+  # Codex inserts new tables before a trailing comment, so they can land inside
+  # our block: stop at any table header that is not ours.
+  [ -f "$1" ] || return 0
+  awk '/^# >>> sc-hub >>>$/{skip=1; next} /^# <<< sc-hub <<<$/{skip=0; next}
+       skip && /^\[/ && !/^\[mcp_servers\.schub[].]/{skip=0} !skip' "$1" >"$1.schub-tmp"
+  cat "$1.schub-tmp" >"$1" && rm -f "$1.schub-tmp"
+}
 
 bundle() {
   # The sc-hub source (src, scripts, templates), gzipped tar, base64.
@@ -69,26 +79,36 @@ extract_bundle() {
 create_key() {
   mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
   if [ -f "$KEY" ]; then return; fi
-  log "creating an SSH key at $KEY (a passphrase is recommended; the agent remembers it)"
-  interactive ssh-keygen -t ed25519 -f "$KEY" -C "sc-hub $REMOTE_USER@$(hostname -s)"
+  # A dedicated key without a passphrase: the assistants connect non-interactively,
+  # also after a reboot. It only opens this cluster account; delete it to revoke.
+  # SCHUB_KEY_PASSPHRASE=ask prompts for a passphrase instead (then keep it in an agent).
+  log "creating a dedicated SSH key at $KEY"
+  if [ "${SCHUB_KEY_PASSPHRASE:-}" = "ask" ]; then
+    interactive ssh-keygen -t ed25519 -f "$KEY" -C "sc-hub $REMOTE_USER@$(hostname -s)"
+  else
+    ssh-keygen -q -t ed25519 -N '' -f "$KEY" -C "sc-hub $REMOTE_USER@$(hostname -s)"
+  fi
 }
 
 add_ssh_alias() {
   touch "$SSH_CONFIG" && chmod 600 "$SSH_CONFIG"
-  if grep -q "^Host $ALIAS\$" "$SSH_CONFIG"; then return; fi
+  strip_block "$SSH_CONFIG"  # a re-run replaces the block, e.g. to fix a mistyped login
   local block
   block="$(mktemp)"
   {
     printf '# >>> sc-hub >>>\nHost %s\n    HostName %s\n    User %s\n' "$ALIAS" "$HOST" "$REMOTE_USER"
-    printf '    IdentityFile %s\n    IdentitiesOnly yes\n    AddKeysToAgent yes\n' "$KEY"
-    # UseKeychain exists only in Apple's OpenSSH; IgnoreUnknown keeps other builds working.
-    printf '    IgnoreUnknown UseKeychain\n    UseKeychain yes\n    StrictHostKeyChecking accept-new\n'
-    printf '    ServerAliveInterval 60\n    ServerAliveCountMax 3\n# <<< sc-hub <<<\n\n'
+    printf '    IdentityFile "%s"\n    IdentitiesOnly yes\n    AddKeysToAgent yes\n' "$KEY"
+    # No Apple-only options (UseKeychain): OpenSSH elsewhere rejects the whole file,
+    # breaking ssh to every host, not just this one.
+    printf '    StrictHostKeyChecking accept-new\n'
+    printf '    ServerAliveInterval 60\n    ServerAliveCountMax 3\n'
+    # Settings that were at the top of the file keep applying to every host.
+    printf 'Host *\n# <<< sc-hub <<<\n'
     cat "$SSH_CONFIG"
   } >"$block"
   # Prepended: ssh uses the first matching value, so an earlier `Host *` must not win.
-  mv "$block" "$SSH_CONFIG" && chmod 600 "$SSH_CONFIG"
-  log "added ssh alias '$ALIAS'"
+  cat "$block" >"$SSH_CONFIG" && rm -f "$block"
+  log "ssh alias '$ALIAS' -> $REMOTE_USER@$HOST"
 }
 
 install_key() {
@@ -100,7 +120,8 @@ install_key() {
   if sshx -o BatchMode=yes -o ConnectTimeout=15 "$ALIAS" true 2>/dev/null; then return; fi
   log "installing your key on $HOST: type your cluster password when asked"
   # ssh reads the password from the terminal itself, so the key can go through stdin.
-  sshx "$ALIAS" 'umask 077; mkdir -p ~/.ssh; cat >> ~/.ssh/authorized_keys' <"$KEY.pub"
+  # Added once, on its own line, even if authorized_keys lacks a final newline.
+  sshx "$ALIAS" "$ADD_KEY_REMOTE" <"$KEY.pub"
   sshx -o BatchMode=yes "$ALIAS" true || die "key login still fails (is the key loaded? ssh-add $KEY)"
 }
 
@@ -116,7 +137,7 @@ upload_and_bootstrap() {
   REMOTE_ROOT="$(bundle | sshx -o BatchMode=yes "$ALIAS" 'set -e
 R="${SCHUB_ROOT:-/l/users/$USER/schub}"
 mkdir -p "$R/src"; rm -rf "$R/src/sc-hub.new"; mkdir "$R/src/sc-hub.new"
-base64 -d | tar -xzf - -C "$R/src/sc-hub.new"
+base64 -di | tar -xzf - -C "$R/src/sc-hub.new"
 rm -rf "$R/src/sc-hub"; mv "$R/src/sc-hub.new" "$R/src/sc-hub"
 printf "%s" "$R"')"
   [ -n "$REMOTE_ROOT" ] || die "could not copy sc-hub to the cluster"
@@ -134,12 +155,14 @@ mcp_args_toml() {
 
 register_codex() {
   mkdir -p "$(dirname "$CODEX_CONFIG")" && touch "$CODEX_CONFIG"
+  strip_block "$CODEX_CONFIG"  # our previous block, so a re-run picks up changes
   if grep -q '^\[mcp_servers\.schub\]' "$CODEX_CONFIG"; then
-    log "Codex: already connected"
+    log "Codex: your config already defines [mcp_servers.schub] by hand; left unchanged"
     return
   fi
+  # Start on a fresh line without piling up blank lines on re-runs.
+  if [ -s "$CODEX_CONFIG" ] && [ "$(tail -c1 "$CODEX_CONFIG" | wc -l)" -eq 0 ]; then echo >>"$CODEX_CONFIG"; fi
   cat >>"$CODEX_CONFIG" <<EOF
-
 # >>> sc-hub >>>
 [mcp_servers.schub]
 command = "ssh"
@@ -154,8 +177,11 @@ EOF
 register_claude_code() {
   command -v claude >/dev/null || return 0
   claude mcp remove schub -s user >/dev/null 2>&1 || true
-  claude mcp add -s user schub -- ssh -T ${SSH_F[@]+"${SSH_F[@]}"} -o BatchMode=yes "$ALIAS" "$REMOTE_ROOT/bin/schub-mcp" >/dev/null
-  log "Claude Code: connected"
+  if claude mcp add -s user schub -- ssh -T ${SSH_F[@]+"${SSH_F[@]}"} -o BatchMode=yes "$ALIAS" "$REMOTE_ROOT/bin/schub-mcp" >/dev/null; then
+    log "Claude Code: connected"
+  else
+    log "Claude Code: could not register; run: claude mcp add -s user schub -- ssh -T -o BatchMode=yes $ALIAS $REMOTE_ROOT/bin/schub-mcp"
+  fi
 }
 
 claude_desktop_config() {
@@ -169,8 +195,9 @@ register_claude_desktop() {
   local config ssh_bin
   config="$(claude_desktop_config)"
   if [ ! -d "$(dirname "$config")" ] && [ ! -d /Applications/Claude.app ]; then return 0; fi
-  mkdir -p "$(dirname "$config")"
-  [ -f "$config" ] && cp "$config" "$config.bak-schub"
+  mkdir -p "$(dirname "$config")" || return 1
+  # Keep the original the student had before sc-hub touched it.
+  if [ -f "$config" ] && [ ! -f "$config.bak-schub" ]; then cp "$config" "$config.bak-schub"; fi
   ssh_bin="$(command -v ssh)"
   export SCHUB_DESKTOP_CONFIG="$config" SCHUB_SSH_BIN="$ssh_bin" SCHUB_MCP_ALIAS="$ALIAS" SCHUB_MCP_CMD="$REMOTE_ROOT/bin/schub-mcp"
   export SCHUB_MCP_SSH_CONFIG="${SCHUB_SSH_CONFIG:-}"
@@ -188,6 +215,8 @@ config.mcpServers.schub = {command: get('SCHUB_SSH_BIN'),
   args: ['-T'].concat(custom ? ['-F', custom] : []).concat(['-o', 'BatchMode=yes', get('SCHUB_MCP_ALIAS'), get('SCHUB_MCP_CMD')])};
 $(JSON.stringify(config, null, 2)).writeToFileAtomicallyEncodingError(path, true, $.NSUTF8StringEncoding, null);
 JXA
+    # set -e is off in a function called left of ||: check each step.
+    [ $? -eq 0 ] || return 1
   else
     python3 - <<'PY'
 import json, os, pathlib
@@ -201,6 +230,7 @@ config.setdefault("mcpServers", {})["schub"] = {
 }
 path.write_text(json.dumps(config, indent=2))
 PY
+    [ $? -eq 0 ] || return 1
   fi
   log "Claude Desktop: connected (restart Claude Desktop to load it)"
 }
@@ -224,7 +254,7 @@ main() {
   upload_and_bootstrap
   register_codex
   register_claude_code
-  register_claude_desktop
+  register_claude_desktop || log "Claude Desktop: could not update its config (invalid JSON?); add the schub server by hand"
   make_workspace
   cat <<EOF
 

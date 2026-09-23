@@ -33,6 +33,7 @@ VERSION="${SCHUB_LIBRARY_VERSION:-$(date +%Y%m%d-%H%M)}"
 SRUN_ARGS="${SCHUB_SRUN_ARGS:---partition=$PARTITION --cpus-per-task=8 --mem=16G --gres=gpu:1 --time=01:00:00 --job-name=schub-library}"
 GPU_CHECK="${SCHUB_GPU_CHECK:-1}"
 SNAPSHOT=""
+CREATED=0
 PUBLISHED=0
 
 log() { printf '[sc-hub library] %s\n' "$*"; }
@@ -58,17 +59,22 @@ install_uv() {
 
 cleanup_on_failure() {
   local status=$?
-  if [ "$status" -ne 0 ] && [ "$PUBLISHED" -eq 0 ]; then
+  # Only what this run created, and only while it is not published: never an
+  # existing version (a name collision must not delete a live environment).
+  if [ "$status" -ne 0 ] && [ "$CREATED" -eq 1 ] && [ "$PUBLISHED" -eq 0 ]; then
     log "publish failed; removing the unpublished $VERSION"
-    rm -rf "$LIB/envs/$VERSION" "${SNAPSHOT:-/nonexistent}"
+    rm -rf "$LIB/envs/$VERSION" "$SNAPSHOT"
   fi
 }
 
 snapshot_source() {
-  [ -e "$LIB/hub/$VERSION" ] || [ -e "$LIB/envs/$VERSION" ] && die "version $VERSION already exists"
+  if [ -e "$LIB/hub/$VERSION" ] || [ -e "$LIB/envs/$VERSION" ] || [ -e "$LIB/.private/hub-$VERSION" ]; then
+    die "version $VERSION already exists"
+  fi
   # Staged privately; it appears under hub/ only when the version is published.
   SNAPSHOT="$LIB/.private/hub-$VERSION"
   mkdir -p "$SNAPSHOT"
+  CREATED=1
   # Allowlist: only what the package and scripts need, never local caches or notes.
   (cd "$SRC_DIR" && rsync -a --exclude __pycache__ --exclude '*.egg-info' \
     pyproject.toml README.md src scripts templates "$SNAPSHOT/")

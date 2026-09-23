@@ -18,15 +18,18 @@ def _de_table(step_dir: Path) -> str:
     path = step_dir / "results" / "de_all.csv"
     if not path.is_file():
         return ""
-    with path.open() as handle:
-        rows = [r for r in csv.DictReader(handle) if r.get("padj") not in (None, "", "nan")]
-    rows.sort(key=lambda r: float(r["padj"]))
-    first = next(iter(rows[0])) if rows else ""
-    body = [
-        f"<tr><td><b>{esc(r.get(first, ''))}</b></td><td>{esc(r.get('group', ''))}</td>"
-        f"<td class=num>{float(r['log2FoldChange']):+.2f}</td><td class=num>{float(r['padj']):.1e}</td></tr>"
-        for r in rows[:DE_TOP]
-    ]
+    try:
+        with path.open(newline="") as handle:
+            rows = [r for r in csv.DictReader(handle) if r.get("padj") not in (None, "", "nan")]
+        rows.sort(key=lambda r: float(r["padj"]))
+        first = next(iter(rows[0])) if rows else ""
+        body = [
+            f"<tr><td><b>{esc(r.get(first, ''))}</b></td><td>{esc(r.get('group', ''))}</td>"
+            f"<td class=num>{float(r['log2FoldChange']):+.2f}</td><td class=num>{float(r['padj']):.1e}</td></tr>"
+            for r in rows[:DE_TOP]
+        ]
+    except (OSError, csv.Error, KeyError, TypeError, ValueError) as error:
+        return f'<p class="note">Could not read de_all.csv ({esc(type(error).__name__)}); the file is in the step folder.</p>'
     return f"<h4>Top {DE_TOP} genes</h4>" + table(("Gene", "Group", "log2 FC", "padj"), body, "compact")
 
 
@@ -83,13 +86,25 @@ def _step_card(step: StepView, image_url: ImageUrl) -> str:
     )
 
 
+def _safe_card(step: StepView, image_url: ImageUrl) -> str:
+    """One unreadable step folder must not take the whole page down."""
+    try:
+        return _step_card(step, image_url)
+    except Exception as error:  # noqa: BLE001 - shown on the page instead
+        return (
+            f'<li class="step {esc(step.state)}"><div class="step-head">{dot(step.state)}'
+            f'<b>{step.index}. {esc(step.brick)}</b> {pill(step.state)}</div>'
+            f'<p class="note bad">Could not show this step ({esc(type(error).__name__)}); see {esc(step.step_dir)}</p></li>'
+        )
+
+
 def run_detail(run: RunView, image_url: ImageUrl) -> str:
     return (
         f'<div class="run-detail" data-run="{esc(run.run_id)}" hidden>'
         f'<a class="back" href="#runs">← All runs</a>'
         f'<div class="run-title"><h2>{esc(run.label)}</h2>{pill(run.state)}</div>'
         f'<p class="muted">Run <code>{esc(run.run_id)}</code> · dataset {esc(run.dataset)} · created {esc(run.created_at[:16].replace("T", " "))}</p>'
-        f'<ol class="timeline">{"".join(_step_card(s, image_url) for s in run.steps)}</ol></div>'
+        f'<ol class="timeline">{"".join(_safe_card(s, image_url) for s in run.steps)}</ol></div>'
     )
 
 

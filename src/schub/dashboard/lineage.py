@@ -44,11 +44,18 @@ def view_id(label: str) -> str:
 
 def pipeline_views(nodes: tuple[NodeView, ...]) -> list[PipelineView]:
     views = [PipelineView(view_id="v-all", label="All pipelines", group="Overview", keys=tuple(n.key for n in nodes))]
+    taken = {"v-all"}
     for label in sorted({label for n in nodes for label in n.labels}):
         group = label.split("/")[0] if "/" in label else "Other runs"
+        # Labels differing only in case or punctuation get -2, -3 (stable: labels are sorted).
+        base = unique = view_id(label)
+        suffix = 2
+        while unique in taken:
+            unique, suffix = f"{base}-{suffix}", suffix + 1
+        taken.add(unique)
         views.append(
             PipelineView(
-                view_id=view_id(label),
+                view_id=unique,
                 label=label.split("/", 1)[1] if "/" in label else label,
                 group=group,
                 keys=tuple(n.key for n in nodes if label in n.labels),

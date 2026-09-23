@@ -27,6 +27,14 @@ class StepExtras(Frozen):
     figures: tuple[str, ...] = ()
 
 
+def _mtime(path: Path) -> float | None:
+    """None when the file vanished between listing and stat (a job may be writing)."""
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return None
+
+
 def _iso(timestamp: float) -> str:
     return datetime.fromtimestamp(timestamp, timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
@@ -38,16 +46,17 @@ def _timing(step_dir: Path) -> tuple[str | None, str | None, float | None]:
         return data.get("started"), data.get("finished"), data.get("seconds")
     except (OSError, json.JSONDecodeError):
         pass
-    marker = step_dir / SUCCESS
-    return None, (_iso(marker.stat().st_mtime) if marker.exists() else None), None
+    done = _mtime(step_dir / SUCCESS)
+    return None, (_iso(done) if done is not None else None), None
 
 
 def _resources(step_dir: Path) -> dict[str, str]:
-    script = step_dir / "job.sbatch"
-    if not script.is_file():
+    try:
+        text = (step_dir / "job.sbatch").read_text(errors="replace")
+    except OSError:
         return {}
     found = {}
-    for line in script.read_text().splitlines():
+    for line in text.splitlines():
         match = SBATCH.match(line)
         if match and match.group(1) in SHOWN_RESOURCES:
             found[SHOWN_RESOURCES[match.group(1)]] = match.group(2)[:40]
@@ -55,13 +64,16 @@ def _resources(step_dir: Path) -> dict[str, str]:
 
 
 def _log_tail(step_dir: Path) -> tuple[str, ...]:
-    logs = sorted(step_dir.glob("slurm-*.log"), key=lambda p: p.stat().st_mtime)
-    if not logs:
+    stamped = [(t, p) for p in step_dir.glob("slurm-*.log") if (t := _mtime(p)) is not None]
+    if not stamped:
         return ()
-    with logs[-1].open("rb") as handle:
-        handle.seek(0, 2)
-        handle.seek(max(0, handle.tell() - 8192))
-        text = handle.read().decode(errors="replace")
+    try:
+        with max(stamped)[1].open("rb") as handle:
+            handle.seek(0, 2)
+            handle.seek(max(0, handle.tell() - 8192))
+            text = handle.read().decode(errors="replace")
+    except OSError:
+        return ()
     lines = [ANSI.sub("", line)[:LOG_LINE_CHARS] for line in text.splitlines() if line.strip()]
     return tuple(lines[-LOG_LINES:])
 
@@ -82,8 +94,15 @@ def step_extras(step_dir: Path, with_log: bool) -> StepExtras:
     )
 
 
+def _size(path: Path) -> int:
+    try:
+        return path.stat().st_size if path.is_file() else 0
+    except OSError:
+        return 0
+
+
 def trained_model_size_mb(folder: Path) -> float:
-    return round(sum(p.stat().st_size for p in folder.rglob("*") if p.is_file()) / 1e6, 1)
+    return round(sum(_size(p) for p in folder.rglob("*")) / 1e6, 1)
 
 
 def duration(seconds: float | None) -> str:

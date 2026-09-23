@@ -37,13 +37,20 @@ ssh LOGIN@login-student-lab.mbzu.ae cat /l/users/leonid.klarov/sc-hub-library/in
 The installer lives in the pilot owner's shared library on the cluster, so only
 people with a cluster account can download it. It:
 
-1. creates an SSH key and the alias `mbzuai-schub`, and installs the key on the login node;
+1. creates a dedicated SSH key (no passphrase, so the assistants can connect on
+   their own; it opens only this cluster account, delete it to revoke) and the
+   alias `mbzuai-schub`, and installs the key on the login node;
 2. copies sc-hub to `/l/users/LOGIN/schub` and sets up the workspace there in a
    Slurm job (shared library environment, or a private one as a fallback);
 3. connects sc-hub to every assistant it finds: **Codex** (also Codex inside the
    ChatGPT desktop app), **Claude Code** and **Claude Desktop**;
 4. creates `~/sc-hub-workspace` with instructions for the assistant (`AGENTS.md`,
-   `CLAUDE.md`) and `schub-view` for the dashboard.
+   `CLAUDE.md`) and `schub-view` for the dashboard (`schub-view.cmd` on Windows).
+
+Running it again is safe: it replaces its own blocks in `~/.ssh/config` and the
+Codex config (between `# >>> sc-hub >>>` markers), so a mistyped login is fixed
+by rerunning with the right one. `SCHUB_KEY_PASSPHRASE=ask` makes the macOS/Linux
+installer ask for a key passphrase instead (then keep the key in an ssh agent).
 
 Then start your assistant there and just ask:
 
@@ -150,8 +157,9 @@ runs, jobs, library, projects. Pick a branch to see its graph, click a step to
 see its params, job, resources, timing, log tail, figures and results; open a run
 for its step timeline and top DE genes. Plain HTML, CSS and 3 KB of vanilla JS:
 no server, no framework, no external requests. `./schub-view` mirrors it every
-60 s over ssh + rsync (`schub-view.ps1` with scp on Windows); the page refreshes
-itself and keeps your place.
+60 s over ssh + rsync (`schub-view.cmd` with scp on Windows, skipping the
+download when nothing changed); the page refreshes itself, keeps your place and
+filters, and waits while you read an opened section.
 
 ## Cluster limits that shape the design
 
@@ -186,9 +194,7 @@ implementations are exercised end to end on the cluster.
 - Downloads run inside the bootstrap job, not on the login node (its Lustre
   client logged write errors during testing).
 
-- Per-student environment and assets (several GB each) until the HPC team
-  provides a shared read-only area; set `SCHUB_SHARED` to use it.
 - Species and gene-id detection are heuristics; plans accept overrides.
 - Linear pipelines only; FASTQ -> counts (nf-core/scrnaseq) is out of scope.
-- The Windows installer and `schub-view.ps1` have not been run on Windows yet.
+- The Windows installer and `schub-view.cmd` / `.ps1` have not been run on Windows yet.
 - The notebook tunnel needs the login node to reach compute-node ports.

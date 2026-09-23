@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "schub"
-version = "0.2.0"
+version = "0.2.1"
 description = "Single-cell pipeline hub for Slurm clusters, driven by coding agents over MCP"
 requires-python = ">=3.11"
 dependencies = [

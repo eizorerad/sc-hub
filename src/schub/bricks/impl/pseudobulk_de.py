@@ -81,6 +81,13 @@ def _test_group(counts: Any, cond: Any, rep: Any, var_names: Any, p: PseudobulkP
     )
 
 
+def _write_csv(frame: Any, path: Any) -> None:
+    """Write next to the target and rename: the dashboard never reads half a table."""
+    partial = path.with_name(f".{path.name}.partial")
+    frame.to_csv(partial)
+    os.replace(partial, path)
+
+
 def run(io: StepIO, p: PseudobulkParams) -> dict[str, Any]:
     import pandas as pd
     from pydeseq2.default_inference import DefaultInference
@@ -103,11 +110,11 @@ def run(io: StepIO, p: PseudobulkParams) -> dict[str, Any]:
         summaries[group] = result.summary
         if result.table is not None:
             safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", group)[:60]
-            result.table.to_csv(io.results_dir / f"de_{safe}.csv")
+            _write_csv(result.table, io.results_dir / f"de_{safe}.csv")
             tables.append(result.table.assign(group=group))
     if not tables:
         raise BrickError(f"No group had enough replicates per condition: {summaries}")
-    pd.concat(tables).to_csv(io.results_dir / "de_all.csv")
+    _write_csv(pd.concat(tables), io.results_dir / "de_all.csv")
     return {
         "contrast": f"{p.treatment} vs {p.reference}",
         "groups_tested": len(tables),

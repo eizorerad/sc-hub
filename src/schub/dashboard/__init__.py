@@ -64,9 +64,21 @@ class _Images:
         return relative.as_posix()
 
     def prune(self) -> None:
-        for path in (self.view / "img").rglob("*") if (self.view / "img").is_dir() else []:
+        root = self.view / "img"
+        if not root.is_dir():
+            return
+        # A build from the assistant can overlap with the viewer's refresh: tolerate
+        # files and folders that the other build adds or removes meanwhile.
+        for path in root.rglob("*"):
             if path.is_file() and path not in self.used:
-                path.unlink()
+                path.unlink(missing_ok=True)
+        # Deepest first, so folders emptied above go too.
+        for folder in sorted((p for p in root.rglob("*") if p.is_dir()), key=lambda p: len(p.parts), reverse=True):
+            try:
+                if not any(folder.iterdir()):
+                    folder.rmdir()
+            except OSError:
+                pass
 
 
 def build_dashboard(hub: Any, out: Path | None = None) -> DashboardInfo:

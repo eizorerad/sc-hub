@@ -1,5 +1,6 @@
 """Vanilla JS (~3 KB): hash routing, pipeline picker, step panel, run filter,
-auto-refresh that keeps the current view, selection and scroll position."""
+auto-refresh that keeps the current view, selection, filters and scroll position,
+and waits while the student reads an opened section or types."""
 
 SCRIPT = r"""
 (() => {
@@ -12,13 +13,14 @@ SCRIPT = r"""
     set: (k, v, local) => { try { (local ? localStorage : sessionStorage).setItem(k, v); } catch (e) {} },
   };
   let restoring = true;
+  const decode = s => { try { return decodeURIComponent(s); } catch (e) { return s; } };
 
   function route() {
     const [view, arg] = (location.hash.slice(1) || 'overview').split('/');
     const name = $$('.view').some(v => v.dataset.view === view) ? view : 'overview';
     $$('.view').forEach(v => v.classList.toggle('active', v.dataset.view === name));
     $$('[data-tab]').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
-    if (name === 'runs') showRun(arg ? decodeURIComponent(arg) : null);
+    if (name === 'runs') showRun(arg ? decode(arg) : null);
     if (name === 'pipelines') selectPipe(arg || keep.get('pipe') || 'v-all');
     if (!restoring) window.scrollTo(0, 0);
   }
@@ -64,6 +66,7 @@ SCRIPT = r"""
   function filterRuns() {
     const q = ($('#run-search')?.value || '').toLowerCase();
     const st = $('#run-state')?.value || '';
+    keep.set('run-q', q); keep.set('run-st', st);
     $$('#run-list tbody tr').forEach(r => {
       r.hidden = (st && r.dataset.state !== st) || (q && !r.dataset.text.includes(q));
     });
@@ -90,10 +93,20 @@ SCRIPT = r"""
   const button = $('#autorefresh');
   const paint = () => { button.textContent = auto() ? 'Auto-refresh on' : 'Auto-refresh off'; button.setAttribute('aria-pressed', String(auto())); };
   button.addEventListener('click', () => { keep.set('autorefresh', auto() ? 'off' : 'on', true); paint(); });
+  // Not while the student types or reads an opened section (a reload would close it).
+  // Filters survive reloads, so only recent typing counts, not a lingering focus.
+  let typedAt = 0;
+  document.addEventListener('input', () => { typedAt = Date.now(); });
+  const busy = () => Date.now() - typedAt < 15000 ||
+    $$('.view.active details[open], #node-panel details[open]').some(d => d.getClientRects().length);
   setInterval(() => {
-    if (auto() && !document.hidden) { keep.set('scroll', String(window.scrollY)); location.reload(); }
+    if (auto() && !document.hidden && !busy()) { keep.set('scroll', String(window.scrollY)); location.reload(); }
   }, REFRESH_MS);
 
+  if ($('#run-search')) { $('#run-search').value = keep.get('run-q') || ''; }
+  const st = $('#run-state');
+  if (st && [...st.options].some(o => o.value === keep.get('run-st'))) st.value = keep.get('run-st');
+  filterRuns();
   route(); paint();
   const y = Number(keep.get('scroll') || 0);
   if (y) window.scrollTo(0, y);

@@ -19,7 +19,8 @@ and records what was run.
    errors, explain them; do not bypass them.
 4. `submit_plan`, then check `run_status` every few minutes, not in a tight loop.
 5. `run_results` for numbers (this also writes the project logbook), then
-   `make_dashboard`; the student sees it with `./schub-view`.
+   `make_dashboard`; the student sees it with `./schub-view` (Windows:
+   `.\schub-view.cmd`).
 6. Hypotheses go in `add_idea` (with `reverses_if`), decisions in
    `add_logbook_entry`. Link ideas to branches with `update_idea`.
 
