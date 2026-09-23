@@ -26,6 +26,15 @@ class CheckpointError(ValueError):
     pass
 
 
+def check_handoff(text: str) -> list[str]:
+    lines = text.strip().splitlines()
+    if not lines:
+        raise CheckpointError("the hand-over is empty")
+    if len(lines) > MAX_HANDOFF_LINES or len(text) > MAX_HANDOFF_CHARS:
+        raise CheckpointError(f"keep the hand-over under {MAX_HANDOFF_LINES} lines; evidence belongs in the journal")
+    return lines
+
+
 class CheckpointStore:
     def __init__(self, project_dir: Path, now: Clock = stamp) -> None:
         self.folder = project_dir / "journal"
@@ -75,12 +84,7 @@ class CheckpointStore:
             return ""
 
     def write_handoff(self, text: str) -> None:
-        lines = text.strip().splitlines()
-        if not lines:
-            raise CheckpointError("the hand-over is empty")
-        if len(lines) > MAX_HANDOFF_LINES or len(text) > MAX_HANDOFF_CHARS:
-            raise CheckpointError(
-                f"keep the hand-over under {MAX_HANDOFF_LINES} lines; evidence belongs in the journal")
+        lines = check_handoff(text)
         self.folder.mkdir(parents=True, exist_ok=True)
         temp = self.handoff_path.with_name(".handoff.md.tmp")
         temp.write_text("\n".join(lines) + "\n")

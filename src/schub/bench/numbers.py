@@ -13,7 +13,7 @@ from __future__ import annotations
 import re
 from typing import Iterable
 
-NUMBER = re.compile(r"(?<![\w.])[-+]?\d[\d,]*(?:\.\d+)?%?")
+NUMBER = re.compile(r"(?<![\w.])[-+]?\d[\d,]*(?:\.\d+)?(?:[eE][-+]?\d+)?%?")
 TOLERANCE = 0.005
 
 
@@ -30,7 +30,7 @@ def claimed_numbers(text: str) -> list[str]:
         value = _value(token)
         if value is None:
             continue
-        is_int = "." not in token and not token.endswith("%")
+        is_int = "." not in token and "e" not in token.lower() and not token.endswith("%")
         if is_int and (abs(value) < 10 or (1900 <= value <= 2100 and len(token.replace(",", "")) == 4)):
             continue  # small counts and years are not measurements to trace
         found.append(token)
@@ -38,8 +38,10 @@ def claimed_numbers(text: str) -> list[str]:
 
 
 def _decimals(token: str) -> int:
-    digits = token.rstrip("%").partition(".")[2]
-    return len(digits)
+    """Decimal places the claim is precise to (1.2e-05 is precise to 6 places)."""
+    mantissa, _, exponent = token.rstrip("%").lower().partition("e")
+    places = len(mantissa.partition(".")[2])
+    return max(0, places - int(exponent)) if exponent else places
 
 
 def _close(claimed: float, measured: float, decimals: int) -> bool:

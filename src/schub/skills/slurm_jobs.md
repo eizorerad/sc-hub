@@ -35,5 +35,7 @@ adata.write_h5ad("k562_scvi.h5ad")
 - **Cancel** with `stop("<job id>")`; only jobs the bench sent can be cancelled.
 - A job killed by Slurm (time limit, out of memory) is recorded in its cell as
   TIMEOUT / OUT_OF_MEMORY by the watchdog.
+- While a job runs, files it writes in `work/` also show up in the file list of a
+  kernel cell that runs at the same time; the job's own entry lists them correctly.
 - `--bash` runs the cell as a shell script; `--python /path/to/venv/bin/python`
   runs it with another environment (e.g. a paper's own).

@@ -216,17 +216,49 @@ class Journal:
     def entries(
         self, since: str | None = None, kinds: Iterable[str] | None = None, limit: int | None = None,
     ) -> list[CellEntry | NoteEntry]:
+        """Without `since`: the newest `limit` records in the order they were made. With `since`:
+        records made or changed after it (a cell that finished, a job that reported), oldest
+        change first, so reading on from the last one returned misses nothing."""
+        return [entry for _, entry in self.changes(since, kinds, limit)]
+
+    def changes(
+        self, since: str | None = None, kinds: Iterable[str] | None = None, limit: int | None = None,
+    ) -> list[tuple[str, CellEntry | NoteEntry]]:
+        """(time of the last change, record) pairs; see entries()."""
         wanted = set(kinds) if kinds is not None else None
-        found: list[CellEntry | NoteEntry] = []
+        addenda = self._all_addenda()
+        found: list[tuple[str, CellEntry | NoteEntry]] = []
         for record_id in self._ids():
-            entry = self.cell(record_id) if record_id.startswith("c") else self.note(record_id)
+            if record_id.startswith("c"):
+                base = self.raw_cell(record_id)
+                extra = addenda.get(record_id, [])
+                entry = _merge(base, extra) if base is not None else None
+                changed = max([base.created, base.started or "", base.finished or ""]
+                              + [str(a.get("added", "")) for a in extra]) if base is not None else ""
+            else:
+                entry = self.note(record_id)
+                changed = entry.created if entry is not None else ""
             if entry is None or (wanted is not None and entry.kind not in wanted):
                 continue
-            if since is not None and entry.created <= since:
-                continue
-            found.append(entry)
-        found.sort(key=lambda e: (e.created, e.ref))
-        return found[-limit:] if limit else found
+            if since is None or changed > since:
+                found.append((changed, entry))
+        if since is None:
+            found.sort(key=lambda pair: (pair[1].created, pair[1].ref))
+            return found[-limit:] if limit else found
+        found.sort(key=lambda pair: (pair[0], pair[1].ref))
+        return found[:limit] if limit else found
+
+    def _all_addenda(self) -> dict[str, list[dict[str, Any]]]:
+        """Every addendum, by cell, from one listing of the folder."""
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        if not self.cells_dir.is_dir():
+            return grouped
+        for path in sorted(self.cells_dir.glob("c*.*.json")):
+            cid = path.name.partition(".")[0]
+            data = read_json(path)
+            if data is not None and re.fullmatch(CID_PATTERN, cid):
+                grouped.setdefault(cid, []).append(data)
+        return grouped
 
     def latest_cells(self, count: int) -> list[CellEntry]:
         """The newest `count` cells, oldest first, without reading the whole journal."""
@@ -244,10 +276,11 @@ class Journal:
 
 def _merge(base: CellEntry, addenda: list[dict[str, Any]]) -> CellEntry:
     jobs = {j.job_id: j for j in base.jobs}
-    checks = {c.name: c for c in base.check_results}
+    checks = list(base.check_results)  # two checks of the same kind are two results, never one
     downloads = list(base.downloads)
     files = list(base.files)
-    for addendum in addenda:
+    # The watchdog's guess about a job that ended silently comes first; the job's own report wins.
+    for addendum in sorted(addenda, key=lambda a: a.get("source") != "watchdog"):
         try:
             kind = addendum.get("kind")
             if kind == "job":
@@ -256,8 +289,7 @@ def _merge(base: CellEntry, addenda: list[dict[str, Any]]) -> CellEntry:
                 jobs[job.job_id] = JobRef.model_validate({**known.model_dump(), **job.model_dump(exclude_unset=True)}) \
                     if known else job
             elif kind == "check":
-                check = CheckResult.model_validate(addendum["check"])
-                checks[check.name] = check
+                checks.append(CheckResult.model_validate(addendum["check"]))
             elif kind == "download":
                 downloads.append(Download.model_validate(addendum["download"]))
             elif kind == "files":
@@ -265,6 +297,6 @@ def _merge(base: CellEntry, addenda: list[dict[str, Any]]) -> CellEntry:
         except (KeyError, TypeError, ValidationError):
             continue  # a malformed addendum is skipped, never fatal to reading the journal
     return base.model_copy(update={
-        "jobs": tuple(jobs.values()), "check_results": tuple(checks.values()),
+        "jobs": tuple(jobs.values()), "check_results": tuple(checks),
         "downloads": tuple(downloads), "files": tuple(files),
     })

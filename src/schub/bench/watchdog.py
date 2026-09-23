@@ -22,7 +22,7 @@ from ..state import Frozen
 from .clock import Clock, stamp
 from .fsio import write_json_atomic
 from .inbox import Inbox
-from .jobs import reap
+from .jobs import open_records, reap
 from .runner import Runner
 from .workbench import WORKBENCH, Workbench
 
@@ -52,7 +52,7 @@ def check(settings: Settings, slurm: Slurm, own_job_id: str | None = None, now: 
         job_id = bench.submit_workbench()
         actions.append(f"started the workbench (job {job_id}) for {len(waiting)} waiting cell(s)")
     rearmed = None
-    if waiting or bench.jobs(WORKBENCH) or not bench.dormant():
+    if waiting or bench.jobs(WORKBENCH) or open_records(settings) or not bench.dormant():
         rearmed = bench.ensure_watchdog(own_job_id=own_job_id)
     else:
         actions.append("dormant: no bench activity lately, not re-arming")

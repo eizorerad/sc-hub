@@ -20,6 +20,7 @@ class CellResult(Frozen):
     jobs: tuple[JobRef, ...] = ()
     checks: tuple[CheckResult, ...] = ()
     duration_s: float | None = None
+    more_files: int = 0  # files changed beyond the ones listed
     kernel_epoch: str = ""
     kernel_restarted: bool = False
     message: str = ""
@@ -62,8 +63,14 @@ def cell_result(entry: CellEntry, previous_epoch: str, workbench: str, setup_ref
     )
 
 
+MAX_FILES = 50
+
+
 def trimmed(result: CellResult, max_chars: int) -> CellResult:
     """The same result with output text cut to what a client takes well (the journal keeps more)."""
+    if len(result.files) > MAX_FILES:
+        result = result.model_copy(update={"files": result.files[:MAX_FILES],
+                                           "more_files": len(result.files) - MAX_FILES})
     total = sum(len(o.text) for o in result.outputs)
     if total <= max_chars:
         return result

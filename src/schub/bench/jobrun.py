@@ -45,6 +45,8 @@ def run_body(job_dir: Path, meta: dict[str, Any], cwd: Path) -> int:
     os.chdir(cwd)
     if meta["body"].endswith(".sh"):
         return subprocess.run(["bash", str(body)], check=False).returncode
+    if meta.get("body_python"):  # e.g. a paper's own environment, which has no sc-hub
+        return subprocess.run([meta["body_python"], str(body)], check=False).returncode
     try:
         runpy.run_path(str(body), run_name="__main__")
         return EXIT_OK
@@ -81,8 +83,8 @@ def to_journal(settings, meta: dict[str, Any], job_dir: Path, result: dict[str, 
     for index, download in enumerate(result["downloads"]):
         payload = {k: v for k, v in download.items() if k != "kind"}
         journal.add_addendum(cid, f"download-{job_id}-{index}", {"kind": "download", "download": payload})
-    for check in result["checks"]:
-        journal.add_addendum(cid, f"check-{job_id}-{check['name']}", {"kind": "check", "check": check})
+    for index, check in enumerate(result["checks"]):
+        journal.add_addendum(cid, f"check-{job_id}-{index}", {"kind": "check", "check": check})
 
 
 def main(argv: Sequence[str] | None = None) -> int:

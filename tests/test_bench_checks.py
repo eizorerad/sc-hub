@@ -95,6 +95,30 @@ def test_perturbation_needs_controls_and_knockdown(settings: Settings, project: 
     assert status(settings, "perturbation", path="work/no_kd.h5ad", knockdown=False, **args)[0] == "pass"
 
 
+def test_knockdown_on_log_normalized_and_dense_data(settings: Settings, project: Path) -> None:
+    good = perturb_adata()
+    lognorm = good.copy()
+    counts = np.asarray(lognorm.X.todense())
+    lognorm.X = np.log1p(counts / counts.sum(axis=1, keepdims=True) * 1e4)  # dense, log1p
+    lognorm.write_h5ad(project / "work" / "lognorm_dense.h5ad")
+    result, message = status(settings, "perturbation", path="work/lognorm_dense.h5ad", perturbation="gene",
+                             control="non-targeting")
+    assert result == "pass" and "knockdown in 10 of 10" in message
+
+
+def test_unexpressed_targets_and_repeated_symbols(settings: Settings, project: Path) -> None:
+    adata = perturb_adata()
+    counts = np.asarray(adata.X.todense())
+    counts[:, 0] = 0  # G0 not expressed anywhere: cannot be judged
+    names = list(adata.var_names)
+    names[39] = "G1"  # a repeated symbol
+    silent = ad.AnnData(sparse.csr_matrix(counts), obs=adata.obs, var=pd.DataFrame(index=names))
+    silent.write_h5ad(project / "work" / "silent.h5ad")
+    result, message = status(settings, "perturbation", path="work/silent.h5ad", perturbation="gene",
+                             control="non-targeting")
+    assert result == "pass" and "knockdown in 9 of 9" in message
+
+
 def test_gpu_check_fails_without_a_gpu(settings: Settings, project: Path) -> None:
     assert status(settings, "gpu_visible")[0] == "fail"  # no CUDA on the test machine
 

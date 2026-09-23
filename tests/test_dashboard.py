@@ -80,7 +80,7 @@ def test_page_has_every_view_selectors_and_step_templates(hub, two_branches, set
     for view in ("projects", "pipelines", "runs", "library", "cluster"):
         assert f'data-view="{view}"' in page
     tabs = re.findall(r'data-tab="([a-z]+)"', page)
-    assert tabs == ["projects", "pipelines", "experiments"]  # research only; projects first: they are the root
+    assert tabs == ["journal", "projects", "pipelines", "experiments"]  # the bench's journal first, then the brick era
     menu = page[page.index('class="account"'):page.index('class="tabs"')]  # the sc-hub square holds the rest
     assert all(f'href="#{v}"' in menu for v in ("runs", "library", "runs/sessions", "cluster"))
     assert '<h1 class="view-title">Runs</h1>' in page  # a page opened from the menu says where you are

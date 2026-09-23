@@ -76,11 +76,16 @@ async function main() {
   section = 'Header';
   await go('projects', true);
   await shot('01-projects');
-  await check('three tabs, Projects active', async () => {
+  await check('four tabs, Projects active', async () => {
     const tabs = await page.$$eval('[data-tab]', ts => ts.map(t => `${t.textContent}${t.classList.contains('active') ? '*' : ''}`));
-    assert(tabs.join() === 'Projects*,Pipelines,Compare', tabs.join());
+    assert(tabs.join() === 'Journal,Projects*,Pipelines,Compare', tabs.join());
   });
-  for (const [label, key] of [['Pipelines', 'pipelines'], ['Compare', 'experiments'], ['Projects', 'projects']]) {
+  await check('the page opens on the Journal', async () => {
+    await go('', true);
+    assert(await vis(view('journal')), 'journal hidden');
+    await go('projects');
+  });
+  for (const [label, key] of [['Journal', 'journal'], ['Pipelines', 'pipelines'], ['Compare', 'experiments'], ['Projects', 'projects']]) {
     await check(`tab ${label} opens its view`, async () => {
       await page.click(`[data-tab="${key}"]`);
       await page.waitForTimeout(150);
@@ -135,6 +140,53 @@ async function main() {
     assert(sub.toLowerCase().startsWith(target.split('/')[1]), `subtab ${sub}`);
     return `${await page.textContent('header .status')} → ${target}`;
   });
+
+  // ---------------------------------------------------------------- journal
+  section = 'Journal';
+  await go('journal', true);
+  await shot('00-journal');
+  const shownJournal = () => page.$eval('.journal:not([hidden])', s => s.dataset.journal);
+  await check('the first project is shown, its cards newest first', async () => {
+    const first = await shownJournal();
+    const whys = await page.$$eval(`.journal[data-journal="${first}"] .jcard .why`, ws => ws.map(w => w.textContent));
+    assert(whys[0] === 'a failing cell' && whys[whys.length - 1] === 'download K562 essential', whys.join(' | '));
+    return first;
+  });
+  await check('the project picker switches project and hash', async () => {
+    await page.click('[data-journal-link="k562-qc"]');
+    await page.waitForTimeout(150);
+    assert((await hash()) === '#journal/k562-qc', await hash());
+    assert((await shownJournal()) === 'k562-qc', await shownJournal());
+  });
+  await check('a figure is shown', async () => {
+    const ok = await page.$eval('.journal:not([hidden]) img.jfig', i => i.complete && i.naturalWidth > 0);
+    assert(ok, 'image did not load');
+  });
+  await check('code folds open', async () => {
+    await page.click('.journal:not([hidden]) .jcard details.fold > summary >> nth=0');
+    assert(await vis('.journal:not([hidden]) .jcard details.fold[open] pre.code'), 'code hidden');
+  });
+  await check('long output folds', async () => {
+    const more = page.locator('.journal:not([hidden]) details.more-out').first();
+    await more.locator('summary').click();
+    assert(await more.evaluate(d => d.open), 'did not open');
+  });
+  await check('⋯ on a cell copies its reference', async () => {
+    await page.click('.journal:not([hidden]) .jcard .jhead summary.dots >> nth=0');
+    await page.click('.journal:not([hidden]) .jcard details[open] [data-copy]');
+    assert((await copied()).startsWith('k562-qc#c0'), await copied());
+  });
+  await check('⋯ of the project shows decisions and mistakes', async () => {
+    await page.click('.journal:not([hidden]) .jtitle summary.dots');
+    const text = await page.textContent('.journal:not([hidden]) .jtitle details[open] .pop');
+    assert(text.includes('genome-wide fits in 90 GB') && text.includes('a failing cell'), text.slice(0, 200));
+  });
+  await check('the notebook downloads', () => download('.journal:not([hidden]) .jtitle details[open] [data-jnb]'));
+  await check('notes for the student and untraced numbers are shown', async () => {
+    const text = await page.textContent('.journal:not([hidden])');
+    assert(text.includes('please confirm the control label') && text.includes('numbers not found in the cited cells: 2,000'), 'missing');
+  });
+  await check('journal hints fit', () => hintsFit('.view[data-view="journal"]'));
 
   // ---------------------------------------------------------------- projects
   section = 'Projects';
@@ -712,7 +764,7 @@ async function main() {
   const phone = await browser.newContext({ viewport: { width: 375, height: 812 }, colorScheme: 'light', isMobile: true, hasTouch: true });
   const mp = await phone.newPage();
   mp.on('pageerror', e => errors.push(`phone: ${e.message}`));
-  for (const h of ['projects', 'pipelines', 'experiments', 'runs/history', 'library', 'cluster']) {
+  for (const h of ['journal', 'projects', 'pipelines', 'experiments', 'runs/history', 'library', 'cluster']) {
     await check(`${h}: nothing wider than the screen`, async () => {
       await mp.goto(`${BASE}#${h}`);
       await mp.waitForTimeout(300);

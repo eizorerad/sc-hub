@@ -98,6 +98,11 @@ def test_files_never_show_tokens(server, bench: Settings) -> None:
     for path in ("../../sessions/123/connection.json", str(secret / "connection.json"), "/etc/passwd"):
         result = call(server, "files", {"project": "p", "path": path})
         assert result.is_error and "SEKRET" not in result.content[0].text
+    (bench.logs_dir).mkdir(parents=True, exist_ok=True)
+    (bench.logs_dir / "gate.log").write_text("SEKRET")
+    for project, path in (("..", "logs/gate.log"), ("/", "etc/passwd"), ("../..", "."), ("p/../..", "logs")):
+        result = call(server, "files", {"project": project, "path": path})
+        assert result.is_error and "SEKRET" not in result.content[0].text and "root:" not in result.content[0].text
     listing = ok(call(server, "files", {"project": "p", "path": "work"}))
     assert [e["name"] for e in listing["entries"]] == ["notes.txt"]
     assert ok(call(server, "files", {"project": "p", "path": "work/notes.txt"}))["text"] == "hello"
@@ -164,7 +169,7 @@ def test_figures_reach_clients_that_show_images(server, bench: Settings) -> None
     journal = Journal(bench.projects_dir / "p", "p")
     figure = journal.artifacts_dir("c0001") / "fig-001.png"
     figure.parent.mkdir(parents=True)
-    figure.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+    figure.write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR" + (640).to_bytes(4, "big") + (480).to_bytes(4, "big"))
     journal.write_cell(CellEntry(ref=ref, project="p", cid="c0001", why="w", expect="a plot", code="plt.show()",
                                  created=journal.now(), status="ok",
                                  outputs=(OutputItem(kind="display", image="cells/c0001/fig-001.png"),)))
@@ -183,3 +188,11 @@ def test_run_takes_checks_and_the_checks_skill_lists_them(server, bench: Setting
     text = ok(call(server, "skills", {"name": "checks"}))["text"]
     assert "`perturbation(" in text and "`de_design(" in text
     assert "checks" in [s["name"] for s in ok(call(server, "skills"))["skills"]]
+
+
+def test_png_size_guard() -> None:
+    from schub.mcp_bench import png_size
+
+    header = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+    assert png_size(header + (640).to_bytes(4, "big") + (480).to_bytes(4, "big")) == (640, 480)
+    assert png_size(b"GIF89a....................") is None

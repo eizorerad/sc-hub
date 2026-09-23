@@ -13,7 +13,7 @@ from pydantic import ValidationError
 from ..config import Settings
 from ..projects import ProjectError, ProjectMeta, ProjectStore
 from ..slurm import Slurm, SlurmError
-from .checkpoint import CheckpointError, CheckpointStore
+from .checkpoint import CheckpointError, CheckpointStore, check_handoff
 from .clock import Clock, stamp
 from .inbox import Inbox
 from .jobs import FINAL_JOB_STATES, lookup
@@ -92,6 +92,7 @@ class BenchService:
             CellRequest(cid="c0000", **fields)  # validate before an id is spent
         except ValidationError as exc:
             raise BenchError("; ".join(f"{'.'.join(map(str, e['loc']))}: {e['msg']}" for e in exc.errors())) from exc
+        _validate_checks(checks)
         return CellRequest(cid=journal.allocate("c"), **fields)
 
     def wait(self, ref: str, wait_s: float | None = None) -> CellResult:
@@ -194,6 +195,7 @@ class BenchService:
         journal = self.journal(project)
         store = CheckpointStore(self.projects.path_of(project), now=self.now)
         try:
+            check_handoff(text)  # both or neither: a bad text must not leave a new checkpoint behind
             checkpoint = store.write(disposition, next_action, [WaitingJob(job_id=j) for j in waiting_jobs],
                                      actor=actor)
             store.write_handoff(text)
@@ -229,6 +231,22 @@ class BenchService:
             raise BenchError(f"job {job_id} was not sent by the bench; sc-hub only cancels its own jobs")
         self.slurm.cancel([job_id])
         return f"cancelled job {job_id} of {record.ref}"
+
+
+def _validate_checks(checks: Sequence[CheckSpec]) -> None:
+    """A misspelt check fails now, not after a job of several hours."""
+    from .checks import registry
+
+    known = registry()
+    for spec in checks:
+        check = known.get(spec.name)
+        if check is None:
+            raise BenchError(f"no check {spec.name!r}; skills('checks') lists them")
+        try:
+            check.params.model_validate(spec.params)
+        except ValidationError as exc:
+            error = exc.errors()[0]
+            raise BenchError(f"check {spec.name}: {'.'.join(map(str, error['loc']))}: {error['msg']}") from exc
 
 
 def _previous_epoch(journal: Journal, entry: CellEntry) -> str:

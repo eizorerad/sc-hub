@@ -119,3 +119,39 @@ def test_an_edited_snapshot_is_refused(settings: Settings, cluster: FakeCluster,
     assert jobrun.main(["--job-dir", submitted.job_dir]) == jobrun.EXIT_TAMPERED
     job = next(j for j in Journal(project, "demo").cell("c0001").jobs if j.job_id == submitted.job.job_id)
     assert job.state == "FAILED" and job.exit_code == 3
+
+
+def test_a_syntax_error_stops_before_anything_is_queued(settings: Settings, cluster: FakeCluster, project: Path) -> None:
+    with pytest.raises(SlurmCellError, match="does not parse"):
+        submit_cell(settings, Slurm(cluster), "demo", project, "demo#c0001", "def (", parse_line("", "ws-ia"), [])
+    assert cluster.jobs == {}
+    assert not (project / "jobs").exists() or not any((project / "jobs").iterdir())
+
+
+def test_an_unknown_outcome_is_said_plainly(settings: Settings, project: Path) -> None:
+    class Blind(FakeCluster):
+        def _sbatch(self, args):
+            return subprocess.CompletedProcess(args, 1, "", "sbatch: error: Socket timed out")
+
+        def _squeue(self, args):
+            return subprocess.CompletedProcess(args, 1, "", "squeue: error: Unable to contact controller")
+
+    with pytest.raises(SlurmCellError, match="may exist"):
+        submit_cell(settings, Slurm(Blind()), "demo", project, "demo#c0001", "x = 1", parse_line("", "ws-ia"), [])
+
+
+def test_another_interpreter_runs_the_body(settings: Settings, cluster: FakeCluster, project: Path, monkeypatch,
+                                           tmp_path: Path) -> None:
+    import sys
+
+    fake = tmp_path / "paper-python"
+    fake.write_text(f"#!/bin/sh\necho ran-by-the-paper-env > {project / 'work' / 'marker.txt'}\n")
+    fake.chmod(0o755)
+    spec = parse_line(f"--python {fake}", "ws-ia")
+    submitted = submit_cell(settings, Slurm(cluster), "demo", project, "demo#c0001", "print('x')", spec, [])
+    assert json.loads((Path(submitted.job_dir) / "job.json").read_text())["python"] == sys.executable
+    monkeypatch.setenv("SCHUB_ROOT", str(settings.root))
+    monkeypatch.setenv("SLURM_JOB_ID", submitted.job.job_id)
+    monkeypatch.chdir(project)
+    assert jobrun.main(["--job-dir", submitted.job_dir]) == 0
+    assert (project / "work" / "marker.txt").read_text().strip() == "ran-by-the-paper-env"

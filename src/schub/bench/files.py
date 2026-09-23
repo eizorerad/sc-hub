@@ -14,11 +14,12 @@ from typing import Literal
 
 from ..config import Settings
 from ..h5ad_profile import UnsupportedFile, profile_h5ad
+from ..projects import ProjectError, ProjectStore
 from ..state import Frozen
 
 MAX_LISTED = 200
 DEFAULT_CHARS = 20_000
-HIDDEN = frozenset({"sessions", ".cache", "envs", ".ssh", ".git", "__pycache__"})
+HIDDEN = frozenset({"sessions", ".cache", "envs", ".ssh", ".git", "__pycache__", "logs", "bench"})
 
 
 class FilesError(ValueError):
@@ -42,13 +43,22 @@ class FileView(Frozen):
     profile: dict | None = None
 
 
+def project_dir(settings: Settings, project: str | None) -> Path:
+    """The project's folder, only for a valid, existing project name (never '..' or '/')."""
+    if not project:
+        return settings.projects_dir
+    try:
+        return ProjectStore(settings).require(project)
+    except ProjectError as exc:
+        raise FilesError(str(exc)) from exc
+
+
 def roots(settings: Settings, project: str | None) -> list[Path]:
-    found = [settings.projects_dir / project] if project else [settings.projects_dir]
-    return found + list(settings.library_roots)
+    return [project_dir(settings, project)] + list(settings.library_roots)
 
 
 def resolve(settings: Settings, project: str | None, raw: str) -> Path:
-    base = settings.projects_dir / project if project else settings.projects_dir
+    base = project_dir(settings, project)
     candidate = Path(raw).expanduser()
     candidate = candidate if candidate.is_absolute() else base / candidate
     try:

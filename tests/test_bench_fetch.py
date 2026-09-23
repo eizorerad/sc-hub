@@ -103,12 +103,20 @@ def test_checksum_mismatch_deletes_the_file(server: str, project: Path) -> None:
 
 
 def test_only_web_urls(project: Path) -> None:
-    for url in ("file:///etc/passwd", "ssh://x/y"):
+    for url in ("file:///etc/passwd", "ssh://x/y", "ftp://ftp.ncbi.nlm.nih.gov/geo/x"):
         with pytest.raises(FetchError):
             fetch(url)
 
 
+def test_a_partial_file_of_another_url_is_never_resumed(server: str, project: Path) -> None:
+    stale = project / "data" / "data.bin.part"
+    stale.parent.mkdir(parents=True)
+    stale.write_bytes(b"x" * 50_000)  # left by a download of some other file with the same name
+    assert fetch(f"{server}/data.bin").read_bytes() == PAYLOAD
+    assert not (project / "data" / "data.bin.part.json").exists()
+
+
 def test_gives_up_after_repeated_network_errors(project: Path, monkeypatch) -> None:
-    monkeypatch.setattr(fetch_module, "_open", lambda url, offset: (_ for _ in ()).throw(ConnectionResetError("reset")))
+    monkeypatch.setattr(fetch_module, "_open", lambda url, offset, validator="": (_ for _ in ()).throw(ConnectionResetError("reset")))
     with pytest.raises(FetchError, match="after 2 attempts"):
         fetch("https://example.org/x.bin", attempts=2, pause_s=0)

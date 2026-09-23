@@ -189,13 +189,15 @@ class ProjectWorker:
         files = diff(before, after, project_dir, config.snapshot_hash_max_mb * 1024 * 1024)
         events = [] if result.status == "lost" else parse_user_expression(drain_ledger(kernel))
         downloads, jobs = _events(events)
+        bricks = tuple(f"{e.get('brick')} {e.get('version')} {str(e.get('code_id', ''))[:12]}"
+                       for e in events if e.get("kind") == "note" and e.get("brick"))
         status, message = self._outcome(result.status, project_dir)
         # A cell that sent a job is checked by the job when it ends (its outputs appear then).
         checks = run_checks(self.host.settings, entry.project, entry.checks) \
             if status == "ok" and entry.checks and not jobs else ()
         entry = entry.model_copy(update={
             "outputs": collector.snapshot(), "files": files, "files_truncated": after.truncated or before.truncated,
-            "downloads": downloads, "jobs": jobs, "check_results": checks,
+            "downloads": downloads, "jobs": jobs, "check_results": checks, "bricks": bricks,
         })
         self._final(journal, item, entry, status, message=message)
 

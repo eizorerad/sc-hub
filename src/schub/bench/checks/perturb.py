@@ -59,8 +59,8 @@ def check_perturbation(path_of: PathOf, p: PerturbParams) -> CheckResult:
     knock = _knockdown(path, labels, targets, p)
     details.update(knock)
     if knock["tested"] == 0:
-        return failed("perturbation", "no perturbation label matches a gene, so knockdown cannot be tested "
-                      "(set gene_column or knockdown=false)", **details)
+        return failed("perturbation", "knockdown cannot be tested: no targeted gene is both in the matrix and "
+                      "expressed in the controls (set gene_column, or knockdown=false)", **details)
     if knock["fraction"] < p.min_knockdown_fraction:
         return failed("perturbation", f"target knocked down (ratio < {p.knockdown_ratio}) in {knock['knocked']} "
                       f"of {knock['tested']} tested perturbations; expected at least "
@@ -80,43 +80,75 @@ def _knockdown(path: Path, labels: pd.Series, targets: pd.Series, p: PerturbPara
     adata = ad.read_h5ad(path, backed="r")
     try:
         genes = pd.Index(adata.var[p.gene_column].astype(str) if p.gene_column else adata.var_names.astype(str))
-        tested = [t for t in targets.index[: p.max_targets * 4] if t in genes][: p.max_targets]
+        first = {g: i for i, g in reversed(list(enumerate(genes)))}  # repeated symbols: the first column
+        tested = [t for t in targets.index[: p.max_targets * 4] if t in first][: p.max_targets]
         if not tested:
-            return {"tested": 0, "knocked": 0, "fraction": 0.0}
+            return {"tested": 0, "knocked": 0, "fraction": 0.0, "no_baseline": 0}
         rng = np.random.default_rng(0)
         groups = {t: _sample(np.flatnonzero(labels.values == t), p.max_cells_per_group, rng) for t in tested}
         controls = _sample(np.flatnonzero(labels.values == p.control), p.max_controls, rng)
         rows = np.unique(np.concatenate([controls, *groups.values()]))
-        matrix = _normalized(adata[rows].to_memory().X)
+        columns = sorted({first[t] for t in tested})
+        matrix = _expression(adata, rows, columns)
     finally:
         adata.file.close()
+    return _compare(matrix, rows, controls, groups, {t: columns.index(first[t]) for t in tested}, p)
+
+
+def _expression(adata, rows: np.ndarray, columns: list[int]) -> np.ndarray:
+    """Library-size-normalized expression of the target genes in the sampled cells (dense)."""
+    from scipy import sparse
+
+    subset = adata[rows].to_memory().X if adata.isbacked and _is_sparse(adata) else None
+    if subset is None:
+        subset = adata[rows, columns].to_memory().X  # dense X: only the columns needed
+        return _unlog(np.asarray(subset.todense() if sparse.issparse(subset) else subset, dtype=float))
+    counts = subset.tocsr() if sparse.issparse(subset) else np.asarray(subset)
+    target = np.asarray(counts[:, columns].todense() if sparse.issparse(counts) else counts[:, columns], dtype=float)
+    if not _looks_like_counts(counts):
+        return _unlog(target)
+    totals = np.asarray(counts.sum(axis=1)).ravel()
+    totals[totals == 0] = 1
+    return target * (1e4 / totals)[:, None]
+
+
+def _is_sparse(adata) -> bool:
+    encoding = adata.file["X"].attrs.get("encoding-type", "") if "X" in adata.file else ""
+    return "csr" in str(encoding) or "csc" in str(encoding)
+
+
+def _looks_like_counts(matrix) -> bool:
+    from scipy import sparse
+
+    sample = matrix[: min(50, matrix.shape[0])]
+    values = sample.data if sparse.issparse(sample) else np.asarray(sample).ravel()
+    return values.size > 0 and bool(np.allclose(values, np.round(values)))
+
+
+def _unlog(values: np.ndarray) -> np.ndarray:
+    """log1p-normalized data (non-integer, small) back to its linear scale; ratios of logs mislead."""
+    return np.expm1(values) if values.size and values.max() < 30 else values
+
+
+def _compare(matrix: np.ndarray, rows: np.ndarray, controls: np.ndarray, groups: dict, column: dict,
+             p: PerturbParams) -> dict:
     position = {row: i for i, row in enumerate(rows)}
     control_rows = [position[r] for r in controls]
-    knocked = 0
+    knocked = tested = no_baseline = 0
     for target, members in groups.items():
-        column = genes.get_loc(target)
-        base = float(np.asarray(matrix[control_rows, column].mean()))
-        mean = float(np.asarray(matrix[[position[r] for r in members], column].mean()))
-        knocked += int(base > 0 and mean / base < p.knockdown_ratio)
-    return {"tested": len(tested), "knocked": knocked, "fraction": knocked / len(tested)}
+        base = float(matrix[control_rows, column[target]].mean())
+        if base <= 0:
+            no_baseline += 1  # not expressed in controls: knockdown cannot be seen, not a failure
+            continue
+        tested += 1
+        mean = float(matrix[[position[r] for r in members], column[target]].mean())
+        knocked += int(mean / base < p.knockdown_ratio)
+    return {"tested": tested, "knocked": knocked, "fraction": knocked / tested if tested else 0.0,
+            "no_baseline": no_baseline}
 
 
 def _sample(indices: np.ndarray, limit: int, rng: np.random.Generator) -> np.ndarray:
     return np.sort(rng.choice(indices, size=limit, replace=False)) if len(indices) > limit else indices
-
-
-def _normalized(matrix):
-    """Counts per 10k per cell (raw counts); other matrices are compared as they are."""
-    from scipy import sparse
-
-    dense_sample = matrix[: min(50, matrix.shape[0])]
-    values = dense_sample.data if sparse.issparse(dense_sample) else np.asarray(dense_sample).ravel()
-    if values.size == 0 or not np.allclose(values, np.round(values)):
-        return matrix
-    totals = np.asarray(matrix.sum(axis=1)).ravel()
-    totals[totals == 0] = 1
-    scale = sparse.diags(1e4 / totals) if sparse.issparse(matrix) else (1e4 / totals)[:, None]
-    return scale @ matrix if sparse.issparse(matrix) else matrix * scale
 
 
 CHECKS = (

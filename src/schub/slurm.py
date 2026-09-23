@@ -196,6 +196,8 @@ class Slurm:
     def find_by_comment(self, comment: str) -> str | None:
         """The job carrying this --comment (an idempotency key), if it is queued or running."""
         proc = self._run(["squeue", "--me", "-h", "-o", "%i|%k"])
+        if proc.returncode != 0:
+            raise SlurmError(f"squeue failed: {proc.stderr.strip() or proc.stdout.strip()}")
         for row in _rows(proc.stdout):
             if len(row) >= 2 and row[1].strip() == comment:
                 return row[0]

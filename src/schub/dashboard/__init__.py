@@ -3,6 +3,7 @@ images), and the laptop mirrors it with `schub-view` (ssh + rsync + a browser)."
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import tempfile
@@ -118,6 +119,36 @@ class _Images:
                 pass
 
 
+def _journal_files(settings: Any, view: Path, snapshot: Any) -> None:
+    """Figures the Journal tab shows, and each bench project's notebook (also kept in its journal)."""
+    from ..bench.journal import Journal
+    from ..bench.render_nb import render
+
+    used: set[Path] = set()
+    for card in snapshot.journals:
+        for source, relative in card.figures:
+            target = view / relative
+            try:
+                _copy(Path(source), target)
+                used.add(target)
+            except OSError:
+                continue
+        project_dir = settings.projects_dir / card.project
+        journal = Journal(project_dir, card.project)
+        text = json.dumps(render(card.project, card.question, journal.entries(), journal.folder), indent=1)
+        _write(view / f"{card.notebook}.ipynb", text)
+        _write(view / f"{card.notebook}.js", f"window.SCHUB_JNB=window.SCHUB_JNB||{{}};"
+                                             f"window.SCHUB_JNB[{json.dumps(card.project)}]={text};\n")
+        try:
+            _write(journal.folder / "notebook.ipynb", text)
+        except OSError:
+            pass  # the view copy is what the page links to
+    root = view / "jfig"
+    for path in root.rglob("*") if root.is_dir() else []:
+        if path.is_file() and path not in used:
+            path.unlink(missing_ok=True)
+
+
 def build_dashboard(hub: Any, out: Path | None = None) -> DashboardInfo:
     view = out or hub.settings.view_dir
     hub.pump_quietly()  # the viewer refreshes every minute: queued plans move on
@@ -130,6 +161,7 @@ def build_dashboard(hub: Any, out: Path | None = None) -> DashboardInfo:
     _write(view / "index.html", site.index)
     _write_files(view, site.files)
     images.prune()
+    _journal_files(hub.settings, view, snapshot)
     shutil.rmtree(view / "runs", ignore_errors=True)  # per-run pages of the previous layout
     size = sum(p.stat().st_size for p in view.rglob("*") if p.is_file())
     return DashboardInfo(

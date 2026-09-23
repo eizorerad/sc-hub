@@ -114,3 +114,41 @@ def test_refs() -> None:
     for bad in ("nohash", "p#x0001", "p#c1", "#c0001"):
         with pytest.raises(JournalError):
             parse_ref(bad)
+
+
+def test_two_checks_of_the_same_kind_both_count(journal: Journal) -> None:
+    cid = journal.allocate("c")
+    journal.write_cell(cell(journal, cid, status="ok",
+                            check_results=(CheckResult(name="file", status="fail", message="a.csv"),)))
+    journal.add_addendum(cid, "check-9-0", {"kind": "check", "check": {"name": "file", "status": "pass"}})
+    assert [(c.name, c.status) for c in journal.cell(cid).check_results] == [("file", "fail"), ("file", "pass")]
+
+
+def test_a_jobs_own_report_wins_over_the_watchdogs_guess(journal: Journal) -> None:
+    cid = journal.allocate("c")
+    journal.write_cell(cell(journal, cid, status="ok", jobs=(JobRef(job_id="5", state="PENDING"),)))
+    journal.add_addendum(cid, "jobend-5", {"kind": "job", "source": "watchdog", "job": {"job_id": "5", "state": "ENDED"}})
+    journal.add_addendum(cid, "job-5", {"kind": "job", "job": {"job_id": "5", "state": "COMPLETED", "exit_code": 0}})
+    assert journal.cell(cid).jobs[0].state == "COMPLETED"
+
+
+def test_since_sees_cells_that_changed_later(journal: Journal) -> None:
+    cid = journal.allocate("c")
+    journal.write_cell(cell(journal, cid, status="running"))
+    mark = journal.now()
+    journal.add_note("note", "made after the mark")
+    journal.add_addendum(cid, "job-3", {"kind": "job", "job": {"job_id": "3", "state": "COMPLETED"}})
+    assert [e.ref for e in journal.entries(since=mark)] == ["demo#n0001", "demo#c0001"]  # by time of change
+    later = journal.changes(since=mark)[-1][0]
+    assert journal.entries(since=later) == []
+
+
+def test_reading_on_from_since_misses_nothing(journal: Journal) -> None:
+    mark = journal.now()
+    for i in range(5):
+        journal.add_note("note", f"note {i}")
+    first = journal.changes(since=mark, limit=2)
+    second = journal.changes(since=first[-1][0], limit=2)
+    third = journal.changes(since=second[-1][0], limit=2)
+    texts = [e.text for _, e in first + second + third]
+    assert texts == ["note 0", "note 1", "note 2", "note 3", "note 4"]

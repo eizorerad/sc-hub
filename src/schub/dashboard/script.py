@@ -24,12 +24,13 @@ SCRIPT = r"""
   const pickers = {};
 
   function route() {
-    let hash = location.hash.slice(1) || 'projects';
+    const firstTab = ($('[data-tab]') || {dataset: {tab: 'journal'}}).dataset.tab;
+    let hash = location.hash.slice(1) || firstTab;
     const first = hash.split('/')[0];
     if (ALIASES[first]) hash = ALIASES[first];
     const [view, ...rest] = hash.split('/');
     const arg = rest.join('/');  // project paths contain '/'
-    const name = $$('.view').some(v => v.dataset.view === view) ? view : 'projects';
+    const name = $$('.view').some(v => v.dataset.view === view) ? view : firstTab;
     $$('.view').forEach(v => v.classList.toggle('active', v.dataset.view === name));
     $$('[data-tab]').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
     $$('details.account .brand').forEach(b => b.classList.toggle('here', $$('[data-tab]').every(t => t.dataset.tab !== name)));
@@ -39,6 +40,7 @@ SCRIPT = r"""
     if (name === 'pipelines') selectPipe(arg || keep.get('pipe') || $('[data-pipe]')?.dataset.pipe || '');
     if (name === 'experiments' && window.SCHUB_EXPERIMENTS) window.SCHUB_EXPERIMENTS.route(decode(arg));
     if (name === 'projects') selectProject(arg ? decode(arg) : keep.get('project'));
+    if (name === 'journal' && window.SCHUB_JOURNAL) window.SCHUB_JOURNAL.select(arg ? decode(arg) : null);
     if (!restoring) window.scrollTo(0, 0);
   }
 

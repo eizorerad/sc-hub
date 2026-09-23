@@ -72,8 +72,57 @@ def main(out: Path) -> None:
     hub.save_branch("ifn", "strict", BranchSpec(from_branch="main", overrides={"qc_filter": {"min_genes": 5}}))
     hub.label_branch("ifn", "main", add_tags=["baseline"], pinned=True)
     hub.label_branch("ifn", "strict", add_tags=["qc"])
+    _bench_project(hub)
     info = build_dashboard(hub, out / "view")
     print(info.path)
+
+
+PNG = bytes.fromhex(
+    "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da63f8cfc0f01f0005"
+    "00020101b6e36b790000000049454e44ae426082")
+
+
+def _bench_project(hub: Hub) -> None:
+    """Two bench projects with cells, a figure, checks, a job, notes and a hand-over."""
+    from schub.bench.checkpoint import CheckpointStore
+    from schub.bench.journal import Journal
+    from schub.bench.models import Actor, CellEntry, CheckResult, JobRef, OutputItem
+
+    for name, question in (("k562-qc", "Is the K562 essential screen good enough to model?"),
+                           ("cell-jepa", "Does the cell-JEPA paper reproduce on one GPU?")):
+        hub.projects.create(name, question=question)
+        journal = Journal(hub.settings.projects_dir / name, name)
+        codex, claude = Actor(client="codex-mcp-client"), Actor(client="claude-code")
+        cells = (
+            ("download K562 essential", "one .h5ad with raw counts", "ok", codex,
+             {"outputs": (OutputItem(kind="stream", text="fetched ... (1.9 GB, sha256 5f1e...)\n<b>not bold</b>"),)}),
+            ("QC on the twin", "a histogram and a QC table", "ok", claude,
+             {"outputs": (OutputItem(kind="display", image="cells/c0002/fig-001.png"),),
+              "check_results": (CheckResult(name="perturbation", status="pass", message="knockdown in 41 of 50"),),
+              "data_scope": "twin"}),
+            ("full QC as a job", "a job id", "ok", claude,
+             {"outputs": (OutputItem(kind="stream", text="Submitted Slurm job 812\n" + "line\n" * 30),),
+              "jobs": (JobRef(job_id="812", state="COMPLETED", exit_code=0),), "data_scope": "full"}),
+            ("a failing cell", "no error", "error", codex,
+             {"outputs": (OutputItem(kind="error", ename="KeyError", text="KeyError: 'gene'"),)}),
+        )
+        for why, expect, status, actor, extra in cells:
+            cid = journal.allocate("c")
+            journal.write_cell(CellEntry(ref=f"{name}#{cid}", project=name, cid=cid, why=why, expect=expect,
+                                         code=f"# {why}\nprint('x')", created=journal.now(), status=status,
+                                         actor=actor, duration_s=12.0, **extra))
+        figure = journal.artifacts_dir("c0002") / "fig-001.png"
+        figure.parent.mkdir(parents=True, exist_ok=True)
+        figure.write_bytes(PNG)
+        journal.add_note("registration", "knockdown in at least half of the targets, else stop")
+        journal.add_note("decision", "use K562 essential, not genome-wide", because=[f"{name}#c0001"],
+                         reverses_if="genome-wide fits in 90 GB backed")
+        journal.add_note("finding", "median 2,000 cells per guide", because=[f"{name}#c0002"],
+                         unresolved_numbers=("2,000",))
+        journal.add_note("note", "please confirm the control label", audience="human")
+        store = CheckpointStore(hub.settings.projects_dir / name)
+        store.write("active", next_action="full QC, then pseudobulk")
+        store.write_handoff("# Where we are\n- twin QC done (c0002)\n- full QC job 812 done")
 
 
 if __name__ == "__main__":

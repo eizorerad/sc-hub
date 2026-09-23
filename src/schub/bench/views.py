@@ -71,11 +71,12 @@ def journal_view(settings: Settings, project: str, since: str | None, kinds: Ite
     project_dir = ProjectStore(settings).require(project)
     journal = Journal(project_dir, project)
     store = CheckpointStore(project_dir)
-    entries = journal.entries(since=since, kinds=kinds, limit=limit)
-    budget = max(300, max_chars // max(1, len(entries)))
+    changes = journal.changes(since=since, kinds=kinds, limit=limit)
+    budget = max(300, max_chars // max(1, len(changes)))
+    newest = max((changed for changed, _ in changes), default=since or "")
     return JournalView(
         project=project, handoff=store.read_handoff(), checkpoint=store.read(),
-        entries=tuple(compact(e, budget) for e in entries), newest=entries[-1].created if entries else (since or ""),
+        entries=tuple(compact(e, budget) for _, e in changes), newest=newest,
     )
 
 

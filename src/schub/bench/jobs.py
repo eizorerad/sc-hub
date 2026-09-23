@@ -75,35 +75,63 @@ def close(settings: Settings, job_id: str) -> None:
         pass
 
 
+LOG_ENDINGS = (("DUE TO TIME LIMIT", "TIMEOUT"), ("oom-kill", "OUT_OF_MEMORY"), ("Out Of Memory", "OUT_OF_MEMORY"),
+               ("DUE TO PREEMPTION", "PREEMPTED"), ("DUE TO NODE FAILURE", "NODE_FAIL"), ("CANCELLED AT", "CANCELLED"))
+
+
+def _reported(record: JobRecord) -> bool:
+    return (Path(record.job_dir) / "result.json").exists()
+
+
 def reap(settings: Settings, slurm: Slurm) -> list[str]:
-    """Close jobs that reported; record the ones Slurm ended without a result. Returns those."""
+    """Close jobs that reported; record the ones Slurm ended without a result. Returns those.
+
+    A job counts as ended only when the queue answered and does not list it: when Slurm
+    cannot be asked, nothing is decided. sacct does not work here and scontrol forgets
+    finished jobs after minutes, so the reason is read from the job's own log (Slurm
+    writes "CANCELLED ... DUE TO TIME LIMIT" there)."""
     records = open_records(settings)
-    waiting = [r for r in records if not (Path(r.job_dir) / "result.json").exists()]
-    for record in records:
-        if record not in waiting:
-            close(settings, record.job_id)
+    for record in [r for r in records if _reported(r)]:
+        close(settings, record.job_id)
+    waiting = [r for r in records if not _reported(r)]
     if not waiting:
         return []
     try:
-        states = slurm.states([r.job_id for r in waiting])
+        active = {j.job_id for j in slurm.my_jobs()}
     except SlurmError:
-        return []  # unsure: look again next time
+        return []
     ended = []
     for record in waiting:
-        state = states.get(record.job_id, "ENDED")
-        if state in ACTIVE_STATES:
+        if record.job_id in active or _reported(record):  # still queued, or it reported just now
             continue
-        _record_end(settings, record, state)
+        _record_end(settings, record, _final_state(slurm, record))
         close(settings, record.job_id)
         ended.append(record.job_id)
     return ended
+
+
+def _final_state(slurm: Slurm, record: JobRecord) -> str:
+    try:
+        known = slurm.states([record.job_id]).get(record.job_id)
+    except SlurmError:
+        known = None
+    if known and known not in ACTIVE_STATES:
+        return known
+    log = Path(record.job_dir) / f"slurm-{record.job_id}.log"
+    try:
+        with log.open("rb") as handle:
+            handle.seek(max(0, log.stat().st_size - 8192))
+            tail = handle.read().decode(errors="replace")
+    except OSError:
+        return "ENDED"
+    return next((state for marker, state in LOG_ENDINGS if marker in tail), "ENDED")
 
 
 def _record_end(settings: Settings, record: JobRecord, state: str) -> None:
     cid = record.ref.partition("#")[2]
     journal = Journal(settings.projects_dir / record.project, record.project)
     try:
-        journal.add_addendum(cid, f"job-{record.job_id}", {"kind": "job", "job": {
+        journal.add_addendum(cid, f"jobend-{record.job_id}", {"kind": "job", "source": "watchdog", "job": {
             "job_id": record.job_id, "state": state if state != "COMPLETED" else "ENDED", "finished": stamp(),
             "log": str(Path(record.job_dir) / f"slurm-{record.job_id}.log")}})
     except (JournalError, OSError):

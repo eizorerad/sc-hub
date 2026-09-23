@@ -231,3 +231,21 @@ ol.timeline{list-style:none;padding:0;margin:14px 0;border-left:2px solid var(--
 .tabs a{white-space:nowrap}main{padding:8px 16px 32px}table{display:block;overflow-x:auto}
 .row-link{flex-wrap:wrap;gap:8px}.links{gap:10px}.section-head{flex-wrap:wrap}}
 """
+
+JOURNAL_CSS = """
+.jbar{display:flex;align-items:center;gap:8px;margin-bottom:10px}.jbar>.hint{margin-left:auto}.journal-tree{display:flex;flex-wrap:wrap;gap:4px}
+.journal-tree button{padding:5px 12px;border-radius:999px;border:1px solid var(--line);background:var(--card);color:var(--text)}
+.journal-tree button.active{background:var(--text);color:var(--card);border-color:var(--text)}
+.jtitle{display:flex;align-items:center;gap:8px}.jtitle h2{margin:6px 0}.question{margin:0 0 6px;color:var(--muted)}
+.jstate{display:flex;gap:10px;align-items:center;margin:4px 0 12px;font-size:13px}
+.jcards{display:flex;flex-direction:column;gap:10px}
+.jcard{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 14px;box-shadow:var(--shadow)}
+.jhead{display:flex;align-items:center;gap:8px}.jhead .why{font-weight:500}.expect{margin:2px 0 6px}
+.badges{display:flex;flex-wrap:wrap;gap:4px;margin:4px 0}
+pre.out,pre.code{background:var(--soft);border-radius:8px;padding:8px 10px;margin:6px 0;white-space:pre-wrap;word-break:break-word;font:12px ui-monospace,SFMono-Regular,Menlo,monospace;max-height:420px;overflow:auto}
+pre.out.err{color:var(--bad,#b3261e)}
+img.jfig{max-width:100%;max-height:360px;border:1px solid var(--line);border-radius:8px;margin:6px 0;display:block}
+details.fold>summary{cursor:pointer;color:var(--muted);font-size:12px;margin-top:4px}
+details.more-out>summary{list-style:none;cursor:pointer}.jfoot{margin-top:6px}
+.note-card .note-text{margin:6px 0;white-space:pre-wrap}.tag.kind{font-weight:500}
+"""

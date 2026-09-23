@@ -8,7 +8,7 @@ from .collect import Snapshot
 from .html import esc
 from .notebooks import code_templates
 from .script import SCRIPT
-from .style import CSS
+from .style import CSS, JOURNAL_CSS
 from .views_activity import status_chip
 from .views_cluster import render_cluster
 from .views_library import render_library
@@ -17,6 +17,7 @@ from ..state import Frozen
 from .script_experiments import EXPERIMENTS_SCRIPT
 from .views_experiments import render_experiments
 from .views_pipelines import render_pipelines
+from .views_journal import JOURNAL_SCRIPT, render_journal
 from .views_runs import ImageUrl, render_runs
 
 # What a researcher needs sits in three tabs: Projects are the root (a question, its
@@ -79,22 +80,30 @@ def _titled(key: str, html: str) -> str:
 
 
 def render_site(snap: Snapshot, image_url: ImageUrl) -> Site:
-    pipelines = render_pipelines(snap, image_url)
-    tabs = "".join(f'<a href="#{key}" data-tab="{key}">{esc(label)}</a>' for key, label in TABS)
-    views = {
-        "projects": render_projects(snap, pipelines.views, pipelines.project_views),
-        "experiments": render_experiments(snap, pipelines.views, image_url),
-        "pipelines": pipelines.shell,
+    tab_list = (("journal", "Journal"),) + (TABS if snap.legacy else ())
+    tabs = "".join(f'<a href="#{key}" data-tab="{key}">{esc(label)}</a>' for key, label in tab_list)
+    views = {"journal": render_journal(snap.journals, snap.bench)}
+    files: dict[str, str] = {}
+    if snap.legacy:
+        pipelines = render_pipelines(snap, image_url)
+        files = pipelines.files
+        views.update({
+            "projects": render_projects(snap, pipelines.views, pipelines.project_views),
+            "experiments": render_experiments(snap, pipelines.views, image_url),
+            "pipelines": pipelines.shell,
+        })
+    views.update({
         "runs": render_runs(snap, image_url),
         "library": render_library(snap),
         "cluster": render_cluster(snap.overview),
-    }
+    })
     sections = "".join(f'<section class="view" data-view="{key}">{_titled(key, html)}</section>' for key, html in views.items())
     index = (
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
-        f"<title>sc-hub · {esc(snap.user)}</title><style>{CSS}</style></head><body>"
+        f"<title>sc-hub · {esc(snap.user)}</title><style>{CSS}{JOURNAL_CSS}</style></head><body>"
         f'<header class="top">{_account(snap)}<nav class="tabs">{tabs}</nav>{status_chip(snap)}</header>'
-        f"<main>{sections}</main>{code_templates(snap)}<script>{EXPERIMENTS_SCRIPT}</script><script>{SCRIPT}</script></body></html>"
+        f"<main>{sections}</main>{code_templates(snap)}<script>{EXPERIMENTS_SCRIPT}</script>"
+        f"<script>{JOURNAL_SCRIPT}</script><script>{SCRIPT}</script></body></html>"
     )
-    return Site(index=index, files=pipelines.files)
+    return Site(index=index, files=files)

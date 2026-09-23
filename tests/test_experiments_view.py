@@ -159,4 +159,4 @@ def test_a_diverged_model_s_nan_does_not_break_the_page(hub, cluster):
     raw = re.search(r'<script type="application/json" id="exp-data">(.*?)</script>', page, re.S).group(1)
     row = next(r for r in json.loads(raw)["rows"] if r["branch"] == "main")  # strict JSON: no NaN token
     assert "cells" not in row["metrics"] and row["metrics"]["clusters"] == 9
-    assert page.count("<script>") == 2  # the Experiments script cannot stop the main one
+    assert page.count("<script>") == 3  # Experiments and Journal scripts cannot stop the main one

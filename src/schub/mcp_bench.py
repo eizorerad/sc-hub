@@ -33,6 +33,7 @@ T = TypeVar("T")
 READ = ToolAnnotations(readOnlyHint=True, openWorldHint=False)
 WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False)
 RUN = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True)
+STOP = ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=False)
 KNOWN = (HubError, SlurmError, UnsupportedFile, ProjectError, KeyError, ValueError, OSError)
 NoteKindArg = Literal["registration", "decision", "finding", "error", "incident", "note", "verdict"]
 Disposition = Literal["active", "waiting", "complete", "blocked"]
@@ -72,6 +73,14 @@ def _client(ctx: Context | None) -> tuple[Actor, ClientProfile]:
 
 MAX_INLINE_IMAGES = 3
 MAX_INLINE_BYTES = 1_000_000
+MAX_INLINE_PIXELS = 2000  # clients refuse larger images once a conversation holds many
+
+
+def png_size(data: bytes) -> tuple[int, int] | None:
+    """(width, height) from a PNG header, or None if it is not a PNG."""
+    if len(data) < 24 or data[:8] != b"\x89PNG\r\n\x1a\n" or data[12:16] != b"IHDR":
+        return None
+    return int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
 
 
 def answer(result: CellResult, profile: ClientProfile, projects_dir: Path) -> CallToolResult:
@@ -94,25 +103,50 @@ def _images(result: CellResult, projects_dir: Path) -> list[ImageContent]:
         try:
             if not path.is_relative_to(journal) or path.stat().st_size > MAX_INLINE_BYTES:
                 continue
-            data = base64.b64encode(path.read_bytes()).decode()
+            raw = path.read_bytes()
         except OSError:
             continue
-        found.append(ImageContent(type="image", data=data, mime_type="image/png"))
+        size = png_size(raw)
+        if size is None or max(size) > MAX_INLINE_PIXELS:
+            continue  # the figure stays in the journal and on the dashboard
+        found.append(ImageContent(type="image", data=base64.b64encode(raw).decode(), mime_type="image/png"))
     return found
 
 
-def register_bench_tools(mcp: MCPServer, hub: Hub, bench: BenchService) -> None:
-    log_dir = hub.settings.logs_dir
+def _message(exc: BaseException) -> str:
+    """KeyError('x') reads as 'x'; an OSError keeps its text (its first arg is only the errno)."""
+    if isinstance(exc, KeyError) and exc.args:
+        return str(exc.args[0])
+    return str(exc)
 
-    def call(tool: str, args: dict[str, Any], fn: Callable[[], T]) -> T:
-        with audited(log_dir, tool, args):
+
+class Calls:
+    """Audited tool calls: every call lands in logs/calls-*.jsonl; known errors become tool errors."""
+
+    def __init__(self, hub: Hub) -> None:
+        self.log_dir = hub.settings.logs_dir
+
+    def __call__(self, tool: str, args: dict[str, Any], fn: Callable[[], T]) -> T:
+        with audited(self.log_dir, tool, args):
             try:
                 return fn()
             except KNOWN as exc:
-                raise ToolError(str(exc.args[0]) if exc.args else str(exc)) from exc
+                raise ToolError(_message(exc)) from exc
 
-    async def acall(tool: str, args: dict[str, Any], fn: Callable[[], T]) -> T:
-        return await anyio.to_thread.run_sync(lambda: call(tool, args, fn))
+    async def threaded(self, tool: str, args: dict[str, Any], fn: Callable[[], T]) -> T:
+        """For the calls that wait: the event loop stays free meanwhile."""
+        return await anyio.to_thread.run_sync(lambda: self(tool, args, fn))
+
+
+def register_bench_tools(mcp: MCPServer, hub: Hub, bench: BenchService) -> None:
+    call = Calls(hub)
+    _register_cells(mcp, hub, bench, call)
+    _register_journal(mcp, bench, call)
+    _register_reference(mcp, hub, bench, call)
+
+
+def _register_cells(mcp: MCPServer, hub: Hub, bench: BenchService, call: Calls) -> None:
+    acall = call.threaded
 
     @mcp.tool(annotations=READ)
     def projects() -> list[ProjectCard]:
@@ -148,6 +182,9 @@ def register_bench_tools(mcp: MCPServer, hub: Hub, bench: BenchService) -> None:
                              lambda: bench.wait(ref, profile.run_wait_s))
         return answer(result, profile, hub.settings.projects_dir)  # type: ignore[return-value]
 
+
+
+def _register_journal(mcp: MCPServer, bench: BenchService, call: Calls) -> None:
     @mcp.tool(annotations=READ)
     def journal(project: str, since: str | None = None, kinds: list[str] | None = None,
                 limit: int = 20) -> JournalView:
@@ -177,6 +214,9 @@ def register_bench_tools(mcp: MCPServer, hub: Hub, bench: BenchService) -> None:
         return call("handoff", {"project": project, "disposition": disposition},
                     lambda: bench.handoff(project, text, disposition, next_action, waiting_jobs or [], actor))
 
+
+
+def _register_reference(mcp: MCPServer, hub: Hub, bench: BenchService, call: Calls) -> None:
     @mcp.tool(annotations=READ)
     def datasets(name: str | None = None) -> DatasetsAnswer:
         """Datasets in the shared library and the student's data/. With `name`: its metadata profile
@@ -211,7 +251,7 @@ def register_bench_tools(mcp: MCPServer, hub: Hub, bench: BenchService) -> None:
             return ClusterAnswer(workbench=bench.status(), overview=overview, problem=problem)
         return call("cluster", {}, answer)
 
-    @mcp.tool(annotations=WRITE)
+    @mcp.tool(annotations=STOP)
     def stop(target: str) -> str:
         """Interrupt a running cell ('project#c0007'), cancel a job the bench sent (its job id), or
         'workbench' to stop the workbench now and free its job slot (variables are lost; files stay)."""

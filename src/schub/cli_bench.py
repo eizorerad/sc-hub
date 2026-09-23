@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import json
 from typing import Any, Callable
 
-from .bench.models import Actor
+from .bench.models import Actor, CheckSpec
 from .bench.service import BenchService
 from .bench.watchdog import check
 from .cli_projects import read_arg
@@ -19,6 +20,7 @@ def add_bench_parsers(sub: Any) -> None:
     run.add_argument("--why", required=True)
     run.add_argument("--expect", required=True)
     run.add_argument("--setup", action="store_true", help="replayed after a kernel restart")
+    run.add_argument("--checks", default="[]", help='JSON list, e.g. [{"name": "file", "params": {"path": "work/x"}}]')
     run.add_argument("--wait", type=float, default=None, help="seconds to wait for the result")
     wait = sub.add_parser("bench-wait", help="wait for a cell: <project>#c0007")
     wait.add_argument("ref")
@@ -38,6 +40,7 @@ def bench_handlers(hub: Hub, args: argparse.Namespace) -> dict[str, Callable[[],
     human = Actor(kind="human", client="schub-cli")
     return {
         "bench-run": lambda: bench.run(args.project, read_arg(args.code), args.why, args.expect,
+                                       checks=[CheckSpec.model_validate(c) for c in json.loads(args.checks)],
                                        setup=args.setup, actor=human, wait_s=args.wait),
         "bench-wait": lambda: bench.wait(args.ref, args.wait),
         "bench-interrupt": lambda: bench.interrupt(args.ref),

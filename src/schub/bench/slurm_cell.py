@@ -31,6 +31,7 @@ from .clock import stamp
 from .fsio import create_json_exclusive, write_json_atomic
 from .inbox import slug
 from .jobs import JobRecord, register
+from .kernels import kernel_env
 from .models import JobRef
 
 PARTITION_LIMITS = {"ws-ia": (24, 24, 100), "gpu": (8, 16, 90)}  # hours, CPUs, GB per job and student
@@ -143,6 +144,7 @@ class Submitted(Frozen):
 def submit_cell(settings: Settings, slurm: Slurm, project: str, project_dir: Path, ref: str, code: str,
                 spec: SlurmCellSpec, checks: list[dict]) -> Submitted:
     cid = ref.partition("#")[2] or "c0000"
+    missing = [] if spec.bash else kernel_names(code)  # a syntax error stops here, before anything is queued
     key = secrets.token_hex(4)
     job_dir = project_dir / "jobs" / f"{cid}-{key}"
     job_dir.mkdir(parents=True, exist_ok=False)
@@ -151,9 +153,10 @@ def submit_cell(settings: Settings, slurm: Slurm, project: str, project_dir: Pat
     digest = hashlib.sha256(body.read_bytes()).hexdigest()
     (job_dir / "SHA256SUMS").write_text(f"{digest}  {body.name}\n")
     comment = f"schub-{slug(project).replace('.', '-')[:40]}-{cid}-{key}"
-    python = spec.python or sys.executable
+    python = sys.executable  # jobrun needs sc-hub; a foreign interpreter only runs the cell's body
     meta = {"project": project, "ref": ref, "cid": cid, "spec": spec.model_dump(), "checks": checks,
-            "python": python, "comment": comment, "created": stamp(), "body": body.name}
+            "python": python, "body_python": spec.python, "comment": comment, "created": stamp(),
+            "body": body.name}
     write_json_atomic(job_dir / "job.json", meta)
     create_json_exclusive(job_dir / "intent.json", {"comment": comment, "written": stamp()})
     job_id = _submit(settings, slurm, job_dir, _job_spec(settings, project, project_dir, job_dir, spec, python,
@@ -162,8 +165,7 @@ def submit_cell(settings: Settings, slurm: Slurm, project: str, project_dir: Pat
     register(settings, JobRecord(job_id=job_id, project=project, ref=ref, job_dir=str(job_dir)))
     job = JobRef(job_id=job_id, name=_job_name(settings, project, cid), partition=spec.partition, comment=comment,
                  state="PENDING", submitted=stamp(), log=str(job_dir / f"slurm-{job_id}.log"))
-    warnings = () if spec.bash else tuple(
-        f"the job will not have these kernel names: {', '.join(names)}" for names in [kernel_names(code)] if names)
+    warnings = (f"the job will not have these kernel names: {', '.join(missing)}",) if missing else ()
     return Submitted(job=job, job_dir=str(job_dir), warnings=warnings)
 
 
@@ -173,7 +175,7 @@ def _job_name(settings: Settings, project: str, cid: str) -> str:
 
 def _job_spec(settings: Settings, project: str, project_dir: Path, job_dir: Path, spec: SlurmCellSpec,
               python: str, comment: str, cid: str) -> JobSpec:
-    env = [(k, v) for k, v in os.environ.items()
+    env = [(k, v) for k, v in kernel_env(os.environ).items()
            if k.startswith("SCHUB_") or k in ("PYTHONPATH", "HOME", "PATH", "LANG", "TMPDIR")]
     env += [("SCHUB_PROJECT", project), ("SCHUB_PROJECT_DIR", str(project_dir)),
             ("OMP_NUM_THREADS", str(spec.cpus)), ("PYTHONUNBUFFERED", "1")]
@@ -192,7 +194,12 @@ def _submit(settings: Settings, slurm: Slurm, job_dir: Path, spec: JobSpec) -> s
     try:
         return slurm.submit(script)
     except SlurmError as exc:
-        found = slurm.find_by_comment(spec.comment)  # did it go through before the error?
+        try:
+            found = slurm.find_by_comment(spec.comment)  # did it go through before the error?
+        except SlurmError:
+            write_json_atomic(job_dir / "failed.json", {"error": str(exc), "unknown": True, "at": stamp()})
+            raise SlurmCellError(f"sbatch failed ({exc}) and the queue could not be checked: the job may exist. "
+                                 "Look at cluster() before sending the cell again.") from exc
         if found:
             return found
         write_json_atomic(job_dir / "failed.json", {"error": str(exc), "at": stamp()})

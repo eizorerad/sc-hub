@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .collect_journal import BenchPanel, JournalCard, bench_panel, journal_cards
 from ..datasets import DatasetEntry, dataset_label
 from ..h5ad_profile import UnsupportedFile
 from ..headlines import headline
@@ -156,6 +157,9 @@ class Snapshot(Frozen):
     notebooks: frozenset[str] = frozenset()  # runs with nb/<run_id>.js (set when the page is built)
     queue: tuple[QueuedSubmission, ...] = ()  # plans waiting in sc-hub's queue
     queue_failed: tuple[QueueFailure, ...] = ()
+    journals: tuple[JournalCard, ...] = ()  # the bench's projects (the Journal tab)
+    bench: BenchPanel | None = None
+    legacy: bool = True  # show the brick-era tabs (Projects, Pipelines, Compare)
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:
@@ -461,6 +465,9 @@ def collect(hub: Any) -> Snapshot:
         steps_by_key.update({s.key: s for s in run.steps})
     nodes = _nodes(runs, previews)
     waiting, waiting_failed = _submit_queue(hub)
+    overview = _overview(hub)
+    journals = journal_cards(hub.settings)
+    legacy = hub.settings.legacy_tools or bool(runs) or any(p.branches for p in projects)
     return Snapshot(
         generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         user=os.environ.get("USER", ""),
@@ -481,7 +488,10 @@ def collect(hub: Any) -> Snapshot:
         queue_failed=waiting_failed,
         kernels={p.path: env for p in projects if (env := built(hub.settings, p.path)) is not None},
         env_builds=tuple(p.path for p in projects if f"{hub.settings.job_prefix}-env-{slug(p.path)}" in {j.name for j in jobs}),
-        overview=_overview(hub),
+        overview=overview,
         nodes=tuple(nodes),
         steps_by_key=steps_by_key,
+        journals=journals,
+        bench=bench_panel(hub.settings, tuple(jobs), overview, journals),
+        legacy=legacy,
     )

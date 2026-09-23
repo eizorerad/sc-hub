@@ -148,6 +148,7 @@ class CellEntry(Frozen):
     downloads: tuple[Download, ...] = ()
     jobs: tuple[JobRef, ...] = ()
     check_results: tuple[CheckResult, ...] = ()
+    bricks: tuple[str, ...] = ()  # sc-hub bricks the cell ran: "name version code-id"
     duration_s: float | None = None
     message: str = ""  # why a cell is lost / retired, in plain words
 

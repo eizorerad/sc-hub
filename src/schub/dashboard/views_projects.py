@@ -169,10 +169,18 @@ def _project(project: ProjectSummary, snap: Snapshot, views: dict[str, str], pro
     )
 
 
+def _brick_era(snap: Snapshot) -> list:
+    """Projects with branches or runs; bench-only projects live in the Journal tab."""
+    bench = {c.project for c in snap.journals}
+    return [p for p in snap.projects if p.branches or p.runs or p.path not in bench]
+
+
 def render_projects(snap: Snapshot, views: dict[str, str] | None = None, project_views: dict[str, str] | None = None) -> str:
     views, project_views = views or {}, project_views or {}
-    if not snap.projects:
+    projects = _brick_era(snap)
+    if not projects:
         return '<p class="empty">No projects yet. Ask your assistant to create one with your research question.</p>'
+    snap = snap.model_copy(update={"projects": tuple(projects)})
     tree = "".join(
         f'<button type="button" class="pipe" data-project-link="{esc(p.path)}" data-text="{esc(p.path.lower() + " " + p.meta.question.lower())}" '
         f'style="padding-left:{8 + 16 * p.path.count("/")}px"><span class="dot {esc(PROJECT_STATE[p.meta.status])}"></span>'
