@@ -1,0 +1,73 @@
+from __future__ import annotations
+
+import threading
+import time
+from pathlib import Path
+
+import pytest
+
+from schub.bench.executor import execute
+from schub.bench.kernels import ProjectKernel, kernel_env
+from schub.bench.outputs import OutputCollector
+
+
+def test_env_keeps_allowlisted_names_and_drops_secrets() -> None:
+    base = {"PATH": "/bin", "HOME": "/h", "SLURM_JOB_ID": "7", "SCHUB_ROOT": "/r", "LC_ALL": "C",
+            "JUPYTER_TOKEN": "t", "SCHUB_SESSION_TOKEN": "t", "ANTHROPIC_API_KEY": "k", "OPENAI_API_KEY": "k",
+            "AWS_SECRET_ACCESS_KEY": "k", "GH_TOKEN": "t", "RANDOM_THING": "x", "MPLBACKEND": "Agg"}
+    env = kernel_env(base, {"SCHUB_PROJECT": "demo"})
+    assert env == {"PATH": "/bin", "HOME": "/h", "SLURM_JOB_ID": "7", "SCHUB_ROOT": "/r", "LC_ALL": "C",
+                   "SCHUB_PROJECT": "demo"}
+    with pytest.raises(ValueError):
+        kernel_env(base, {"MY_TOKEN": "x"})
+
+
+@pytest.fixture
+def kernel(tmp_path: Path, monkeypatch):
+    import os
+
+    monkeypatch.setenv("JUPYTER_TOKEN", "must-not-leak")
+    started = ProjectKernel("python3", tmp_path / "work", kernel_env(os.environ), epoch="local.1")
+    started.start()
+    yield started
+    started.shutdown()
+
+
+def run(kernel: ProjectKernel, tmp_path: Path, code: str, interrupt_after: float | None = None):
+    collector = OutputCollector(tmp_path / "journal", "c0001", max_chars=2000)
+    begin = time.monotonic()
+    result = execute(kernel, code, collector, poll_s=0.1, on_progress=lambda: None,
+                     should_interrupt=lambda: interrupt_after is not None and time.monotonic() - begin > interrupt_after,
+                     user_expressions={"n": "6 * 7"})
+    return result, collector.snapshot()
+
+
+@pytest.mark.kernel
+def test_cells_share_state_and_run_in_the_project_folder(kernel: ProjectKernel, tmp_path: Path) -> None:
+    result, outputs = run(kernel, tmp_path, "import os\nx = 41\nprint(os.getcwd())")
+    assert result.status == "ok" and outputs[0].text.strip() == str(tmp_path / "work")
+    result, outputs = run(kernel, tmp_path, "x + 1")
+    assert outputs[0].kind == "result" and outputs[0].text == "42"
+    assert result.user_expressions["n"]["data"]["text/plain"] == "42"
+
+
+@pytest.mark.kernel
+def test_no_token_in_the_kernel(kernel: ProjectKernel, tmp_path: Path) -> None:
+    _, outputs = run(kernel, tmp_path, "import os\nprint(sorted(k for k in os.environ if 'TOKEN' in k))")
+    assert outputs[0].text.strip() == "[]"
+
+
+@pytest.mark.kernel
+def test_errors_and_interrupts(kernel: ProjectKernel, tmp_path: Path) -> None:
+    result, outputs = run(kernel, tmp_path, "{}['gene']")
+    assert result.status == "error" and outputs[-1].ename == "KeyError"
+    result, _ = run(kernel, tmp_path, "import time\ntime.sleep(60)", interrupt_after=1.0)
+    assert result.status == "interrupted"
+    result, outputs = run(kernel, tmp_path, "print('still alive')")
+    assert result.status == "ok" and "still alive" in outputs[0].text
+
+
+@pytest.mark.kernel
+def test_dead_kernel_is_lost(kernel: ProjectKernel, tmp_path: Path) -> None:
+    result, _ = run(kernel, tmp_path, "import os\nos._exit(1)")
+    assert result.status == "lost"
