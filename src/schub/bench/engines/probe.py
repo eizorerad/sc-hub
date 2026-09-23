@@ -15,7 +15,7 @@ from pathlib import Path
 from ...config import Settings
 from ..clock import stamp
 from ..fsio import read_json, write_json_atomic
-from .base import GUARD_DIR, Engine, Turn, credential_fingerprint, version
+from .base import Engine, Turn, credential_fingerprint, install_guards, version
 from .claude import Claude
 from .codex import Codex
 from .cooldown import Cooldown
@@ -33,6 +33,7 @@ def probe_path(settings: Settings) -> Path:
 def probe(settings: Settings, engines: tuple[str, ...] | None = None, timeout_s: int = 180) -> dict:
     policy = load(settings.bench_dir / "engine-policy.json")
     cooldown = Cooldown(settings.bench_dir / "engine-cooldown.json")
+    guards = install_guards(settings.bench_dir)
     results = {}
     for name in engines or tuple(dict.fromkeys(policy.allowed() + tuple(
             e for grant in policy.grants.values() for e in grant["engines"]))):
@@ -40,12 +41,12 @@ def probe(settings: Settings, engines: tuple[str, ...] | None = None, timeout_s:
         with tempfile.TemporaryDirectory(prefix=f"schub-probe-{name}-") as folder:
             outcome = adapter.run(Turn(prompt=PROMPT, cwd=Path(folder), run_dir=Path(folder) / "run",
                                        timeout_s=timeout_s, model=policy.model(name), effort=policy.effort(name)),
-                                  binary=str(GUARD_DIR / name))
+                                  binary=str(guards / name))
         ok = outcome.status == "ok" and outcome.text.strip().strip(".").upper() == "OK"
         if outcome.status == "usage_limited":
             cooldown.mark(name, outcome.error)
         results[name] = {"ok": ok, "status": outcome.status, "at": stamp(), "detail": (outcome.error or
-                         outcome.text)[-200:], "version": version(str(GUARD_DIR / name)) if ok else "",
+                         outcome.text)[-200:], "version": version(str(guards / name)) if ok else "",
                          "login": credential_fingerprint(name)}
     write_json_atomic(probe_path(settings), {**(read_json(probe_path(settings)) or {}), **results})
     return results

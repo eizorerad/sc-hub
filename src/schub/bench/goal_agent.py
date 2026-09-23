@@ -28,13 +28,14 @@ import sys
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Iterator, Mapping
 
 from ..bricks import Resources
 from ..config import Settings, load_settings
 from ..slurm import JobSpec, Slurm, SlurmError, render_script
 from .checkpoint import CheckpointStore
-from .engines.base import GUARD_DIR, Engine, McpServer, Outcome, Turn, credential_fingerprint
+from .engines.base import Engine, McpServer, Outcome, Turn, credential_fingerprint, install_guards
 from .engines.claude import Claude
 from .engines.codex import Codex
 from .engines.cooldown import Cooldown
@@ -164,7 +165,8 @@ class Slice:
         turn = Turn(prompt=prompt, cwd=run_dir, run_dir=run_dir, timeout_s=config.slice_minutes * 60,
                     session_id=resume, new_session_id=new_id, model=policy.model(engine), effort=policy.effort(engine),
                     mcp=self.mcp_server(engine, policy.model(engine), policy.effort(engine), resume or new_id or ""))
-        outcome = self.adapters[engine].run(turn, binary=str(GUARD_DIR / engine), env=self.engine_env())
+        guards = install_guards(self.settings.bench_dir)
+        outcome = self.adapters[engine].run(turn, binary=str(guards / engine), env=self.engine_env(guards))
         write_json_atomic(run_dir / "outcome.json", dataclasses.asdict(outcome))
         goal.event("turn_finished", job=self.job, engine=engine, status=outcome.status,
                    session=outcome.session_id, cost_usd=outcome.cost_usd, turns=outcome.turns)
@@ -212,8 +214,8 @@ class Slice:
         return McpServer(command=str(self.settings.python), args=("-m", "schub.cli", "mcp"),
                          env=tuple(sorted(env.items())))
 
-    def engine_env(self) -> dict[str, str]:
-        path = os.pathsep.join((str(GUARD_DIR), os.environ.get("PATH", "")))
+    def engine_env(self, guards: Path) -> dict[str, str]:
+        path = os.pathsep.join((str(guards), os.environ.get("PATH", "")))
         return {**os.environ, "PATH": path, "SCHUB_GOAL_PROJECT": self.project}
 
     # ---- successor, lock, waiting ---------------------------------------------------------

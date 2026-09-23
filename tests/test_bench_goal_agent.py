@@ -98,6 +98,8 @@ def test_a_slice_arms_its_successor_before_the_turn(lab: Settings, cluster: Fake
     assert server["env"]["SCHUB_LAB_AGENT_ENGINE"] == "claude" and server["env"]["SCHUB_GOAL_PROJECT"] == "p"
     assert server["env"]["SCHUB_LAB_AGENT_SESSION"] == argv[argv.index("--session-id") + 1]
     assert json.loads((Goal(lab, "p").state / "intent.json").read_text())["job_id"] == successor
+    guard = lab.bench_dir / "guard" / "claude"
+    assert guard.stat().st_mode & 0o111 and "schub.bench.engines.guard" in guard.read_text()
 
 
 def test_the_next_slice_resumes_the_same_session(lab: Settings, cluster: FakeCluster) -> None:

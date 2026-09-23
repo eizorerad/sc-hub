@@ -115,13 +115,30 @@ def classify(ok: bool, error: str, missing_session: bool) -> Status:
     return "usage_limited" if is_limit(error) else "failed"
 
 
+def install_guards(bench_dir: Path) -> Path:
+    """The guards as executable files under the bench folder (an installed wheel may drop the exec bit)."""
+    target = bench_dir / "guard"
+    target.mkdir(parents=True, exist_ok=True)
+    for engine in ("claude", "codex"):
+        source, path = (GUARD_DIR / engine).read_text(), target / engine
+        if not path.exists() or path.read_text() != source:
+            temp = target / f".{engine}.tmp"
+            temp.write_text(source)
+            temp.chmod(0o755)
+            temp.replace(path)
+    return target
+
+
+def _is_guard_dir(entry: str) -> bool:
+    return Path(entry).parts[-2:] == ("bench", "guard")
+
+
 def find_binary(engine: str) -> Path:
-    """The real CLI: $SCHUB_<ENGINE>_BIN, else PATH without the guard folder, else ~/.local/bin."""
+    """The real CLI: $SCHUB_<ENGINE>_BIN, else PATH without the guard folders, else ~/.local/bin."""
     explicit = os.environ.get(f"SCHUB_{engine.upper()}_BIN", "")
     if explicit:
         return Path(explicit)
-    path = os.pathsep.join(p for p in os.environ.get("PATH", "").split(os.pathsep)
-                           if p and Path(p).resolve() != GUARD_DIR)
+    path = os.pathsep.join(p for p in os.environ.get("PATH", "").split(os.pathsep) if p and not _is_guard_dir(p))
     found = shutil.which(engine, path=path)
     if found:
         return Path(found)
