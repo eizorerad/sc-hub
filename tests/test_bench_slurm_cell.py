@@ -224,3 +224,16 @@ exit 3
     assert jobrun.main(["--job-dir", submitted.job_dir]) == 0
     assert (marks / "usr1.txt").read_text().strip() == "usr1"
     assert (marks / "pythonpath.txt").read_text().strip().endswith("schub/bench/portable")
+
+
+def test_a_job_that_will_wait_for_a_slot_says_so(settings: Settings, cluster: FakeCluster, project: Path) -> None:
+    for job_id, name in (("1", "personal-ws"), ("2", "vcc-i020-f1")):
+        cluster.jobs[job_id], cluster.names[job_id] = "RUNNING", name
+    submitted = submit_cell(settings, Slurm(cluster), "demo", project, "demo#c0001", "x = 1",
+                            parse_line("", "ws-ia"), [])
+    [warning] = submitted.warnings
+    assert warning.startswith("ws-ia 2/2 running FULL") and "--partition gpu" in warning
+    assert f"stop('{submitted.job.job_id}')" in warning
+    cluster.jobs["2"] = "COMPLETED"
+    assert submit_cell(settings, Slurm(cluster), "demo", project, "demo#c0002", "x = 1",
+                       parse_line("", "ws-ia"), []).warnings == ()

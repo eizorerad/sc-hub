@@ -6,6 +6,7 @@ from __future__ import annotations
 from typing import Literal
 
 from ..state import Frozen
+from .jobs import FINAL_JOB_STATES
 from .models import CellEntry, CheckResult, Download, FileChange, JobRef, OutputItem
 
 ResultStatus = Literal["queued", "rejected", "running", "ok", "error", "interrupted", "lost", "retired"]
@@ -53,6 +54,11 @@ def cell_result(entry: CellEntry, previous_epoch: str, workbench: str, setup_ref
         replay = f" Setup cells to run again: {', '.join(setup_refs)}." if setup_refs else ""
         hint = (f"The kernel restarted before this cell: variables from earlier cells are gone.{replay} "
                 + hint).strip()
+    waiting = [j for j in entry.jobs if j.state not in FINAL_JOB_STATES and not j.state.startswith("ENDED")]
+    if waiting:
+        jobs = ", ".join(f"job {j.job_id} is still {j.state}" for j in waiting)
+        hint = (f"{jobs}: wait(ref) waits for it, and this entry gets its state, files and checks when it "
+                f"ends. {hint}").strip()
     failed = [c.name for c in entry.check_results if c.status in ("fail", "error")]
     if failed:
         hint = f"Checks failed: {', '.join(failed)}. Do not build on this result until they pass. {hint}".strip()

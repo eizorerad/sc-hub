@@ -126,3 +126,28 @@ def test_cli_runs_and_reads_the_journal(bench: Settings, cluster: FakeCluster, m
     assert json.loads(capsys.readouterr().out) == []
     assert cli.main(["bench-wait", "demo#c0042", "--wait", "0"]) == 1
     assert "does not exist" in capsys.readouterr().err
+
+
+def test_wait_also_waits_for_the_cells_slurm_jobs(bench: Settings, cluster: FakeCluster) -> None:
+    from schub.bench.models import JobRef
+
+    svc = service(bench, cluster)
+    ref = svc.run("demo", "%%slurm\nx = 1", "a job", "a job id", wait_s=0).ref
+    job_id = str(cluster.next_id)
+    cluster.jobs[job_id], cluster.names[job_id] = "PENDING", "schub-cell-demo-c0001"
+    journal = Journal(bench.projects_dir / "demo", "demo")
+    journal.write_cell(CellEntry(ref=ref, project="demo", cid="c0001", why="a job", expect="a job id", code="x",
+                                 created=journal.now(), status="ok", jobs=(JobRef(job_id=job_id, state="PENDING"),)))
+    clock = {"t": 0.0}
+    timed = BenchService(bench, Slurm(runner=cluster), sleep=lambda s: clock.update(t=clock["t"] + s),
+                         monotonic=lambda: clock["t"])
+    assert timed.run("demo", "1", "w", "e", wait_s=0).status == "queued"  # run itself never waits for jobs
+    result = timed.wait(ref, wait_s=30)
+    assert result.status == "ok" and clock["t"] >= 30 and f"job {job_id} is still PENDING" in result.hint
+    clock["t"] = 0.0
+    journal.add_addendum("c0001", f"job-{job_id}", {"kind": "job", "job": {
+        "job_id": job_id, "state": "COMPLETED", "exit_code": 0, "finished": journal.now(), "log": "x"}})
+    cluster.jobs[job_id] = "COMPLETED"
+    done = timed.wait(ref, wait_s=30)
+    assert clock["t"] < 1 and done.jobs[0].state == "COMPLETED" and "still" not in done.hint
+    assert svc.wait(ref, wait_s=0, for_jobs=False).status == "ok"

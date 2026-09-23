@@ -193,7 +193,8 @@ def _register_cells(mcp: MCPServer, hub: Hub, bench: BenchService, call: Calls) 
 
     @mcp.tool(annotations=READ)
     async def wait(ref: str, ctx: Context = None) -> CellResult:  # type: ignore[assignment]
-        """Wait for a cell ('project#c0007') a little longer and return its result or its state."""
+        """Wait for a cell ('project#c0007') a little longer, and for the Slurm jobs it sent, and return its
+        result or its state."""
         actor, profile = _client(ctx)
         result = await acall("wait", {"ref": ref, "client": actor.client},
                              lambda: bench.wait(ref, profile.run_wait_s))

@@ -33,6 +33,7 @@ from .inbox import slug
 from .jobs import JobRecord, register
 from .kernels import kernel_env
 from .models import JobRef
+from .slots import slot_usage
 
 PARTITION_LIMITS = {"ws-ia": (24, 24, 100), "gpu": (8, 16, 90)}  # hours, CPUs, GB per job and student
 DEFAULT_LIMITS = (24, 24, 100)
@@ -170,7 +171,18 @@ def submit_cell(settings: Settings, slurm: Slurm, project: str, project_dir: Pat
     job = JobRef(job_id=job_id, name=_job_name(settings, project, cid), partition=spec.partition, comment=comment,
                  state="PENDING", submitted=stamp(), log=str(job_dir / f"slurm-{job_id}.log"))
     warnings = (f"the job will not have these kernel names: {', '.join(missing)}",) if missing else ()
-    return Submitted(job=job, job_dir=str(job_dir), warnings=warnings)
+    return Submitted(job=job, job_dir=str(job_dir), warnings=warnings + _slot_warning(settings, slurm, spec, job_id))
+
+
+def _slot_warning(settings: Settings, slurm: Slurm, spec: SlurmCellSpec, job_id: str) -> tuple[str, ...]:
+    """A job sent to a partition whose running-job slots are all taken waits; say so now, not hours later."""
+    usage = slot_usage(settings, slurm, spec.partition)
+    if not usage.full:
+        return ()
+    other = settings.bench.background_partition
+    alternative = (f" --partition {other} has its own budget (skills('mbzuai_slurm'))."
+                   if other != spec.partition else "")
+    return (f"{usage.summary()}: this job waits until a slot frees.{alternative} stop('{job_id}') cancels it.",)
 
 
 def _job_name(settings: Settings, project: str, cid: str) -> str:

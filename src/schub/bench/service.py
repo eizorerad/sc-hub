@@ -27,6 +27,17 @@ from .workbench import BenchStopped, Workbench
 
 
 NUMBERED_KINDS = ("finding", "verdict", "decision")
+JOB_POLL_S = 5.0
+
+
+def _unreported(entry: CellEntry) -> list:
+    """The cell's jobs without a final state in the journal yet."""
+    return [j for j in entry.jobs if j.state not in FINAL_JOB_STATES]
+
+
+def _open(entry: CellEntry) -> list:
+    """Jobs still queued or running (a job gone from the queue without a report is not waited for)."""
+    return [j for j in _unreported(entry) if not j.state.startswith("ENDED")]
 
 
 class BenchError(ValueError):
@@ -82,7 +93,7 @@ class BenchService:
             self.workbench.ensure()
         except (BenchStopped, SlurmError) as exc:
             return waiting_result(journal.ref(request.cid), "queued", f"the workbench could not start: {exc}")
-        return self.wait(journal.ref(request.cid), wait_s)
+        return self.wait(journal.ref(request.cid), wait_s, for_jobs=False)  # a %%slurm cell returns at once
 
     def _request(self, journal: Journal, project: str, code: str, why: str, expect: str,
                  checks: Sequence[CheckSpec], setup: bool, data_scope: str, actor: Actor | None) -> CellRequest:
@@ -95,14 +106,21 @@ class BenchService:
         _validate_checks(checks)
         return CellRequest(cid=journal.allocate("c"), **fields)
 
-    def wait(self, ref: str, wait_s: float | None = None) -> CellResult:
+    def wait(self, ref: str, wait_s: float | None = None, for_jobs: bool = True) -> CellResult:
+        """The cell's result once it is final and (for_jobs) its Slurm jobs have reported, or at the deadline."""
         project, cid = self._cell_ref(ref)
         journal = self.journal(project)
         deadline = self.monotonic() + (self.settings.bench.run_wait_s if wait_s is None else wait_s)
+        queue_checked, jobs_open = -JOB_POLL_S, True
         while True:
             entry = journal.cell(cid)
             if entry is not None and entry.final:
-                break
+                if not for_jobs or not _unreported(entry):
+                    break
+                if self.monotonic() - queue_checked >= JOB_POLL_S:  # squeue only every few seconds
+                    queue_checked, jobs_open = self.monotonic(), bool(_open(self._live_jobs(entry)))
+                if not jobs_open:
+                    break
             if self.monotonic() >= deadline:
                 break
             self.sleep(self.settings.bench.poll_s)

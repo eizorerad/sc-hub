@@ -23,8 +23,10 @@ adata.write_h5ad("k562_scvi.h5ad")
   refuses to run if the copy changed. To change it, send a new cell.
 - **It does not block.** The cell returns at once with the job id. The same journal
   entry gets the job's state, exit code, the files it wrote, downloads and check
-  results when it ends; `wait(ref)` or `journal(project)` show them, and the log is
-  in `jobs/<cell>-<key>/slurm-<id>.log` (read it with `files`).
+  results when it ends. `wait(ref)` waits for the job as well (about half a minute
+  per call; call it again while it runs), `journal(project)` shows it, and the log is
+  in `jobs/<cell>-<key>/slurm-<id>.log` (read it with `files`). Do not poll squeue
+  from a cell.
 - **Limits** (per job): ws-ia up to 24 h, 24 CPU, 100 GB; gpu partition up to 8 h,
   16 CPU, 90 GB; one GPU per student (`--gpus 1`). Longer training: save checkpoints
   and continue in a new job.
