@@ -21,11 +21,13 @@ class ClientProfile(Frozen):
     max_output_chars: int  # text of all outputs in one answer
     mcp_apps: bool = False  # can render MCP Apps (ui://) cards
     elicitation: bool = False  # can ask the human directly
+    inline_images: bool = False  # figures go into the answer (the model sees its plots)
 
 
 PROFILES: dict[str, ClientProfile] = {
-    "claude-code": ClientProfile(name="claude-code", run_wait_s=35, max_output_chars=8000),
-    "claude-desktop": ClientProfile(name="claude-desktop", run_wait_s=35, max_output_chars=6000, mcp_apps=True),
+    "claude-code": ClientProfile(name="claude-code", run_wait_s=35, max_output_chars=8000, inline_images=True),
+    "claude-desktop": ClientProfile(name="claude-desktop", run_wait_s=35, max_output_chars=6000, mcp_apps=True,
+                                    inline_images=True),
     "codex": ClientProfile(name="codex", run_wait_s=45, max_output_chars=8000),  # installer sets tool_timeout_sec=180
     "chatgpt": ClientProfile(name="chatgpt", run_wait_s=30, max_output_chars=6000, mcp_apps=True),
     "unknown": ClientProfile(name="unknown", run_wait_s=25, max_output_chars=4000),

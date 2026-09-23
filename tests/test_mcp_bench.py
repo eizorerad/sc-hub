@@ -153,3 +153,22 @@ def test_end_to_end_through_mcp(bench: Settings, cluster: FakeCluster, monkeypat
     finally:
         (bench.bench_dir / "STOP").write_text("")
         thread.join(timeout=60)
+
+
+def test_figures_reach_clients_that_show_images(server, bench: Settings) -> None:
+    from schub.bench.journal import Journal
+    from schub.bench.models import CellEntry, OutputItem
+
+    ok(call(server, "create_project", {"project": "p", "question": "q"}))
+    ref = ok(call(server, "run", {"project": "p", "code": "plt.show()", "why": "w", "expect": "a plot"}))["ref"]
+    journal = Journal(bench.projects_dir / "p", "p")
+    figure = journal.artifacts_dir("c0001") / "fig-001.png"
+    figure.parent.mkdir(parents=True)
+    figure.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+    journal.write_cell(CellEntry(ref=ref, project="p", cid="c0001", why="w", expect="a plot", code="plt.show()",
+                                 created=journal.now(), status="ok",
+                                 outputs=(OutputItem(kind="display", image="cells/c0001/fig-001.png"),)))
+    claude = call(server, "wait", {"ref": ref}, client_info=Implementation(name="claude-code", version="2.1"))
+    assert [c.type for c in claude.content] == ["text", "image"] and claude.structured_content["status"] == "ok"
+    codex = call(server, "wait", {"ref": ref})
+    assert [c.type for c in codex.content] == ["text"]
