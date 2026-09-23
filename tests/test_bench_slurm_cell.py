@@ -237,3 +237,14 @@ def test_a_job_that_will_wait_for_a_slot_says_so(settings: Settings, cluster: Fa
     cluster.jobs["2"] = "COMPLETED"
     assert submit_cell(settings, Slurm(cluster), "demo", project, "demo#c0002", "x = 1",
                        parse_line("", "ws-ia"), []).warnings == ()
+
+
+def test_jobs_draw_with_agg_not_the_kernels_inline_backend(settings: Settings, cluster: FakeCluster, project: Path,
+                                                          monkeypatch) -> None:
+    """Found by the lab agent in the GEARS run: a --python job inherited MPLBACKEND=module://matplotlib_inline...,
+    which the paper's environment does not have, and failed at `import matplotlib.pyplot`."""
+    monkeypatch.setenv("MPLBACKEND", "module://matplotlib_inline.backend_inline")
+    submitted = submit_cell(settings, Slurm(cluster), "demo", project, "demo#c0001", "x = 1",
+                            parse_line("--python /usr/bin/python3", "ws-ia"), [])
+    script = (Path(submitted.job_dir) / "job.sbatch").read_text()
+    assert "export MPLBACKEND=Agg" in script and "matplotlib_inline" not in script

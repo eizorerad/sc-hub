@@ -194,7 +194,8 @@ def _job_spec(settings: Settings, project: str, project_dir: Path, job_dir: Path
     env = [(k, v) for k, v in kernel_env(os.environ).items()
            if k.startswith("SCHUB_") or k in ("PYTHONPATH", "HOME", "PATH", "LANG", "TMPDIR")]
     env += [("SCHUB_PROJECT", project), ("SCHUB_PROJECT_DIR", str(project_dir)),
-            ("OMP_NUM_THREADS", str(spec.cpus)), ("PYTHONUNBUFFERED", "1")]
+            ("OMP_NUM_THREADS", str(spec.cpus)), ("PYTHONUNBUFFERED", "1"),
+            ("MPLBACKEND", "Agg")]  # no screen in a job; the kernel's inline backend may not exist in its env
     return JobSpec(
         name=_job_name(settings, project, cid), partition=spec.partition,
         resources=Resources(cpus=spec.cpus, mem_gb=spec.mem_gb, time_min=spec.minutes, gpus=spec.gpus),
