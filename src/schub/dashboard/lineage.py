@@ -77,14 +77,21 @@ def pipeline_views(nodes: tuple[NodeView, ...]) -> list[PipelineView]:
     return views
 
 
+def _parent_in(node: NodeView, keys: set[str]) -> str:
+    """The node's parent in this graph; a step whose parent is not shown hangs off its dataset."""
+    return node.parent if node.parent in keys or node.parent.startswith("ds:") else f"ds:{node.dataset}"
+
+
 def _layout(nodes: Iterable[NodeView]) -> tuple[dict[str, tuple[int, int]], dict[str, list[str]]]:
+    nodes = list(nodes)
+    keys = {n.key for n in nodes}
     children: dict[str, list[str]] = {}
     roots: list[str] = []
     for node in nodes:
-        children.setdefault(node.parent, []).append(node.key)
-        for root in (node.parent, *node.inputs):
-            if root.startswith("ds:") and root not in roots:
-                roots.append(root)
+        parent = _parent_in(node, keys)
+        children.setdefault(parent, []).append(node.key)
+        if parent.startswith("ds:") and parent not in roots:
+            roots.append(parent)
     positions: dict[str, tuple[int, int]] = {}
     row = 0
 
@@ -105,13 +112,26 @@ def _layout(nodes: Iterable[NodeView]) -> tuple[dict[str, tuple[int, int]], dict
 
 
 def _divergence(node: NodeView, siblings: list[NodeView]) -> str:
-    """At a branch point, name the params that differ from the sibling nodes."""
-    keys = sorted({k for s in siblings for k in s.params} | set(node.params))
-    differing = [k for k in keys if len({repr(s.params.get(k)) for s in siblings}) > 1]
+    """At a branch point, name the params that differ from sibling steps of the same brick."""
+    same = [s for s in siblings if s.brick == node.brick]
+    if len(same) < 2:
+        return ""
+    keys = sorted({k for s in same for k in s.params} | set(node.params))
+    differing = [k for k in keys if len({repr(s.params.get(k)) for s in same}) > 1]
     return ", ".join(f"{k}={node.params.get(k)}" for k in differing[:2])
 
 
-def _subtitle(node: NodeView, siblings: list[NodeView]) -> str:
+def earlier_key(node: NodeView, label: str | None) -> str:
+    """The earlier result shown for a planned step: the branch's own, or any (all branches)."""
+    return node.earlier.get(label, "") if label else next(iter(node.earlier.values()), "")
+
+
+def _subtitle(node: NodeView, siblings: list[NodeView], everything: dict[str, NodeView], label: str | None) -> str:
+    if node.brick == "merge_datasets" and node.inputs:
+        return "+ " + ", ".join(i[3:] for i in node.inputs)  # instead of an edge across the graph
+    earlier = everything.get(earlier_key(node, label))
+    if node.state == "PLANNED" and earlier is not None:
+        return f"↻ {earlier.headline}" if earlier.headline else "↻ re-run needed"  # what it gave before
     if len(siblings) > 1 and (diff := _divergence(node, siblings)):
         return diff
     if node.headline:
@@ -121,22 +141,46 @@ def _subtitle(node: NodeView, siblings: list[NodeView]) -> str:
     return ", ".join(shown) or node.state.lower()
 
 
-def _ancestors(key: str, by_key: dict[str, NodeView]) -> list[str]:
-    path = []
+def _path(key: str, by_key: dict[str, NodeView]) -> str:
+    """The step, its ancestors, its dataset and any dataset a merge on the way added."""
+    path, inputs = [], []
     while key in by_key:
         path.append(key)
+        inputs += by_key[key].inputs
         key = by_key[key].parent
-    return path
+    root = [key] if key.startswith("ds:") else []
+    return " ".join(path + root + [i for i in dict.fromkeys(inputs) if i not in root])
 
 
-def _box(x: int, y: int, css: str, title: str, subtitle: str, key: str, path: str) -> str:
+def _fit(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def _box(x: int, y: int, css: str, title: str, subtitle: str, key: str, path: str, flag: str = "") -> str:
+    said = f"needs re-run; before: {subtitle[2:]}" if subtitle.startswith("↻ ") else subtitle
+    hover = f"{title} · {said}" + (f" · {flag}" if flag else "")
+    mark = f'<text class="flag" x="{x + NODE_W - 14}" y="{y + 16}">!</text>' if flag else ""
     return (
         f'<g class="node {escape(css, quote=True)}" data-key="{escape(key, quote=True)}" '
         f'data-path="{escape(path, quote=True)}" tabindex="0" role="button">'
+        f"<title>{escape(hover)}</title>"
         f'<rect x="{x}" y="{y}" width="{NODE_W}" height="{NODE_H}" rx="8"/>'
-        f'<text class="t1" x="{x + 12}" y="{y + 18}">{escape(title[:20])}</text>'
-        f'<text class="t2" x="{x + 12}" y="{y + 34}">{escape(subtitle[:22])}</text></g>'
+        f'<text class="t1" x="{x + 12}" y="{y + 18}">{escape(_fit(title, 19 if flag else 20))}</text>'
+        f'<text class="t2" x="{x + 12}" y="{y + 34}">{escape(_fit(subtitle, 22))}</text>{mark}</g>'
     )
+
+
+def _css(node: NodeView, label: str | None) -> str:
+    flags = (("old", not node.current), ("outdated", bool(earlier_key(node, label))), ("flagged", bool(node.issues)))
+    extra = [c for c, on in flags if on]
+    return " ".join([f"st-{node.state}", *extra])
+
+
+def _flag(node: NodeView) -> str:
+    if not node.issues:
+        return ""
+    worst = "error" if any(i.level == "error" for i in node.issues) else "warning"
+    return f"{len(node.issues)} planner {worst}{'s' if len(node.issues) > 1 else ''}"
 
 
 def _origin(depth: int, row: int, vertical: bool) -> tuple[int, int]:
@@ -157,14 +201,16 @@ def _edge(start: tuple[int, int], end: tuple[int, int], vertical: bool, css: str
     return f'<path class="{css}" data-to="{escape(to, quote=True)}" d="M{x1},{y1} {curve} {x2},{y2}"/>'
 
 
-def render_graph(nodes: tuple[NodeView, ...], keys: tuple[str, ...], vertical: bool = False) -> str:
+def render_graph(nodes: tuple[NodeView, ...], keys: Iterable[str], vertical: bool = False, label: str | None = None) -> str:
     """The lineage of `keys`. Vertical suits one branch next to the step panel;
-    horizontal suits the forest of every branch."""
+    horizontal suits the forest of every branch. `label`: the branch this graph shows."""
     wanted = set(keys)
     subset = tuple(n for n in nodes if n.key in wanted)
     if not subset:
         return '<p class="muted">Nothing to show yet.</p>'
+    everything = {n.key: n for n in nodes}
     by_key = {n.key: n for n in subset}
+    shown = set(by_key)
     positions, children = _layout(subset)
     origin = {key: _origin(depth, row, vertical) for key, (depth, row) in positions.items()}
     width = max(x for x, _ in origin.values()) + NODE_W + PAD
@@ -174,20 +220,14 @@ def render_graph(nodes: tuple[NodeView, ...], keys: tuple[str, ...], vertical: b
         for kid in kids:
             dashed = " dashed" if by_key[kid].state == "PLANNED" else ""
             edges.append(_edge(origin[parent], origin[kid], vertical, f"edge{dashed}", kid))
-    for node in subset:
-        # Extra datasets a merge step reads: one more edge per dataset root.
-        for root in node.inputs:
-            if root in origin and node.key in origin:
-                edges.append(_edge(origin[root], origin[node.key], vertical, "edge merge", node.key, bend=40))
     for key, (x, y) in origin.items():
         if key.startswith("ds:"):
             boxes.append(_box(x, y, "ds", key[3:], "dataset", key, key))
             continue
         node = by_key[key]
-        siblings = [by_key[k] for k in children.get(node.parent, []) if k in by_key]
-        path = " ".join(_ancestors(key, by_key))
-        boxes.append(_box(x, y, f"st-{node.state}", SHORT.get(node.brick, node.brick),
-                          _subtitle(node, siblings), key, path))
+        siblings = [by_key[k] for k in children.get(_parent_in(node, shown), [])]
+        boxes.append(_box(x, y, _css(node, label), SHORT.get(node.brick, node.brick),
+                          _subtitle(node, siblings, everything, label), key, _path(key, by_key), _flag(node)))
     return (
         f'<div class="scroll"><svg class="lineage" width="{width}" height="{height}" '
         f'viewBox="0 0 {width} {height}" role="img" aria-label="pipeline lineage">'

@@ -69,7 +69,25 @@ def _samples(summary: dict) -> str:
     return "<h4>Per sample</h4>" + table(("Sample", *(c.replace("_", " ") for c in columns)), rows, "compact")
 
 
-def _extra(step: StepView, summary: dict) -> str:
+def _by_reference(summary: dict) -> str:
+    """CellTypist vs known labels: which label each known type got."""
+    found = summary.get("by_reference")
+    if not isinstance(found, dict) or not found:
+        return ""
+    entries = [(kind, g) for kind, g in found.items() if isinstance(g, dict)]
+    rows = [
+        f"<tr><td>{esc(kind)}</td><td>{esc(g.get('label', ''))}</td>"
+        f"<td class=num>{float(g.get('share', 0)):.0%}</td><td class=num>{esc(g.get('cells', ''))}</td></tr>"
+        for kind, g in sorted(entries, key=lambda item: -int(item[1].get("cells", 0)))
+    ]
+    return (f"<h4>Against {esc(summary.get('reference_key', 'known labels'))}</h4>"
+            + table(("Known type", "Most got", "Share", "Cells"), rows, "compact"))
+
+
+def result_tables(step: StepView, summary: dict) -> str:
+    """Tables a result needs beyond its key numbers (shared by Runs and Pipelines)."""
+    if step.brick == "annotate_celltypist":
+        return _by_reference(summary)
     if step.brick == "pseudobulk_de":
         return _groups(summary) + _de_table(Path(step.step_dir))
     if step.brick == "memento_de":
@@ -144,7 +162,7 @@ def _ask(run: RunView, step: StepView, info: BranchInfo | None) -> str:
 def _step_card(step: StepView, image_url: ImageUrl, ask: str = "") -> str:
     summary = step.summary or {}
     message = f'<p class="note bad">{esc(step.message)}</p>' if step.message else ""
-    extra = _extra(step, summary)
+    extra = result_tables(step, summary)
     return (
         f'<li class="step {esc(step.state)}"><div class="step-head">{dot(step.state)}'
         f'<b>{step.index}. {esc(step.brick)}</b> {pill(step.state)}'

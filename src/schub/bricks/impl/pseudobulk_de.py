@@ -114,9 +114,12 @@ def run(io: StepIO, p: PseudobulkParams) -> dict[str, Any]:
             tables.append(result.table.assign(group=group))
     if not tables:
         raise BrickError(f"No group had enough replicates per condition: {summaries}")
-    _write_csv(pd.concat(tables), io.results_dir / "de_all.csv")
+    combined = pd.concat(tables)
+    _write_csv(combined, io.results_dir / "de_all.csv")
     return {
         "contrast": f"{p.treatment} vs {p.reference}",
+        # A gene significant in several cell types counts once here, once per group below.
+        "significant_genes": int(combined.index[combined["padj"] < p.alpha].unique().size),
         "groups_tested": len(tables),
         "groups_skipped": len(summaries) - len(tables),
         "groups": summaries,

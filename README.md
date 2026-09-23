@@ -15,8 +15,8 @@ ecosystem and scvi-tools; AnnData with raw counts as the working format.
 | `qc_filter` | QC metrics, cell/gene thresholds, Scrublet doublets | CPU |
 | `normalize_embed` | normalize + log1p, seurat_v3 HVG, PCA, kNN, UMAP, Leiden | CPU |
 | `integrate_scvi` | scVI batch integration, then kNN/UMAP/Leiden on the latent space | 1 GPU |
-| `integrate_scanvi` | scVI + scANVI with known labels; predicted labels for every cell | 1 GPU |
-| `annotate_celltypist` | CellTypist labels with majority voting | CPU |
+| `integrate_scanvi` | scVI + scANVI with known labels; predicted labels for every cell, accuracy on held-out labels | 1 GPU |
+| `annotate_celltypist` | CellTypist labels, majority voting over CellTypist's own over-clustering; optional comparison with known labels | CPU |
 | `pseudobulk_de` | Sum counts per replicate x condition (x cell type), PyDESeq2 | CPU |
 | `memento_de` | memento: differential mean and variability (method of moments) | CPU |
 | `export_cellxgene` | Subsampled, normalized `.h5ad` for cellxgene | CPU |
@@ -46,6 +46,11 @@ on the cluster) with each step's exact code and parameters. In JupyterLab on
 the cluster a step can be changed and re-run; the steps after it read the new
 result, earlier ones come from the pipeline's cache, and nothing is written
 into the cache.
+
+Graphs show each branch as it is now. After an sc-hub update (new code gives
+steps new keys) or a revision, a finished branch shows "needs re-run" and each
+such step names what it gave before; older results stay available behind
+"Show older steps". A branch the planner now refuses shows "can't plan".
 
 The dashboard starts at Projects (the root: question, datasets, branches),
 then Pipelines, Runs (history, queue, interactive sessions) and Library. The
@@ -138,9 +143,15 @@ it does not give a lab is the following, which is what sc-hub adds:
   unnormalized data, scVI integrating over the condition under study, DE
   without biological replicates or with clusters used as replicates, a
   mitochondrial filter that silently matches nothing, log data fed to
-  count-based methods. Jobs refuse a GPU step when torch cannot see the GPU
-  instead of quietly training on CPU. An AGENTS.md can ask for this; a plan
-  validator guarantees it.
+  count-based methods. It warns when a merge drops one dataset's MT- genes
+  (each cell's % mito is kept from before the join), and when a DE step cannot
+  depend on the analysis steps before it (grouping by the dataset's own cell
+  types after CellTypist: variants of scVI or CellTypist give identical DE).
+  Jobs refuse a GPU step when torch cannot see the GPU instead of quietly
+  training on CPU. An AGENTS.md can ask for this; a plan validator guarantees it.
+- **Numbers that mean what they say.** DE counts genes, not gene x cell-type
+  pairs; scANVI reports accuracy on held-out labels, not on its training labels;
+  CellTypist can be checked against the authors' labels (`reference_key`).
 - **Scheduler hygiene.** Dependency chains with `--kill-on-invalid-dep`, no
   duplicate submissions on retry, cached step reuse, a per-user cap on active
   pipelines, nothing heavy on the login node.

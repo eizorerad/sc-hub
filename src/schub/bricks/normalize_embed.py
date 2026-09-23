@@ -31,6 +31,10 @@ def check(state: DatasetState, p: NormalizeParams, ctx: PlanContext) -> list[Iss
     return issues
 
 
+def writes_obs(p: NormalizeParams) -> tuple[str, ...]:
+    return ("leiden",)
+
+
 def transform(state: DatasetState, p: NormalizeParams) -> DatasetState:
     new = state.update(x_kind="normalized_log", norm_target=p.target_sum, counts_layer=True)
     return (
@@ -54,4 +58,7 @@ SPEC = BrickSpec(
     transform=transform,
     resources=resources,
     impl="schub.bricks.impl.normalize_embed:run",
+    keeps_counts=True,
+    prepares=True,
+    writes_obs=writes_obs,
 )

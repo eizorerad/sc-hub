@@ -183,30 +183,53 @@ SCRIPT = r"""
     $$('[data-pipe-view]').forEach(v => { v.hidden = v.dataset.pipeView !== id; });
     $$('[data-pipe]').forEach(b => b.classList.toggle('active', b.dataset.pipe === id));
     keep.set('pipe', id);
+    showHistory(keep.get('history') === '1');
     const node = keep.get('node');
-    if (node) selectNode(node, false);
+    if (node) selectNode(node, false); else clearNode(false);
+  }
+
+  // Older versions of steps (history) sit in a second graph per view, shown on request.
+  function showHistory(on) {
+    keep.set('history', on ? '1' : '0');
+    $$('.graph').forEach(g => {
+      const older = $('[data-history="1"]', g), now = $('[data-history="0"]', g), button = $('[data-history-toggle]', g);
+      if (!older) return;
+      older.hidden = !on; now.hidden = on;
+      const n = Number(button.dataset.count);
+      button.textContent = on ? 'Hide older steps' : `Show ${n} older step${n === 1 ? '' : 's'}`;
+    });
+  }
+
+  function clearNode(forget = true) {
+    const panel = $('#node-panel');
+    if (panel) panel.replaceChildren(Object.assign(document.createElement('p'), {className: 'muted', textContent: 'Select a step in the graph.'}));
+    $$('.pipes').forEach(p => p.classList.add('no-node'));
+    $$('.lineage').forEach(svg => svg.classList.remove('focused'));
+    $$('.node.selected, .node.on-path').forEach(n => n.classList.remove('selected', 'on-path'));
+    if (forget) keep.set('node', '');  // a pipe without this step keeps it for when the student returns
   }
 
   function selectNode(key, remember = true) {
     const tpl = $(sel('data-node', key));
     const panel = $('#node-panel');
-    if (!tpl || !panel) return;
-    panel.replaceChildren(tpl.content.cloneNode(true));
+    const graph = $('[data-pipe-view]:not([hidden]) [data-history]:not([hidden])');
+    const hit = graph && $('.node' + sel('data-key', key), graph);
+    if (!tpl || !panel || !hit) { clearNode(remember); return; }  // not a step of the graph on screen
+    const close = Object.assign(document.createElement('button'), {type: 'button', className: 'panel-close', textContent: '×'});
+    close.dataset.closeNode = ''; close.setAttribute('aria-label', 'Close the step panel');
+    panel.replaceChildren(close, tpl.content.cloneNode(true));
     panel.classList.remove('filled'); void panel.offsetWidth; panel.classList.add('filled');
-    const view = $('[data-pipe-view]:not([hidden])');
-    if (view) {
-      const svg = $('svg', view);
-      $$('.node', view).forEach(n => n.classList.remove('selected', 'on-path'));
-      const hit = $('.node' + sel('data-key', key), view);
-      if (svg) svg.classList.toggle('focused', !!hit);
-      if (hit) {
-        hit.classList.add('selected');
-        (hit.dataset.path || '').split(' ').forEach(k => {
-          const n = k && $('.node' + sel('data-key', k), view);
-          if (n) n.classList.add('on-path');
-        });
-      }
-    }
+    $$('.pipes').forEach(p => p.classList.remove('no-node'));
+    $$('.node', graph).forEach(n => n.classList.remove('selected', 'on-path'));
+    $('svg', graph)?.classList.add('focused');
+    hit.classList.add('selected');
+    (hit.dataset.path || '').split(' ').forEach(k => {
+      const n = k && $('.node' + sel('data-key', k), graph);
+      if (n) n.classList.add('on-path');
+    });
+    // The panel narrows the graph: bring a clicked step into view once the layout settled
+    // (not on restore after an auto-refresh, which keeps the student's scroll position).
+    if (remember) requestAnimationFrame(() => hit.scrollIntoView({block: 'nearest', inline: 'center'}));
     $$('.cellmap:not(.drawn)', panel).forEach(drawMap);
     $$('details.code[open]', panel).forEach(fillCode);
     if (remember) keep.set('node', key);
@@ -297,6 +320,15 @@ SCRIPT = r"""
     if (!e.target.closest('details.account') || e.target.closest('details.account .menu a')) {
       $$('details.account').forEach(d => { d.open = false; });
     }
+    if (e.target.closest('[data-history-toggle]')) {
+      showHistory(keep.get('history') !== '1');
+      const kept = keep.get('node');
+      if (kept) selectNode(kept, false); else clearNode(false);  // keep the step if the other graph has it
+      return;
+    }
+    const older = e.target.closest('[data-select-node]');
+    if (older) { showHistory(true); selectNode(older.dataset.selectNode); return; }
+    if (e.target.closest('[data-close-node]')) { clearNode(); return; }
     const node = e.target.closest('.node[data-key]');
     if (node && !node.classList.contains('ds')) return selectNode(node.dataset.key);
     const pipe = e.target.closest('[data-pipe]');

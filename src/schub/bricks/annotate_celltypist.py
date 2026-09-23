@@ -1,4 +1,13 @@
-"""Automated cell-type annotation with a pre-staged CellTypist model."""
+"""Automated cell-type annotation with a pre-staged CellTypist model.
+
+Majority voting smooths per-cell predictions over an over-clustering: many small,
+high-resolution clusters. By default CellTypist builds its own on the step's
+neighbour graph (resolution 5-30 by cell count). Voting over the pipeline's
+Leiden (resolution ~1) instead merges neighbouring types and makes the labels
+depend on that resolution: on Kang 2018 it called 1,572 of 1,621 CD8 T cells
+"CD16+ NK cells", and on PBMC 1k Leiden 0.5 vs 1.0 gave 10 vs 13 labels, while
+CellTypist's own over-clustering gave the same 15 labels for both.
+"""
 
 from __future__ import annotations
 
@@ -17,8 +26,17 @@ class CelltypistParams(BrickParams):
         pattern=r"^[A-Za-z0-9_.-]+\.pkl$",
         description="Model file name in the shared CellTypist folder.",
     )
-    majority_voting: bool = Field(True, description="Smooth labels over clusters.")
-    over_clustering: str | None = Field("leiden", description="obs column used for voting.")
+    majority_voting: bool = Field(True, description="Smooth labels over an over-clustering.")
+    over_clustering: str | None = Field(
+        None,
+        description="obs column to vote over. Default: CellTypist's own high-resolution over-clustering "
+        "of the step's neighbour graph. A coarse column such as 'leiden' merges neighbouring cell types.",
+    )
+    reference_key: str | None = Field(
+        None,
+        description="Optional obs column with known labels (e.g. the authors' cell types): the result "
+        "shows which CellTypist label each known type got, and how consistent the two are.",
+    )
 
 
 def _check_input(state: DatasetState) -> list[Issue]:
@@ -67,9 +85,24 @@ def check(state: DatasetState, p: CelltypistParams, ctx: PlanContext) -> list[Is
         issues.append(error("needs_symbols", "CellTypist models use gene symbols, not Ensembl IDs."))
     if p.majority_voting and p.over_clustering is not None:
         issues += need_obs(state, p.over_clustering, "over_clustering")
-    if p.majority_voting and p.over_clustering is None:
-        issues.append(warning("slow_voting", "CellTypist will compute its own over-clustering."))
+    if p.majority_voting and p.over_clustering is None and "neighbors" not in state.flags:
+        issues.append(warning("slow_voting", "No neighbour graph yet: CellTypist builds one for its "
+                                             "over-clustering (slower); run normalize_embed first."))
+    issues += need_obs(state, p.reference_key, "reference_key")
     return issues
+
+
+def label_column(p: CelltypistParams) -> str:
+    return f"{PREFIX}majority_voting" if p.majority_voting else f"{PREFIX}predicted_labels"
+
+
+def writes_obs(p: CelltypistParams) -> tuple[str, ...]:
+    voting = (f"{PREFIX}majority_voting", f"{PREFIX}over_clustering") if p.majority_voting else ()
+    return (f"{PREFIX}predicted_labels", *voting, f"{PREFIX}conf_score")
+
+
+def label_columns(p: CelltypistParams) -> tuple[str, ...]:
+    return (label_column(p),)
 
 
 def transform(state: DatasetState, p: CelltypistParams) -> DatasetState:
@@ -88,10 +121,14 @@ def resources(state: DatasetState, p: CelltypistParams) -> Resources:
 SPEC = BrickSpec(
     name="annotate_celltypist",
     version="0.1.0",
-    summary="CellTypist labels (+ majority voting over clusters) into obs['celltypist_*'].",
+    summary="CellTypist labels (+ majority voting over a high-resolution over-clustering) into "
+    "obs['celltypist_*']; optionally compared with known labels (reference_key).",
     params_model=CelltypistParams,
     check=check,
     transform=transform,
     resources=resources,
     impl="schub.bricks.impl.annotate_celltypist:run",
+    keeps_counts=True,
+    writes_obs=writes_obs,
+    label_columns=label_columns,
 )

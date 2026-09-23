@@ -76,8 +76,9 @@ def test_celltypist_rejects_ensembl_and_missing_cluster_column(raw_profile, ctx)
     assert "needs_symbols" in codes(ens)
     voting = StepRequest(brick="annotate_celltypist", params={"over_clustering": "clusters"})
     assert "missing_obs" in codes(build_plan(raw_profile, "fp", [QC, NORM, voting], ctx))
-    no_col = StepRequest(brick="annotate_celltypist", params={"over_clustering": None})
-    assert "slow_voting" in codes(build_plan(raw_profile, "fp", [QC, NORM, no_col], ctx), "warning")
+    own = StepRequest(brick="annotate_celltypist", params={"over_clustering": None})
+    # normalize_embed built the neighbour graph, so CellTypist's own over-clustering is cheap
+    assert "slow_voting" not in codes(build_plan(raw_profile, "fp", [QC, NORM, own], ctx), "warning")
 
 
 def test_lognorm_only_data_cannot_be_renormalized(write_h5ad, ctx):
@@ -155,7 +156,9 @@ def test_pseudo_replication_and_design_key_clashes(raw_profile, ctx):
 
 def test_mito_filter_needs_symbols_and_scvi_condition_warning(raw_profile, ctx):
     ens = DatasetOverrides(gene_ids="ensembl")
-    assert "mt_needs_symbols" in codes(build_plan(raw_profile, "fp", [QC], ctx, ens))
+    strict = StepRequest(brick="qc_filter", params={"max_pct_mt": 20})
+    assert "mt_needs_symbols" in codes(build_plan(raw_profile, "fp", [strict], ctx, ens))
+    assert "mt_needs_symbols" in codes(build_plan(raw_profile, "fp", [QC], ctx, ens), "warning")
     no_mito = StepRequest(brick="qc_filter", params={"max_pct_mt": 100})
     assert build_plan(raw_profile, "fp", [no_mito], ctx, ens).ok
     scvi = StepRequest(brick="integrate_scvi", params={"batch_key": "donor"})
@@ -170,10 +173,12 @@ def test_code_and_environment_are_part_of_the_key(raw_profile, ctx):
     assert new_code.steps[0].code_id == "edited"
 
 
-def test_missing_mito_genes_warns(write_h5ad, ctx):
+def test_missing_mito_genes_refuse_a_mito_filter(write_h5ad, ctx):
     no_mt = [g for g in make_adata().var_names if not g.startswith("MT-")]
     profile = profile_h5ad(write_h5ad(make_adata(genes=no_mt)))
     assert profile.state.mito_genes == 0 and any("MT-" in n for n in profile.notes)
+    strict = StepRequest(brick="qc_filter", params={"max_pct_mt": 20})
+    assert "no_mito_genes" in codes(build_plan(profile, "fp", [strict], ctx))
     assert "no_mito_genes" in codes(build_plan(profile, "fp", [QC], ctx), "warning")
     off = StepRequest(brick="qc_filter", params={"max_pct_mt": 100})
-    assert "no_mito_genes" not in codes(build_plan(profile, "fp", [off], ctx), "warning")
+    assert build_plan(profile, "fp", [off], ctx).ok

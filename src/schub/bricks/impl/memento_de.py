@@ -77,9 +77,13 @@ def run(io: StepIO, p: MementoParams) -> dict[str, Any]:
         tables.append(table.assign(group=group))
     if not tables:
         raise BrickError(f"No group had {p.min_cells}+ cells in both conditions: {summaries}")
-    _write_csv(pd.concat(tables), io.results_dir / "memento_all.csv")
+    combined = pd.concat(tables)
+    _write_csv(combined, io.results_dir / "memento_all.csv")
     return {
         "contrast": f"{p.treatment} vs {p.reference}",
+        # Genes significant in any group, each counted once (the groups below count per group).
+        "significant_genes": int(combined.index[combined["de_padj"] < p.alpha].unique().size),
+        "variability_genes": int(combined.index[combined["dv_padj"] < p.alpha].unique().size),
         "capture_rate": p.capture_rate,
         "groups_tested": len(tables),
         "groups_skipped": len(summaries) - len(tables),

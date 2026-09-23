@@ -6,7 +6,7 @@ import json
 from html import escape
 from typing import Any, Iterable
 
-SKIP_SUMMARY_KEYS = {"groups", "figure", "warnings"}
+SKIP_SUMMARY_KEYS = {"groups", "figure", "warnings", "by_reference"}  # shown as their own tables
 
 
 def esc(value: Any) -> str:

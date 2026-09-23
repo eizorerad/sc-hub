@@ -193,7 +193,7 @@ def test_branch_points_show_the_differing_param():
         node("a", "q", 30), node("b", "q", 10),
     ))
     assert "n_latent=30" in svg and "n_latent=10" in svg and "10 cells kept" in svg
-    assert 'data-path="a q"' in svg and view_id("Proj_1/main") == "v-proj-1-main"
+    assert 'data-path="a q ds:d"' in svg and view_id("Proj_1/main") == "v-proj-1-main"
 
 
 def test_jobs_view_shows_progress_and_plain_reasons():
@@ -304,7 +304,7 @@ def test_revisions_forks_subprojects_and_merges_are_visible(hub, two_branches, s
     assert 'data-project="ifn/atlas"' in projects and "fork</span> of <code>main@r2</code> at step 2" in projects
     assert "stricter QC" in projects and "step 1 qc_filter: min_genes default → 20" in projects
     page = render_page(snap, lambda *_: None)
-    assert 'class="edge merge"' in page and 'data-ref="ifn/atlas/joint#1"' in page and 'data-ask="fork"' in page
+    assert "+ atlas" in page and 'data-ref="ifn/atlas/joint#1"' in page and 'data-ask="fork"' in page
     assert "revise_branch" in page and "fork_branch" in page and 'href="#cluster"' in page
 
 

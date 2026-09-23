@@ -103,7 +103,7 @@ def test_recipe_errors():
 def test_headlines_for_new_bricks():
     assert headline("kb_count", {"n_cells": 1187, "samples": {"a": {}}}) == "1,187 cells from 1 sample(s)"
     assert headline("memento_de", {"groups": {"B": {"significant": 3, "variability_significant": 1}}}) == "3 mean / 1 variability genes"
-    assert headline("integrate_scanvi", {"n_labels": 8, "label_agreement_on_labeled": 0.93}) == "8 labels, 0.93 agreement"
+    assert headline("integrate_scanvi", {"n_labels": 8, "label_agreement_on_labeled": 0.93}) == "8 labels"
     assert headline("export_cellxgene", {"n_cells": 5000, "size_mb": 12.5}) == "5,000 cells, 12.5 MB"
 
 

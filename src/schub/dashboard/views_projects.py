@@ -5,14 +5,14 @@ logbook). Scales to many projects without burying anything below a long list."""
 from __future__ import annotations
 
 from ..projects import ProjectSummary
-from .collect import BranchInfo, RunView, Snapshot
+from .collect import BRANCH_LABELS, BranchInfo, RunView, Snapshot
 from .html import esc, pill, table
 from .lineage import view_id
 from .notebooks import notebook_button
 
 IDEA_COLUMNS = ("open", "planned", "running", "done", "dropped")
 IDEA_STATE = {"open": "PENDING", "planned": "PLANNED", "running": "RUNNING", "done": "COMPLETED", "dropped": "FAILED"}
-PROJECT_STATE = {"active": "RUNNING", "paused": "PENDING", "done": "COMPLETED"}
+PROJECT_STATE = {"active": "ACTIVE", "paused": "PENDING", "done": "COMPLETED"}  # active is not a running job
 
 
 def _idea_card(idea) -> str:
@@ -64,11 +64,11 @@ def _branch_rows(project: ProjectSummary, snap: Snapshot, runs: tuple[RunView, .
     for name in project.branches:
         info = snap.branches.get(f"{project.path}/{name}") or BranchInfo(project=project.path, name=name)
         run = latest.get(name)
-        state = pill(run.state) if run else pill("PLANNED", "not run yet")
-        # Stale if the branch as it is now (also through a revised parent) has other steps.
+        # The branch as it is now: a finished run of an older version is not "done".
+        state = pill(info.state, BRANCH_LABELS.get(info.state))
         stale = run is not None and bool(info.keys) and bool(run.steps) and run.steps[-1].key not in info.keys
         run_cell = (f'<a href="#runs/{esc(run.run_id)}">r{esc(run.revision or "?")} run</a>'
-                    + (' <span class="tag">branch changed since</span>' if stale else "")) if run else ""
+                    + (f' <span class="tag">{esc(run.state.lower())}, older version</span>' if stale else "")) if run else ""
         problem = f'<div class="note bad small">{esc(info.problem)}</div>' if info.problem else ""
         rows.append(
             f"<tr><td><code>{esc(name)}</code> <span class='tag'>r{info.revision}</span>{problem}"

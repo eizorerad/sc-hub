@@ -19,13 +19,27 @@ def _scvi(s: Mapping[str, Any]) -> str:
 
 
 def _celltypist(s: Mapping[str, Any]) -> str:
+    purity = s.get("reference_purity")
+    if isinstance(purity, (int, float)):
+        return f"{s.get('n_labels', '?')} labels, {purity:.1%} consistent with {s.get('reference_key')}"
     return f"{s.get('n_labels', '?')} labels"
 
 
-def _de(s: Mapping[str, Any]) -> str:
+def _per_group(s: Mapping[str, Any], field: str) -> list[int]:
     groups = s.get("groups", {})
-    significant = sum(g.get("significant", 0) for g in groups.values() if isinstance(g, dict))
-    return f"{s.get('groups_tested', '?')} groups, {significant:,} DE genes"
+    return [g[field] for g in groups.values() if isinstance(g, dict) and isinstance(g.get(field), int)]
+
+
+def _de(s: Mapping[str, Any]) -> str:
+    """Genes, not gene x group pairs: a gene up in 7 cell types is one DE gene."""
+    tested = s.get("groups_tested", "?")
+    unique = s.get("significant_genes")
+    if isinstance(unique, int):
+        return f"{unique:,} DE genes in {tested} groups"
+    counts = _per_group(s, "significant")  # older results: say per group, never the sum
+    if len(counts) > 1:
+        return f"{tested} groups, {min(counts):,}–{max(counts):,} DE genes each"
+    return f"{counts[0]:,} DE genes" if counts else f"{tested} groups"
 
 
 def _counted(s: Mapping[str, Any]) -> str:
@@ -34,14 +48,26 @@ def _counted(s: Mapping[str, Any]) -> str:
 
 
 def _scanvi(s: Mapping[str, Any]) -> str:
-    return f"{s.get('n_labels', '?')} labels, {s.get('label_agreement_on_labeled', '?')} agreement"
+    """Accuracy on held-out labels; agreement with the training labels is not a check."""
+    labels = s.get("n_labels", "?")
+    accuracy = s.get("holdout_accuracy")
+    if isinstance(accuracy, (int, float)):
+        return f"{labels} labels, {accuracy:.1%} held-out accuracy"
+    unlabeled = s.get("unlabeled_cells")
+    if unlabeled == 0:
+        return f"{labels} labels (every cell labeled, no check)"
+    return f"{labels} labels, {unlabeled:,} cells predicted" if isinstance(unlabeled, int) else f"{labels} labels"
 
 
 def _memento(s: Mapping[str, Any]) -> str:
-    groups = [g for g in s.get("groups", {}).values() if isinstance(g, dict)]
-    mean = sum(g.get("significant", 0) for g in groups)
-    var = sum(g.get("variability_significant", 0) for g in groups)
-    return f"{mean:,} mean / {var:,} variability genes"
+    mean, var = s.get("significant_genes"), s.get("variability_genes")
+    if isinstance(mean, int) and isinstance(var, int):
+        return f"{mean:,} mean / {var:,} variability genes"
+    means, variability = _per_group(s, "significant"), _per_group(s, "variability_significant")
+    if len(means) == 1:
+        return f"{means[0]:,} mean / {sum(variability):,} variability genes"
+    return f"{s.get('groups_tested', len(means))} groups, up to {max(means, default=0):,} mean / " \
+           f"{max(variability, default=0):,} variability genes"
 
 
 def _export(s: Mapping[str, Any]) -> str:

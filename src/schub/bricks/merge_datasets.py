@@ -5,6 +5,11 @@ This is the step for a project that starts from two or more datasets (two
 studies, a new batch next to a published atlas). It must be the first step;
 integrate afterwards (integrate_scvi with batch_key = label_key) so the datasets'
 technical differences do not dominate the embedding.
+
+An inner join keeps only shared genes, which drops every MT- gene as soon as one
+dataset lacks them (Kang 2018 + PBMC 3k). Each cell's % mitochondrial counts is
+therefore computed on its own dataset before the join and kept in
+obs['premerge_pct_counts_mt'] (empty for datasets without MT- genes); qc_filter uses it.
 """
 
 from __future__ import annotations
@@ -18,6 +23,7 @@ from ..state import DatasetState, Issue, ObsColumn, error, warning
 from .base import BrickParams, BrickSpec, PlanContext, Resources, scaled
 
 MAX_DATASETS = 8
+PREMERGE_MT = "premerge_pct_counts_mt"
 
 
 class MergeParams(BrickParams):
@@ -80,7 +86,29 @@ def check(state: DatasetState, p: MergeParams, ctx: PlanContext) -> list[Issue]:
         issues.append(error("species_mismatch", f"datasets come from different species: {sorted(species)}"))
     if state.has_obs(p.label_key):
         issues.append(warning("label_overwritten", f"obs column '{p.label_key}' exists and will be replaced."))
-    return issues
+    return issues + _mito_issues(state, p, ctx, others)
+
+
+def _mito_issues(state: DatasetState, p: MergeParams, ctx: PlanContext,
+                 others: list[tuple[str, DatasetState, str]]) -> list[Issue]:
+    named = [(label_of(ctx.primary_path) if ctx.primary_path else "the branch dataset", state)]
+    named += [(label_of(name), other) for name, other, _ in others]
+    without = [name for name, s in named if s.mito_genes == 0]
+    measured = [name for name, s in named if s.mito_genes]
+    if not without or not measured:
+        return []
+    return [warning(
+        "mito_partial",
+        f"{', '.join(without)} has no MT- genes, so its cells cannot be filtered by % mito; "
+        f"{', '.join(measured)} keeps its own % mito, computed before the merge.",
+    )]
+
+
+def _merged_mito(states: list[DatasetState], join: str) -> int | None:
+    counts = [s.mito_genes for s in states]
+    if any(c is None for c in counts):
+        return None
+    return min(counts) if join == "inner" else max(counts)
 
 
 def transform(state: DatasetState, p: MergeParams, ctx: PlanContext | None = None) -> DatasetState:
@@ -89,6 +117,10 @@ def transform(state: DatasetState, p: MergeParams, ctx: PlanContext | None = Non
     shared = set.intersection(*({c.name for c in s.obs} for s in states))
     obs = tuple(ObsColumn(name=c.name, kind=c.kind) for c in state.obs if c.name in shared and c.name != p.label_key)
     label = ObsColumn(name=p.label_key, kind="categorical", n_unique=len(states))
+    if any(s.mito_genes for s in states):
+        label_and_mito = (label, ObsColumn(name=PREMERGE_MT, kind="numeric", derived=True))
+    else:
+        label_and_mito = (label,)
     genes = [s.n_vars for s in states]
     return DatasetState(
         n_obs=sum(s.n_obs for s in states),
@@ -96,8 +128,8 @@ def transform(state: DatasetState, p: MergeParams, ctx: PlanContext | None = Non
         x_kind="raw_counts",
         gene_ids=state.gene_ids,
         species=state.species,
-        mito_genes=state.mito_genes,
-        obs=obs + (label,),
+        mito_genes=_merged_mito(states, p.join),
+        obs=tuple(c for c in obs if c.name != PREMERGE_MT) + label_and_mito,
         flags=("merged",),
     )
 

@@ -58,6 +58,20 @@ alternative from here" buttons that copy a request for you).
   student for the 10x chemistry (v2/v3), it is on the kit.
 - Cluster markers from one sample are exploratory; condition DE needs
   replicates (pseudobulk_de or memento_de with replicate_key).
+- A dataset without MT- genes (Kang 2018: removed upstream) cannot be filtered
+  by % mito: the planner refuses `max_pct_mt` below 100. Tell the student, then
+  set `max_pct_mt: 100`.
+- If the dataset has trusted labels (authors' cell types), give
+  annotate_celltypist `reference_key` so the result shows how CellTypist agrees.
+- The warning `upstream_unused` means the DE result cannot change with the
+  steps it names (e.g. DE per the dataset's `cell_type` after scVI/CellTypist):
+  say so before the student compares such variants; group by
+  `celltypist_majority_voting` to test the computed labels.
+- scANVI: quote `holdout_accuracy` (labels hidden during training), never the
+  agreement with training labels.
+- After an sc-hub update, finished branches show "needs re-run" on the
+  dashboard: plan and submit them again. New code gives steps new keys, so most
+  steps (GPU ones too) run again; say so before submitting.
 - A subproject (`create_project("parent/child")`) may use another dataset; a
   project that starts from several datasets merges them in its first step.
 - Extra software for the student's own notebook work: `add_project_packages`

@@ -104,3 +104,60 @@ def test_confounded_batch_is_refused_in_the_job(tmp_path, ctx):
     steps = [StepRequest(brick="integrate_scvi", params={"batch_key": "run", "condition_key": "label", "max_epochs": 1})]
     with pytest.raises(BrickError, match="confounded"):
         run_pipeline(path, steps, ctx, tmp_path / "work")
+
+
+def test_pseudobulk_counts_each_de_gene_once(tmp_path, ctx):
+    path = tmp_path / "synthetic.h5ad"
+    synthetic().write_h5ad(path)
+    de = StepRequest(brick="pseudobulk_de", params={"condition_key": "label", "reference": "ctrl", "treatment": "stim",
+                                                     "replicate_key": "donor", "group_key": "cell_type", "paired": True})
+    (summary,), _ = run_pipeline(path, [de], ctx, tmp_path / "work")
+    per_group = sum(g.get("significant", 0) for g in summary["groups"].values())
+    assert 0 < summary["significant_genes"] <= per_group
+
+
+def test_scanvi_reports_accuracy_on_held_out_labels(tmp_path, ctx):
+    path = tmp_path / "synthetic.h5ad"
+    synthetic(n_per_group=20).write_h5ad(path)
+    steps = [StepRequest(brick="integrate_scanvi", params={
+        "batch_key": "donor", "labels_key": "cell_type", "max_epochs": 3, "scanvi_epochs": 2})]
+    (summary,), _ = run_pipeline(path, steps, ctx, tmp_path / "work")
+    assert summary["unlabeled_cells"] == 0 and summary["holdout_cells"] == 48  # 10% of 160 per type
+    assert 0 <= summary["holdout_accuracy"] <= 1 and "label_agreement_on_training" in summary
+
+
+def test_merge_keeps_each_datasets_mito_share_for_qc(tmp_path, ctx, monkeypatch):
+    """Inner join of data without MT- genes (a) and with them (b): b's cells are still
+    filtered by their own % mito (~3.3-3.7% for types B and C, ~2.6% for A)."""
+    import json
+
+    from schub.bricks import PlanContext
+    from schub.bricks.impl import merge_datasets as merge_impl
+
+    with_mt = synthetic(n_per_group=10)
+    no_mt = synthetic(n_per_group=10, seed=1)
+    no_mt = no_mt[:, [not g.startswith("MT-") for g in no_mt.var_names]].copy()
+    first, other = tmp_path / "a.h5ad", tmp_path / "b.h5ad"
+    no_mt.write_h5ad(first)
+    with_mt.write_h5ad(other)
+    lookup = {"b": (profile_h5ad(other), "fp-b")}
+    merge_ctx = PlanContext(celltypist_dirs=ctx.celltypist_dirs, limits=ctx.limits, dataset_lookup=lambda ref: lookup[ref])
+    steps = [StepRequest(brick="merge_datasets", params={"others": ["b"]}),
+             StepRequest(brick="qc_filter", params={"min_genes": 5, "detect_doublets": False, "max_pct_mt": 3})]
+    plan = build_plan(profile_h5ad(first), "fp-a", steps, merge_ctx)
+    assert plan.ok, plan.issues
+    monkeypatch.setattr(merge_impl, "_pinned", lambda _io, name: other)  # no catalog fingerprint here
+    work = tmp_path / "work"
+    (work / "qc").mkdir(parents=True)
+
+    def run_step(step, io):
+        spec = REGISTRY[step.brick]
+        return load_impl(spec.impl)(io, spec.params_model.model_validate(step.params))
+
+    merged = run_step(plan.steps[0], StepIO(input=first, output=work / "merged.h5ad", results_dir=work,
+                                            state_in=plan.steps[0].state_in, context={"pins": json.dumps({"b": "x"})}))
+    assert merged["mito_measured"] == {"a": False, "b": True}
+    qc = run_step(plan.steps[1], StepIO(input=work / "merged.h5ad", output=work / "qc.h5ad", results_dir=work / "qc",
+                                        state_in=plan.steps[1].state_in, context={}))
+    assert qc["cells_without_mito_measure"] == 240 and qc["mt_genes_found"] == 0
+    assert 240 < qc["cells_after_thresholds"] < 480 and "not filtered by % mito" in qc["warnings"][0]
