@@ -10,14 +10,16 @@ entry itself is never rewritten: only the runner writes cells.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import runpy
+import signal
 import subprocess
 import sys
 import traceback
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Iterator, Sequence
 
 from ..config import load_settings
 from .checks import run_checks
@@ -29,6 +31,7 @@ from .ledger import drain
 from .models import CheckSpec
 
 EXIT_OK, EXIT_FAILED, EXIT_TAMPERED = 0, 1, 3
+PORTABLE = Path(__file__).with_name("portable")  # stdlib-only helpers (schub_ckpt) for any environment
 
 
 def verify(job_dir: Path) -> str | None:
@@ -53,17 +56,63 @@ def run_body(job_dir: Path, meta: dict[str, Any], cwd: Path) -> int:
     body = job_dir / meta["body"]
     os.chdir(cwd)
     if meta["body"].endswith(".sh"):
-        return subprocess.run(["bash", str(body)], check=False).returncode
-    if meta.get("body_python"):  # e.g. a paper's own environment, which has no sc-hub
-        return subprocess.run([meta["body_python"], str(body)], check=False).returncode
+        path = os.pathsep.join(filter(None, (str(PORTABLE), os.environ.get("PYTHONPATH", ""))))
+        return _child(["bash", str(body)], {**os.environ, "PYTHONPATH": path})
+    if meta.get("body_python"):  # e.g. a paper's own environment: no sc-hub, only the portable helpers
+        return _child([meta["body_python"], str(body)], {**os.environ, "PYTHONPATH": str(PORTABLE)})
+    with _time_warning(), _importable(PORTABLE):
+        try:
+            runpy.run_path(str(body), init_globals={"bench": _bench(meta)}, run_name="__main__")
+            return EXIT_OK
+        except SystemExit as exc:
+            return exc.code if isinstance(exc.code, int) else (EXIT_OK if exc.code is None else EXIT_FAILED)
+        except BaseException:  # noqa: BLE001 - the cell's own error goes to the log and the journal
+            traceback.print_exc()
+            return EXIT_FAILED
+
+
+def _child(argv: list[str], env: dict[str, str]) -> int:
+    """Run the body in its own process; the time-limit warning (USR1) and scancel (TERM) reach it too:
+    Slurm sends --signal=B:USR1 to the batch process only, which is jobrun."""
+    process = subprocess.Popen(argv, env=env)
+
+    def forward(number: int, _frame: Any) -> None:
+        with contextlib.suppress(ProcessLookupError):
+            process.send_signal(number)
+
+    previous = {number: signal.signal(number, forward) for number in (signal.SIGUSR1, signal.SIGTERM)}
     try:
-        runpy.run_path(str(body), init_globals={"bench": _bench(meta)}, run_name="__main__")
-        return EXIT_OK
-    except SystemExit as exc:
-        return exc.code if isinstance(exc.code, int) else (EXIT_OK if exc.code is None else EXIT_FAILED)
-    except BaseException:  # noqa: BLE001 - the cell's own error goes to the log and the journal
-        traceback.print_exc()
-        return EXIT_FAILED
+        code = process.wait()
+    finally:
+        for number, handler in previous.items():
+            signal.signal(number, handler)
+    return code if code >= 0 else 128 - code  # killed by a signal: the shell's convention
+
+
+@contextlib.contextmanager
+def _time_warning() -> Iterator[None]:
+    """USR1 (the time limit is near) must not kill a body that does not listen for it."""
+    def warn(_number: int, _frame: Any) -> None:
+        sys.stderr.write("[bench] SIGUSR1: the job's time limit is near; save a checkpoint and stop "
+                         "(schub_ckpt: Run.signals())\n")
+
+    previous = signal.signal(signal.SIGUSR1, warn)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGUSR1, previous)
+
+
+@contextlib.contextmanager
+def _importable(folder: Path) -> Iterator[None]:
+    added = str(folder) not in sys.path
+    if added:
+        sys.path.insert(0, str(folder))
+    try:
+        yield
+    finally:
+        if added and str(folder) in sys.path:
+            sys.path.remove(str(folder))
 
 
 def report(job_dir: Path, meta: dict[str, Any], exit_code: int, files: tuple, events: list[dict], checks: tuple,

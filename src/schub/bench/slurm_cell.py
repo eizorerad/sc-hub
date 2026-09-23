@@ -188,8 +188,13 @@ def _job_spec(settings: Settings, project: str, project_dir: Path, job_dir: Path
         resources=Resources(cpus=spec.cpus, mem_gb=spec.mem_gb, time_min=spec.minutes, gpus=spec.gpus),
         log_path=job_dir / "slurm-%j.log", workdir=project_dir / "work",
         command=(python, "-m", "schub.bench.jobrun", "--job-dir", str(job_dir)),
-        env=tuple(dict(env).items()), comment=comment,
+        env=tuple(dict(env).items()), comment=comment, signal=f"B:USR1@{warning_s(spec.minutes)}",
     )
+
+
+def warning_s(minutes: int) -> int:
+    """How long before the time limit a job hears SIGUSR1: a tenth of its time, one to ten minutes."""
+    return max(60, min(600, minutes * 6))
 
 
 def _submit(settings: Settings, slurm: Slurm, job_dir: Path, spec: JobSpec) -> str:

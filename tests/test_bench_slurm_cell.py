@@ -166,3 +166,61 @@ def test_the_job_has_bench_like_the_kernel(settings: Settings, cluster: FakeClus
     foreign = submit_cell(settings, Slurm(cluster), "demo", project, "demo#c0002", code,
                           parse_line("--python /usr/bin/python3", "ws-ia"), [])
     assert foreign.warnings == ("the job will not have these kernel names: bench",)
+
+
+def test_jobs_are_warned_before_their_time_limit(settings: Settings, cluster: FakeCluster, project: Path) -> None:
+    hour = submit_cell(settings, Slurm(cluster), "demo", project, "demo#c0001", "x = 1", parse_line("--time 1h", "gpu"),
+                       [])
+    assert "#SBATCH --signal=B:USR1@360" in (Path(hour.job_dir) / "job.sbatch").read_text()
+    long = submit_cell(settings, Slurm(cluster), "demo", project, "demo#c0002", "x = 1", parse_line("--time 8h", "gpu"),
+                       [])
+    assert "#SBATCH --signal=B:USR1@600" in (Path(long.job_dir) / "job.sbatch").read_text()
+
+
+def test_a_time_warning_does_not_kill_the_job_and_checkpoints_import(settings: Settings, cluster: FakeCluster,
+                                                                      project: Path, monkeypatch) -> None:
+    import signal as signals
+
+    before = signals.getsignal(signals.SIGUSR1)
+    code = ("import os, signal\nfrom schub_ckpt import Run\nos.kill(os.getpid(), signal.SIGUSR1)\n"
+            "open('after.txt', 'w').write(Run.__name__)")
+    submitted, code_ = _run_job(settings, cluster, project, code, monkeypatch)
+    assert code_ == 0 and (project / "work" / "after.txt").read_text() == "Run"
+    assert signals.getsignal(signals.SIGUSR1) == before
+
+
+def test_a_foreign_interpreter_gets_the_warning_and_the_portable_helpers(settings: Settings, cluster: FakeCluster,
+                                                                         project: Path, monkeypatch,
+                                                                         tmp_path: Path) -> None:
+    import os
+    import signal as signals
+    import threading
+    import time
+
+    marks = project / "work"
+    fake = tmp_path / "paper-python"
+    fake.write_text(f"""#!/bin/sh
+echo "$PYTHONPATH" > {marks / 'pythonpath.txt'}
+trap 'echo usr1 > {marks / 'usr1.txt'}; exit 0' USR1
+touch {marks / 'started.txt'}
+i=0; while [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done
+exit 3
+""")
+    fake.chmod(0o755)
+    submitted = submit_cell(settings, Slurm(cluster), "demo", project, "demo#c0001", "print('x')",
+                            parse_line(f"--python {fake}", "ws-ia"), [])
+    monkeypatch.setenv("SCHUB_ROOT", str(settings.root))
+    monkeypatch.setenv("SLURM_JOB_ID", submitted.job.job_id)
+    monkeypatch.chdir(project)
+
+    def warn() -> None:
+        for _ in range(100):
+            if (marks / "started.txt").exists():
+                os.kill(os.getpid(), signals.SIGUSR1)
+                return
+            time.sleep(0.05)
+
+    threading.Thread(target=warn, daemon=True).start()
+    assert jobrun.main(["--job-dir", submitted.job_dir]) == 0
+    assert (marks / "usr1.txt").read_text().strip() == "usr1"
+    assert (marks / "pythonpath.txt").read_text().strip().endswith("schub/bench/portable")

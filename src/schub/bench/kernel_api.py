@@ -13,12 +13,16 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
 from .fetch import FetchError, fetch
 
 _cell: dict[str, Any] = {"ref": "", "checks": []}
+PORTABLE = str(Path(__file__).with_name("portable"))
+if PORTABLE not in sys.path:
+    sys.path.append(PORTABLE)  # `from schub_ckpt import Run` works in the kernel as in jobs
 
 
 def set_cell(ref: str, checks_json: str = "[]") -> None:
