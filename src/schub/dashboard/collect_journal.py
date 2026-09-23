@@ -112,7 +112,7 @@ def bench_panel(settings: Settings, jobs: tuple[QueueJob, ...], overview: Overvi
     record = read_json(settings.bench_dir / "workbench.json") or {}
     workbench_job = next((j for j in jobs if j.name == f"{settings.job_prefix}-{WORKBENCH}"), None)
     alerts = list(_bench_alerts(settings, record, workbench_job))
-    alerts += _slot_alerts(settings, jobs)
+    alerts += _slot_alerts(jobs)
     alerts += [f"{c.project}: {c.failed_checks} cell(s) with failed checks" for c in cards if c.failed_checks]
     alerts += _quota_alerts(overview)
     if workbench_job is not None:
@@ -135,13 +135,15 @@ def _bench_alerts(settings: Settings, record: dict, workbench_job: QueueJob | No
     return alerts
 
 
-def _slot_alerts(settings: Settings, jobs: tuple[QueueJob, ...]) -> list[str]:
-    running = [j for j in jobs if j.partition == settings.bench.partition and j.state == "RUNNING"]
-    blocked = [j for j in jobs if "QOSMaxJobsPerUserLimit" in j.reason]
-    if blocked and len(running) >= settings.bench.max_running_jobs:
-        names = ", ".join(j.name for j in running)
-        return [f"Both job slots on {settings.bench.partition} are taken ({names}); {len(blocked)} job(s) wait."]
-    return []
+def _slot_alerts(jobs: tuple[QueueJob, ...]) -> list[str]:
+    """One alert per partition where jobs wait for a running-job slot (QOSMaxJobsPerUserLimit)."""
+    alerts = []
+    for partition in sorted({j.partition for j in jobs if "QOSMaxJobsPerUserLimit" in j.reason}):
+        running = [j.name for j in jobs if j.partition == partition and j.state == "RUNNING"]
+        blocked = sum(1 for j in jobs if j.partition == partition and "QOSMaxJobsPerUserLimit" in j.reason)
+        taken = "Both job slots" if len(running) == 2 else "The job slots"
+        alerts.append(f"{taken} on {partition} are taken ({', '.join(running)}); {blocked} job(s) wait.")
+    return alerts
 
 
 def _quota_alerts(overview: Overview | None) -> list[str]:

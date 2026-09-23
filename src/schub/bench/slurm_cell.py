@@ -114,6 +114,9 @@ def check_limits(spec: SlurmCellSpec) -> SlurmCellSpec:
     return spec
 
 
+JOB_NAMES = frozenset({"bench"})  # what jobrun puts into a job's globals
+
+
 def kernel_names(code: str) -> list[str]:
     """Names the code reads but never defines: they exist in the kernel, not in the job."""
     try:
@@ -144,7 +147,8 @@ class Submitted(Frozen):
 def submit_cell(settings: Settings, slurm: Slurm, project: str, project_dir: Path, ref: str, code: str,
                 spec: SlurmCellSpec, checks: list[dict]) -> Submitted:
     cid = ref.partition("#")[2] or "c0000"
-    missing = [] if spec.bash else kernel_names(code)  # a syntax error stops here, before anything is queued
+    # a syntax error stops here, before anything is queued; jobrun gives a sc-hub job `bench`, a foreign python not
+    missing = [] if spec.bash else [n for n in kernel_names(code) if spec.python or n not in JOB_NAMES]
     key = secrets.token_hex(4)
     job_dir = project_dir / "jobs" / f"{cid}-{key}"
     job_dir.mkdir(parents=True, exist_ok=False)

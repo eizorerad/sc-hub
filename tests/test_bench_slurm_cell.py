@@ -155,3 +155,14 @@ def test_another_interpreter_runs_the_body(settings: Settings, cluster: FakeClus
     monkeypatch.chdir(project)
     assert jobrun.main(["--job-dir", submitted.job_dir]) == 0
     assert (project / "work" / "marker.txt").read_text().strip() == "ran-by-the-paper-env"
+
+
+def test_the_job_has_bench_like_the_kernel(settings: Settings, cluster: FakeCluster, project: Path,
+                                           monkeypatch) -> None:
+    code = "bench.work_dir().joinpath('where.txt').write_text(f'{bench.project_dir()} {bench.current_cell()}')"
+    submitted, code_ = _run_job(settings, cluster, project, code, monkeypatch)
+    assert submitted.warnings == () and code_ == 0
+    assert (project / "work" / "where.txt").read_text() == f"{project.resolve()} demo#c0001"
+    foreign = submit_cell(settings, Slurm(cluster), "demo", project, "demo#c0002", code,
+                          parse_line("--python /usr/bin/python3", "ws-ia"), [])
+    assert foreign.warnings == ("the job will not have these kernel names: bench",)

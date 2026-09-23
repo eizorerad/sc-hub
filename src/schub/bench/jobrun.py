@@ -40,6 +40,15 @@ def verify(job_dir: Path) -> str | None:
     return None
 
 
+def _bench(meta: dict[str, Any]):
+    """The kernel's `bench` (fetch, twin, run_brick, the project's folders), so a %%slurm cell reads like a
+    kernel cell."""
+    from . import kernel_api
+
+    kernel_api.set_cell(meta.get("ref", ""), json.dumps(meta.get("checks", [])))
+    return kernel_api
+
+
 def run_body(job_dir: Path, meta: dict[str, Any], cwd: Path) -> int:
     body = job_dir / meta["body"]
     os.chdir(cwd)
@@ -48,7 +57,7 @@ def run_body(job_dir: Path, meta: dict[str, Any], cwd: Path) -> int:
     if meta.get("body_python"):  # e.g. a paper's own environment, which has no sc-hub
         return subprocess.run([meta["body_python"], str(body)], check=False).returncode
     try:
-        runpy.run_path(str(body), run_name="__main__")
+        runpy.run_path(str(body), init_globals={"bench": _bench(meta)}, run_name="__main__")
         return EXIT_OK
     except SystemExit as exc:
         return exc.code if isinstance(exc.code, int) else (EXIT_OK if exc.code is None else EXIT_FAILED)

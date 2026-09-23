@@ -1,7 +1,8 @@
 """How many of the student's running-job slots are taken, in plain words.
 
 QOS ia-std on ws-ia allows two running jobs per user; an interactive personal-ws
-job and the workbench can take both. Every bench answer says so, so a pending
+job and the workbench can take both. The gpu QOS caps CPUs, memory and GPUs per
+user instead, not the number of jobs. Every bench answer says so, so a pending
 workbench or %%slurm job is never a mystery.
 """
 
@@ -28,25 +29,27 @@ class SlotUsage(Frozen):
     def summary(self) -> str:
         if self.unknown:
             return f"{self.partition}: job slots unknown (squeue failed)"
-        limit = "?" if self.limit is None else str(self.limit)
-        state = " FULL" if self.full else ""
         listed = f": {', '.join(self.jobs)}" if self.jobs else ""
-        return f"{self.partition} {self.running}/{limit} running{state}{listed}"
+        if self.limit is None:
+            return f"{self.partition} {self.running} running (no job-count cap){listed}"
+        state = " FULL" if self.full else ""
+        return f"{self.partition} {self.running}/{self.limit} running{state}{listed}"
 
 
-def running_limit(settings: Settings, partition: str) -> int:
-    """Per-user running jobs from the cached cluster overview, else the configured default."""
+def running_limit(settings: Settings, partition: str) -> int | None:
+    """Per-user running jobs from the cached cluster overview, else the configured cap (None: not capped)."""
+    default = settings.bench.max_running_jobs if partition in settings.bench.capped else None
     try:
         data = json.loads((settings.cache_dir / "overview.json").read_text())
     except (OSError, ValueError):
-        return settings.bench.max_running_jobs
+        return default
     for qos in data.get("limits", []):
         if partition not in qos.get("partitions", []):
             continue
         for limit in qos.get("limits", []):
             if limit.get("name") == "running jobs" and limit.get("limit") is not None:
                 return int(limit["limit"])
-    return settings.bench.max_running_jobs
+    return default
 
 
 def _label(job: QueueJob) -> str:

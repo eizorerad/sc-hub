@@ -17,7 +17,8 @@ adata.write_h5ad("k562_scvi.h5ad")
 
 - **Self-contained.** The job runs in a new process: it reads and writes files, not
   kernel variables. The answer warns about names the cell uses that only exist in
-  the kernel. It starts in the project's `work/` folder.
+  the kernel. It starts in the project's `work/` folder, and `bench` is there as in
+  the kernel (`bench.data_dir()`, `bench.fetch`, `bench.twin`), except with `--python`.
 - **Frozen.** The cell's code is copied with a checksum when you send it; the job
   refuses to run if the copy changed. To change it, send a new cell.
 - **It does not block.** The cell returns at once with the job id. The same journal

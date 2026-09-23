@@ -16,6 +16,9 @@ Where your cells run and what limits them (measured 2026-09).
   `personal-ws` job is another. A heavy cell sent with `%%slurm` needs a free
   slot; if both are taken it waits (`QOSMaxJobsPerUserLimit`). Every answer shows
   the slots; say so to the student instead of retrying.
+- The gpu partition has its own budget (16 CPU, 90 GB, 1 GPU) and no cap on the
+  number of jobs, so a CPU-only `%%slurm --partition gpu` job does not take a ws-ia
+  slot. Its start is not guaranteed: the gpu nodes are often full.
 - The workbench stops itself after a while without cells, to free its slot. The
   next cell starts it again (a minute or so in the queue). Its variables are then
   gone: keep results in files.

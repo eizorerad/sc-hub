@@ -32,7 +32,8 @@ class BenchConfig:
     background_fallback: str = "ws-ia"
     watchdog_every_min: int = 30
     dormant_after_h: int = 12  # the watchdog stops re-arming itself after this long without work
-    max_running_jobs: int = 2  # per-user running jobs on `partition` when the QOS cannot be read
+    max_running_jobs: int = 2  # per-user running jobs on a capped partition when the QOS cannot be read
+    capped_partitions: str = "ws-ia"  # comma-separated; MBZUAI's gpu QOS caps CPU, memory and GPUs, not jobs
 
     def __post_init__(self) -> None:
         _check_range("CPUS", self.cpus, 1, 24)
@@ -49,13 +50,23 @@ class BenchConfig:
         _check_range("DORMANT_AFTER_H", self.dormant_after_h, 1, 24 * 30)
         _check_range("MAX_RUNNING_JOBS", self.max_running_jobs, 1, 1000)
         for name in ("partition", "background_partition", "background_fallback"):
-            if not getattr(self, name).replace("-", "").replace("_", "").isalnum():
+            if not _is_partition(getattr(self, name)):
                 raise ValueError(f"{PREFIX}{name.upper()} must be a partition name, got {getattr(self, name)!r}")
+        if not all(map(_is_partition, self.capped)):
+            raise ValueError(f"{PREFIX}CAPPED_PARTITIONS must be partition names, got {self.capped_partitions!r}")
+
+    @property
+    def capped(self) -> tuple[str, ...]:
+        return tuple(p.strip() for p in self.capped_partitions.split(",") if p.strip())
 
 
 def _check_range(key: str, value: float, low: float, high: float) -> None:
     if not low <= value <= high:
         raise ValueError(f"{PREFIX}{key} must be between {low} and {high}, got {value}")
+
+
+def _is_partition(name: str) -> bool:
+    return name.replace("-", "").replace("_", "").isalnum()
 
 
 def _parse(key: str, raw: str, kind: type) -> object:
