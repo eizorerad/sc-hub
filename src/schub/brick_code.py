@@ -49,6 +49,13 @@ def brick_source(brick: str) -> str:
     return _SOURCES[key]
 
 
+def module_stamp(module: str) -> tuple[str, int]:
+    """(module, file mtime): changes when the installed code does."""
+    spec = importlib.util.find_spec(module)
+    origin = Path(spec.origin) if spec is not None and spec.origin else None
+    return (module, origin.stat().st_mtime_ns if origin is not None and origin.is_file() else 0)
+
+
 def current_code_id(brick: str) -> str:
     """code_id of the installed brick (cached by file versions, so a long-running
     server sees an update)."""
