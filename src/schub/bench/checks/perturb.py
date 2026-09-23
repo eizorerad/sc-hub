@@ -20,6 +20,7 @@ from . import CheckDef, failed, passed
 from .h5ad import read_obs_column
 
 PathOf = Callable[[str], Path]
+ROW_BLOCK = 2000  # cells read at once (a dense block of 8,563 genes is ~70 MB)
 
 
 class PerturbParams(BaseModel):
@@ -96,25 +97,27 @@ def _knockdown(path: Path, labels: pd.Series, targets: pd.Series, p: PerturbPara
 
 
 def _expression(adata, rows: np.ndarray, columns: list[int]) -> np.ndarray:
-    """Library-size-normalized expression of the target genes in the sampled cells (dense)."""
+    """Library-size-normalized expression of the target genes in the sampled cells (dense).
+
+    Whole rows are read in blocks, sparse or dense alike: a cell's library size needs all
+    its genes (comparing raw counts called a perturbation that shrinks every gene's
+    counts a knockdown; Codex found it in the K562 PoC)."""
     from scipy import sparse
 
-    subset = adata[rows].to_memory().X if adata.isbacked and _is_sparse(adata) else None
-    if subset is None:
-        subset = adata[rows, columns].to_memory().X  # dense X: only the columns needed
-        return _unlog(np.asarray(subset.todense() if sparse.issparse(subset) else subset, dtype=float))
-    counts = subset.tocsr() if sparse.issparse(subset) else np.asarray(subset)
-    target = np.asarray(counts[:, columns].todense() if sparse.issparse(counts) else counts[:, columns], dtype=float)
-    if not _looks_like_counts(counts):
+    targets, totals, first = [], [], None
+    for start in range(0, len(rows), ROW_BLOCK):
+        block = adata[rows[start:start + ROW_BLOCK]].to_memory().X
+        block = block.tocsr() if sparse.issparse(block) else np.asarray(block)
+        first = block if first is None else first
+        part = block[:, columns]
+        targets.append(np.asarray(part.todense() if sparse.issparse(part) else part, dtype=float))
+        totals.append(np.asarray(block.sum(axis=1), dtype=float).ravel())
+    target = np.vstack(targets) if targets else np.zeros((0, len(columns)))
+    if first is None or not _looks_like_counts(first):
         return _unlog(target)
-    totals = np.asarray(counts.sum(axis=1)).ravel()
-    totals[totals == 0] = 1
-    return target * (1e4 / totals)[:, None]
-
-
-def _is_sparse(adata) -> bool:
-    encoding = adata.file["X"].attrs.get("encoding-type", "") if "X" in adata.file else ""
-    return "csr" in str(encoding) or "csc" in str(encoding)
+    library = np.concatenate(totals)
+    library[library == 0] = 1
+    return target * (1e4 / library)[:, None]
 
 
 def _looks_like_counts(matrix) -> bool:

@@ -133,3 +133,22 @@ def test_every_check_is_documented() -> None:
     text = describe()
     for name in registry():
         assert f"`{name}(" in text
+
+
+def test_knockdown_is_judged_after_library_size_on_dense_counts(settings: Settings, project: Path) -> None:
+    """Found by Codex in the K562 PoC: dense raw counts were compared without normalization, so a
+    perturbation that halves every gene's counts looked like a knockdown of its target."""
+    shrunk = perturb_adata(knockdown=False)
+    counts = np.asarray(shrunk.X.todense())
+    targets = shrunk.obs["gene"].astype(str).to_numpy() != "non-targeting"
+    counts[targets] = np.round(counts[targets] * 0.5)  # smaller libraries, no real knockdown
+    ad.AnnData(counts, obs=shrunk.obs, var=shrunk.var).write_h5ad(project / "work" / "dense_shrunk.h5ad")
+    result, message = status(settings, "perturbation", path="work/dense_shrunk.h5ad", perturbation="gene",
+                             control="non-targeting")
+    assert result == "fail" and "in 0 of 10" in message
+    knocked = perturb_adata()
+    ad.AnnData(np.asarray(knocked.X.todense()), obs=knocked.obs, var=knocked.var).write_h5ad(
+        project / "work" / "dense_knocked.h5ad")
+    result, message = status(settings, "perturbation", path="work/dense_knocked.h5ad", perturbation="gene",
+                             control="non-targeting")
+    assert result == "pass" and "knockdown in 10 of 10" in message

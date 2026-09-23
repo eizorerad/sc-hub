@@ -85,6 +85,8 @@ def test_order_follows_the_goal_within_the_policy() -> None:
 
 def test_limits_are_recognised_and_resets_parsed() -> None:
     assert is_limit("You've hit your limit · resets 3pm (Asia/Dubai)") and is_limit("Error 429 Too Many Requests")
+    assert is_limit("You hit your spend cap set by the owner of your workspace. Ask an owner to increase your "
+                    "spend cap to continue.")  # Codex, 2026-09-24, verbatim
     assert not is_limit("KeyError: 'gene'")
     dubai = parse_reset("You've hit your limit · resets 3pm (Asia/Dubai)", NOW)
     assert dubai == datetime(2026, 9, 24, 11, 0, tzinfo=timezone.utc)  # 15:00 +04
