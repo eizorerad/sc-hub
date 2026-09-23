@@ -14,6 +14,7 @@ XKind = Literal["raw_counts", "normalized_log", "scaled", "unknown"]
 GeneIds = Literal["symbol", "ensembl", "unknown"]
 Species = Literal["human", "mouse", "unknown"]
 ColumnKind = Literal["categorical", "numeric", "string", "other"]
+DataSource = Literal["h5ad", "fastq"]
 
 
 class Frozen(BaseModel):
@@ -46,6 +47,11 @@ class DatasetState(Frozen):
     obsm: tuple[str, ...] = ()
     layers: tuple[str, ...] = ()
     flags: tuple[str, ...] = ()
+    # Raw reads instead of a count matrix: only a counting brick can come first.
+    source: DataSource = "h5ad"
+    technology: str | None = None  # FASTQ chemistry, e.g. 10xv3
+    samples: tuple[str, ...] = ()  # FASTQ sample names
+    fastq_gb: float | None = None  # read volume, for time estimates
 
     def obs_column(self, name: str) -> ObsColumn | None:
         return next((c for c in self.obs if c.name == name), None)

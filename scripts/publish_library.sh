@@ -9,8 +9,11 @@
 #   $LIB/envs/<version>/       Python env with sc-hub installed (non-editable)
 #   $LIB/envs/current          -> newest version (students pin the resolved path)
 #   $LIB/python/               uv-managed interpreters used by the envs
-#   $LIB/datasets/<name>/      data.h5ad + dataset.yaml
+#   $LIB/datasets/<name>/      data.h5ad + dataset.yaml, or FASTQ reads + fastq.yaml
 #   $LIB/models/celltypist/    CellTypist models
+#   $LIB/refs/kallisto/<org>/  prebuilt kallisto|bustools indices
+#   $LIB/tools/<name>/         cellxgene and R + Seurat (own environments; build_tools.sh)
+#   $LIB/tools/cellranger/     only if the owner installs it (install_cellranger.sh, 10x license)
 # Old env versions are kept: queued jobs of students still point at them.
 set -euo pipefail
 # Nothing published may be group- or world-writable: students share a Unix group.
@@ -25,7 +28,7 @@ SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LIB="${SCHUB_LIBRARY_ROOT:-/l/users/$USER/sc-hub-library}"
 PARTITION="${SCHUB_PARTITION:-ws-ia}"
 TORCH_BACKEND="${SCHUB_TORCH_BACKEND:-cu128}"
-ASSETS="${SCHUB_ASSETS:-pbmc3k kang2018 celltypist}"
+ASSETS="${SCHUB_ASSETS:-pbmc3k kang2018 celltypist kallisto-human kallisto-mouse pbmc1k_v3_fastq}"
 VERSION="${SCHUB_LIBRARY_VERSION:-$(date +%Y%m%d-%H%M)}"
 # Where the build runs. Default: a new GPU job. To reuse an allocation you already
 # hold (for example a personal workstation job): SCHUB_SRUN_ARGS="--jobid=<id> --overlap"
@@ -40,8 +43,8 @@ log() { printf '[sc-hub library] %s\n' "$*"; }
 die() { printf '[sc-hub library] ERROR: %s\n' "$*" >&2; exit 1; }
 
 layout() {
-  mkdir -p "$LIB"/{hub,envs,python,datasets,models,bin} "$LIB/.private"/{cache,uv,staging}
-  chmod 755 "$LIB" "$LIB"/{hub,envs,python,datasets,models,bin}
+  mkdir -p "$LIB"/{hub,envs,python,datasets,models,refs,tools,bin} "$LIB/.private"/{cache,uv,staging}
+  chmod 755 "$LIB" "$LIB"/{hub,envs,python,datasets,models,refs,tools,bin}
   chmod 700 "$LIB/.private"
 }
 
@@ -92,7 +95,8 @@ export UV_COMPILE_BYTECODE=1
 '$LIB/bin/uv' pip install --quiet --python '$env/bin/python' '$SNAPSHOT[analysis]'
 export SCHUB_ROOT='$LIB/.private' SCHUB_LIBRARY='$LIB' SCHUB_PYTHON='$env/bin/python'
 [ '$GPU_CHECK' = 0 ] || '$env/bin/python' -m schub.cli gpu-check
-'$env/bin/python' -m schub.cli fetch $ASSETS --into '$LIB/.private/staging'"
+'$env/bin/python' -m schub.cli fetch $ASSETS --into '$LIB/.private/staging'
+bash '$SNAPSHOT/scripts/build_tools.sh' '$LIB'"
   log "building env $VERSION and fetching assets in Slurm (srun $SRUN_ARGS)..."
   # shellcheck disable=SC2086 # SRUN_ARGS is a list of flags
   srun $SRUN_ARGS bash -c "$cmd"
@@ -102,7 +106,7 @@ promote_staged_assets() {
   # New downloads land in .private/staging and appear to students only here,
   # after their permissions are fixed. Existing assets are never overwritten.
   local kind item
-  for kind in datasets models; do
+  for kind in datasets models refs/kallisto; do
     [ -d "$LIB/.private/staging/$kind" ] || continue
     for item in "$LIB/.private/staging/$kind"/*; do
       [ -e "$item" ] || continue
@@ -110,7 +114,7 @@ promote_staged_assets() {
       if [ -e "$LIB/$kind/$(basename "$item")" ]; then
         log "keeping existing $kind/$(basename "$item")"
       else
-        mv "$item" "$LIB/$kind/"
+        mkdir -p "$LIB/$kind" && mv "$item" "$LIB/$kind/"
       fi
     done
   done
@@ -124,7 +128,7 @@ swap_link() {
 publish() {
   mv "$SNAPSHOT" "$LIB/hub/$VERSION"
   # Everything students need must be readable and traversable; nothing writable.
-  chmod -R a+rX,go-w "$LIB/hub/$VERSION" "$LIB/envs/$VERSION" "$LIB/python" "$LIB/datasets" "$LIB/models" "$LIB/bin"
+  chmod -R a+rX,go-w "$LIB/hub/$VERSION" "$LIB/envs/$VERSION" "$LIB/python" "$LIB/datasets" "$LIB/models" "$LIB/refs" "$LIB/tools" "$LIB/bin"
   swap_link "$LIB/envs/current" "$VERSION"
   PUBLISHED=1
   swap_link "$LIB/hub/current" "$VERSION"

@@ -61,7 +61,7 @@ def test_plan_submit_status_roundtrip(hub, shared_pbmc, cluster):
     assert "no log yet" in hub.logs(manifest.run_id, 1)
     assert hub.results(manifest.run_id).final_output is None
     notebook = hub.notebook(manifest.run_id)
-    assert notebook.path.endswith(".py") and "schub-notebook" in notebook.how_to_open
+    assert notebook.path.endswith(".ipynb") and "start_session(kind='jupyter'" in notebook.how_to_open
     assert hub.cancel(manifest.run_id).state == "FAILED"
 
 
@@ -83,7 +83,10 @@ def test_ids_are_validated(hub):
 
 def test_bricks_cluster_and_inspect(hub, shared_pbmc):
     names = [b["name"] for b in hub.bricks()]
-    assert names == ["qc_filter", "normalize_embed", "integrate_scvi", "annotate_celltypist", "pseudobulk_de"]
+    assert names == [
+        "kb_count", "cellranger_count", "qc_filter", "normalize_embed", "integrate_scvi",
+        "integrate_scanvi", "annotate_celltypist", "pseudobulk_de", "memento_de", "export_cellxgene",
+    ]
     assert "params_schema" in hub.brick("pseudobulk_de")
     with pytest.raises(HubError):
         hub.brick("nope")

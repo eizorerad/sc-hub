@@ -33,6 +33,48 @@ def _de_table(step_dir: Path) -> str:
     return f"<h4>Top {DE_TOP} genes</h4>" + table(("Gene", "Group", "log2 FC", "padj"), body, "compact")
 
 
+def _memento_table(step_dir: Path) -> str:
+    path = step_dir / "results" / "memento_all.csv"
+    if not path.is_file():
+        return ""
+    try:
+        with path.open(newline="") as handle:
+            rows = [r for r in csv.DictReader(handle) if r.get("de_padj") not in (None, "", "nan")]
+        rows.sort(key=lambda r: float(r["de_padj"]))
+        first = next(iter(rows[0])) if rows else ""
+        body = [
+            f"<tr><td><b>{esc(r.get(first, ''))}</b></td><td>{esc(r.get('group', ''))}</td>"
+            f"<td class=num>{float(r['de_coef']):+.2f}</td><td class=num>{float(r['de_padj']):.1e}</td>"
+            f"<td class=num>{float(r['dv_padj']):.1e}</td></tr>"
+            for r in rows[:DE_TOP]
+        ]
+    except (OSError, csv.Error, KeyError, TypeError, ValueError) as error:
+        return f'<p class="note">Could not read memento_all.csv ({esc(type(error).__name__)}).</p>'
+    return f"<h4>Top {DE_TOP} genes (mean)</h4>" + table(("Gene", "Group", "Mean effect", "padj", "Variability padj"), body, "compact")
+
+
+def _samples(summary: dict) -> str:
+    samples = summary.get("samples")
+    if not isinstance(samples, dict) or not samples:
+        return ""
+    columns = sorted({k for s in samples.values() if isinstance(s, dict) for k in s})
+    rows = [
+        f"<tr><td>{esc(name)}</td>" + "".join(f"<td class=num>{esc(s.get(c, '–'))}</td>" for c in columns) + "</tr>"
+        for name, s in samples.items() if isinstance(s, dict)
+    ]
+    return "<h4>Per sample</h4>" + table(("Sample", *(c.replace("_", " ") for c in columns)), rows, "compact")
+
+
+def _extra(step: StepView, summary: dict) -> str:
+    if step.brick == "pseudobulk_de":
+        return _groups(summary) + _de_table(Path(step.step_dir))
+    if step.brick == "memento_de":
+        return _groups(summary) + _memento_table(Path(step.step_dir))
+    if step.brick in {"kb_count", "cellranger_count"}:
+        return _samples(summary)
+    return ""
+
+
 def _groups(summary: dict) -> str:
     groups = summary.get("groups")
     if not isinstance(groups, dict):
@@ -43,6 +85,18 @@ def _groups(summary: dict) -> str:
         for name, g in groups.items() if isinstance(g, dict)
     ]
     return "<h4>Per group</h4>" + table(("Group", "DE genes", "Top up / note"), rows, "compact")
+
+
+def cell_map(step: StepView, image_url: ImageUrl, folded: bool) -> str:
+    """A canvas the page script fills from pts/<key>.js (loaded only when shown)."""
+    points = getattr(image_url, "points", None)
+    src = points(step) if points else None
+    if not src:
+        return ""
+    box = (f'<div class="cellmap" data-pts="{esc(src)}" data-key="{esc(step.key)}"><div class="cm-bar">'
+           f'<select aria-label="Color cells by"></select><span class="muted small cm-n"></span></div>'
+           f'<canvas width="300" height="300" aria-label="UMAP of the cells"></canvas><div class="cm-legend"></div></div>')
+    return f'<details class="cells"><summary>Cell map</summary>{box}</details>' if folded else f"<h4>Cells</h4>{box}"
 
 
 def figures(step: StepView, image_url: ImageUrl) -> str:
@@ -74,13 +128,13 @@ def log_block(step: StepView) -> str:
 def _step_card(step: StepView, image_url: ImageUrl) -> str:
     summary = step.summary or {}
     message = f'<p class="note bad">{esc(step.message)}</p>' if step.message else ""
-    extra = _groups(summary) + _de_table(Path(step.step_dir)) if step.brick == "pseudobulk_de" else ""
+    extra = _extra(step, summary)
     return (
         f'<li class="step {esc(step.state)}"><div class="step-head">{dot(step.state)}'
         f'<b>{step.index}. {esc(step.brick)}</b> {pill(step.state)}'
         f'<span class="muted right">{esc(duration(step.extras.seconds))}</span></div>'
         f'<p class="headline">{esc(step.headline)}</p>{message}{warnings(summary)}'
-        f"{figures(step, image_url)}"
+        f"{figures(step, image_url)}{cell_map(step, image_url, folded=True)}"
         f"<details><summary>Details</summary>{step_facts(step)}{kv(step.params)}{kv(summary)}{extra}"
         f'<p class="muted small">Step key {esc(step.key)}</p></details>{log_block(step)}</li>'
     )

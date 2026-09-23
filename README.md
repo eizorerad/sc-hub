@@ -4,18 +4,36 @@ Single-cell pipelines on the MBZUAI Slurm cluster, assembled from checked
 building blocks ("bricks") by a coding agent (Codex, Claude Code) over MCP.
 Everything runs under the student's own cluster account.
 
-Pilot scope: scRNA-seq from a count matrix (`.h5ad`). Five bricks:
+Pilot scope: scRNA-seq, from 10x FASTQ reads or a count matrix (`.h5ad`). The
+defaults follow the MBZUAI single-cell course (CB703/803): Python, the scverse
+ecosystem and scvi-tools; AnnData with raw counts as the working format.
 
 | Brick | What it does | Resources |
 |---|---|---|
+| `kb_count` | FASTQ -> counts with kallisto\|bustools (prebuilt human/mouse index), knee cell calling | CPU |
+| `cellranger_count` | FASTQ -> counts with 10x Cell Ranger (if the owner installed it) | CPU, 64 GB |
 | `qc_filter` | QC metrics, cell/gene thresholds, Scrublet doublets | CPU |
 | `normalize_embed` | normalize + log1p, seurat_v3 HVG, PCA, kNN, UMAP, Leiden | CPU |
 | `integrate_scvi` | scVI batch integration, then kNN/UMAP/Leiden on the latent space | 1 GPU |
+| `integrate_scanvi` | scVI + scANVI with known labels; predicted labels for every cell | 1 GPU |
 | `annotate_celltypist` | CellTypist labels with majority voting | CPU |
 | `pseudobulk_de` | Sum counts per replicate x condition (x cell type), PyDESeq2 | CPU |
+| `memento_de` | memento: differential mean and variability (method of moments) | CPU |
+| `export_cellxgene` | Subsampled, normalized `.h5ad` for cellxgene | CPU |
+
+Recipes (`list_recipes`) name the course's standard paths: `standard_analysis`,
+`scvi_integration`, `scanvi_labels`, `condition_de`, `fastq_kallisto`,
+`fastq_cellranger`. The assistant fills in the metadata columns, the student
+confirms them, and sc-hub validates the plan before anything is queued.
+
+Interactive work runs on compute nodes: `start_session` opens JupyterLab
+(optionally with a GPU, for scvi-tools model work) or cellxgene on a dataset,
+and `./schub-lab` on the laptop tunnels to it. Seurat `.rds` objects are
+converted with `import_seurat`; Seurat is for compatibility, not the default.
 
 Starter assets fetched by bootstrap: 10x PBMC 3k, Kang 2018 (IFN-beta
-stimulated PBMCs, 8 donors), CellTypist immune models.
+stimulated PBMCs, 8 donors), CellTypist immune models. The library also holds
+prebuilt kallisto indices (human, mouse) and 10x PBMC 1k v3 FASTQ reads.
 
 ## Install (student): one command
 
@@ -82,6 +100,7 @@ jobs. Your remote `~/.bashrc` must not print anything for non-interactive shells
 | Publish or update the shared library (env, datasets, models) | `bash scripts/publish_library.sh` on the cluster |
 | ...inside an allocation you already hold | `SCHUB_SRUN_ARGS="--jobid=<id> --overlap" SCHUB_GPU_CHECK=0 bash scripts/publish_library.sh` |
 | Build and publish the installers | `bash scripts/release.sh` on your laptop (`--gist` also updates a secret gist) |
+| Install Cell Ranger (10x license; link from the 10x downloads page) | `bash scripts/install_cellranger.sh '<link>' human` on the cluster |
 | Run the tests | `.venv/bin/python -m pytest --cov=schub` |
 
 Code changes reach students when the library is published; everyone re-runs the
@@ -121,8 +140,13 @@ The pilot owner publishes a read-only library (`scripts/publish_library.sh`):
 /l/users/<owner>/sc-hub-library/
   envs/<version>/  envs/current     Python env (students pin the resolved version)
   hub/<version>/                    sc-hub source snapshot
-  datasets/<name>/                  data.h5ad + dataset.yaml (license, sha256)
+  datasets/<name>/                  data.h5ad + dataset.yaml, or FASTQ + fastq.yaml (license, sha256)
   models/celltypist/                CellTypist models
+  refs/kallisto/<organism>/         prebuilt kallisto|bustools index + t2g
+  refs/cellranger/<organism>/       10x references (only with Cell Ranger)
+  tools/cellxgene/<version>/        cellxgene in its own venv (it pins numpy 2.0.1)
+  tools/r-seurat/<version>/         R + Seurat (conda-forge, pinned micromamba)
+  tools/cellranger/<version>/       optional, installed by the owner
 ```
 
 `bootstrap_cluster.sh` uses it when the student can read it: no private
@@ -195,6 +219,9 @@ implementations are exercised end to end on the cluster.
   client logged write errors during testing).
 
 - Species and gene-id detection are heuristics; plans accept overrides.
-- Linear pipelines only; FASTQ -> counts (nf-core/scrnaseq) is out of scope.
-- The Windows installer and `schub-view.cmd` / `.ps1` have not been run on Windows yet.
-- The notebook tunnel needs the login node to reach compute-node ports.
+- Linear pipelines only. FASTQ support covers 10x droplet chemistries (v1-v4);
+  STARsolo and Salmon/Alevin are not wrapped.
+- Sessions listen on the compute node behind a random token (compute nodes take
+  no ssh logins, so the tunnel ends at node:port through the login node).
+- Cell Ranger is only available after the owner installs it (10x license).
+- The Windows installer, `schub-view.cmd` and `schub-lab.cmd` have not been run on Windows yet.

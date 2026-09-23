@@ -5,19 +5,23 @@ is a student's sc-hub workspace. Layout:
 
 | Path | Contents |
 |---|---|
-| `bin/` | `schub` (CLI), `schub-mcp` (MCP server on stdio), `schub-notebook` |
+| `bin/` | `schub` (CLI), `schub-mcp` (MCP server on stdio) |
 | `projects/<p>[/<sub>]/` | `project.yaml`, `pipelines/<branch>.yaml`, `ideas/<slug>.md`, `logbook.md`, `runs/` links |
-| `data/<name>/` | The student's own datasets (`data.h5ad` + `dataset.yaml`) or loose `.h5ad` files |
+| `data/<name>/` | The student's own datasets: `data.h5ad` + `dataset.yaml`, FASTQ reads + `fastq.yaml` (`schub register-fastq`), imported Seurat objects, or loose `.h5ad` files |
 | `library-local/` | Datasets and models downloaded because the shared library lacked them or was unreadable |
 | `runs/<run_id>/` | `manifest.json`, `plan.json`, `NN_<brick>` links to step folders |
 | `cache/steps/<key>/` | Content-addressed step outputs, logs, results; shared by all branches |
 | `plans/` | Validated plans |
 | `view/` | Static dashboard (mirrored to the laptop by `schub-view`) |
+| `sessions/<job>/` | Interactive sessions (JupyterLab, cellxgene); private, holds the session token |
+| `notebooks/` | Jupyter notebooks written by `schub notebook <run>` |
 | `logs/` | Audit log of tool calls; `fetch/` download job logs |
 | `trash/` | Move things here instead of deleting |
 
 The shared library (`$SCHUB_LIBRARY`, read-only) provides the environment,
-datasets and models. Nothing is ever written there by students.
+datasets (count matrices and FASTQ), models, kallisto indices and tools
+(cellxgene, R + Seurat, optionally Cell Ranger). Nothing is ever written there
+by students.
 
 ## Rules for agents working here
 
@@ -29,3 +33,5 @@ datasets and models. Nothing is ever written there by students.
   Downloads too: `schub fetch` runs inside a job (`fetch_asset` queues one).
 - Do not edit `cache/steps` or `runs` by hand: they are the provenance record.
 - A new analysis type becomes a new brick (spec + impl + tests), not an ad-hoc script.
+- Never read `sessions/*/connection.json` or run `schub session-info`: they hold the
+  session token, which must not reach the chat. Only `schub-lab` on the laptop uses them.

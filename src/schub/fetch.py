@@ -139,11 +139,31 @@ def fetch_celltypist(into: Path, scratch: Path) -> Path:
     return into.joinpath(*CELLTYPIST_MODELS)
 
 
+def _kallisto(organism: str) -> Callable[[Path, Path], Path]:
+    def fetch_index(into: Path, scratch: Path) -> Path:
+        from .fetch_reads import fetch_kallisto_index
+
+        return fetch_kallisto_index(organism, into, scratch)
+
+    return fetch_index
+
+
+def fetch_pbmc1k_v3_fastq(into: Path, scratch: Path) -> Path:
+    from .fetch_reads import fetch_pbmc1k_v3_fastq as fetch_reads
+
+    return fetch_reads(into, scratch)
+
+
 FETCHERS: dict[str, Callable[[Path, Path], Path]] = {
     "pbmc3k": fetch_pbmc3k,
     "kang2018": fetch_kang2018,
     "celltypist": fetch_celltypist,
+    "kallisto-human": _kallisto("human"),
+    "kallisto-mouse": _kallisto("mouse"),
+    "pbmc1k_v3_fastq": fetch_pbmc1k_v3_fastq,
 }
+# Downloaded only on request (fetch_asset), not by bootstrap: several GB.
+ON_DEMAND = ("kallisto-mouse", "pbmc1k_v3_fastq")
 
 
 def _validate(names: list[str]) -> None:

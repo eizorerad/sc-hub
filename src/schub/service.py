@@ -10,6 +10,7 @@ from typing import Any, Sequence
 from .bricks import REGISTRY, PlanContext, Resources, get_brick
 from .config import Settings
 from .datasets import DatasetEntry, dataset_fingerprint, list_datasets
+from .fastq import MANIFEST_FILE, FastqError, detect_samples, fastq_profile, write_manifest
 from .h5ad_profile import DatasetProfile, profile_h5ad
 from .headlines import headline
 from .library import celltypist_dirs, find_dataset
@@ -17,7 +18,10 @@ from .notebook import write_notebook
 from .planner import DatasetOverrides, Plan, StepRequest, build_plan
 from .projects import BranchSpec, Idea, ProjectMeta, ProjectStore, ProjectSummary
 from .provenance import code_id, env_id
+from .recipes import Recipe, fill_recipe, list_recipes
 from .runs import RunManifest, RunResults, RunStatus, RunStore
+from .sessions import SessionError, SessionInfo, SessionStore
+from .seurat import ImportJob, SeuratImportError, submit_import
 from .slurm import ActiveJob, JobSpec, PartitionInfo, Slurm, render_script
 from .state import Frozen
 
@@ -60,6 +64,7 @@ class Hub:
         self.slurm = slurm or Slurm()
         self.store = RunStore(settings, self.slurm)
         self.projects = ProjectStore(settings)
+        self.sessions = SessionStore(settings, self.slurm)
         self._profiles: dict[tuple[str, int, int], DatasetProfile] = {}
 
     # ---- discovery ------------------------------------------------------
@@ -81,7 +86,7 @@ class Hub:
 
     def resolve_dataset(self, ref: str) -> Path:
         ref = ref.strip()
-        if CATALOG_NAME.fullmatch(ref) and not ref.endswith(".h5ad"):
+        if CATALOG_NAME.fullmatch(ref) and not ref.endswith((".h5ad", ".yaml")):
             found = find_dataset(self.settings, ref)
             if found is None:
                 raise HubError(
@@ -97,8 +102,8 @@ class Hub:
             resolved = candidate.resolve(strict=True)
         except (FileNotFoundError, RuntimeError) as exc:
             raise HubError(f"dataset '{ref}' not found (looked at {candidate})") from exc
-        if resolved.suffix != ".h5ad" or not resolved.is_file():
-            raise HubError(f"'{ref}' is not an .h5ad file")
+        if not resolved.is_file() or not (resolved.suffix == ".h5ad" or resolved.name == MANIFEST_FILE):
+            raise HubError(f"'{ref}' is not an .h5ad file or a FASTQ manifest ({MANIFEST_FILE})")
         roots = [r.resolve() for r in self.settings.allowed_roots if r.exists()]
         if not any(resolved.is_relative_to(r) for r in roots):
             raise HubError(
@@ -115,11 +120,30 @@ class Hub:
         stat = path.stat()
         key = (str(path), stat.st_size, stat.st_mtime_ns)
         if key not in self._profiles:
-            self._profiles[key] = profile_h5ad(path)
+            try:
+                self._profiles[key] = fastq_profile(path) if path.name == MANIFEST_FILE else profile_h5ad(path)
+            except FastqError as exc:
+                raise HubError(str(exc)) from exc
         return self._profiles[key]
 
     def fingerprint(self, path: Path) -> str:
         return dataset_fingerprint(path, self.settings.library_roots)
+
+    def register_fastq(self, folder: str, technology: str, organism: str, title: str = "",
+                       expected_cells: int | None = None) -> DatasetEntry:
+        """Describe a folder of 10x-named FASTQ files in data/ so it can be planned."""
+        target = (self.settings.data_dir / folder).resolve()
+        if not target.is_relative_to(self.settings.data_dir.resolve()) or not target.is_dir():
+            raise HubError(f"'{folder}' must be a folder inside {self.settings.data_dir}")
+        try:
+            samples = detect_samples(target)
+            meta = {"title": title or target.name, "organism": organism, "technology": technology,
+                    "expected_cells": expected_cells, "samples": [s.model_dump() for s in samples]}
+            path = write_manifest(target, {k: v for k, v in meta.items() if v is not None})
+        except (FastqError, ValueError) as exc:
+            raise HubError(str(exc)) from exc
+        entry = next((d for d in self.datasets() if d.path == str(path)), None)
+        return entry or DatasetEntry(name=target.name, path=str(path), source="private", kind="fastq")
 
     # ---- planning & execution ------------------------------------------
 
@@ -129,6 +153,7 @@ class Hub:
             limits=self.settings.limits,
             env_id=env_id(),
             code_ids={name: code_id(spec) for name, spec in REGISTRY.items()},
+            library_roots=self.settings.library_roots,
         )
 
     def plan(
@@ -219,10 +244,49 @@ class Hub:
         run_id = _check_id(run_id, RUN_ID, "run_id")
         path = write_notebook(self.settings.root / "notebooks", self.store.load(run_id), self.store.results(run_id))
         how = (
-            f"{self.settings.root}/bin/schub-notebook {path}  "
-            "(asks Slurm for a small allocation, then prints the ssh -L tunnel command)"
+            f"start_session(kind='jupyter', target='{path.relative_to(self.settings.root)}') starts JupyterLab "
+            "on a compute node; then ./schub-lab on the laptop opens it."
         )
         return NotebookInfo(path=str(path), how_to_open=how)
+
+    # ---- recipes, sessions, imports ------------------------------------------
+
+    def recipes(self) -> list[Recipe]:
+        return list_recipes()
+
+    def recipe_steps(self, name: str, values: dict[str, str]) -> list[dict[str, Any]]:
+        try:
+            return fill_recipe(name, values)
+        except KeyError as exc:
+            raise HubError(str(exc.args[0])) from exc
+
+    def start_session(self, kind: str, hours: int = 4, gpu: bool = False, target: str = "") -> SessionInfo:
+        try:
+            return self.sessions.start(kind, hours, gpu, target)
+        except SessionError as exc:
+            raise HubError(str(exc)) from exc
+
+    def list_sessions(self) -> list[SessionInfo]:
+        return self.sessions.list()
+
+    def stop_session(self, session_id: str) -> SessionInfo:
+        try:
+            return self.sessions.stop(session_id)
+        except SessionError as exc:
+            raise HubError(str(exc)) from exc
+
+    def session_line(self, kind: str) -> str:
+        """'<node> <port> <path>' of the running session, for the laptop's schub-lab."""
+        line = self.sessions.connection_line(kind)
+        if line is None:
+            raise HubError(f"no running {kind} session")
+        return line
+
+    def import_seurat(self, rds: str, name: str) -> ImportJob:
+        try:
+            return submit_import(self.settings, self.slurm, rds, name)
+        except SeuratImportError as exc:
+            raise HubError(str(exc)) from exc
 
     def cluster(self) -> ClusterStatus:
         return ClusterStatus(

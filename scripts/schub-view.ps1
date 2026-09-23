@@ -30,9 +30,9 @@ function Invoke-Native([scriptblock]$Command) {
 function Say($Text) { Write-Host "$Text at $(Get-Date -Format HH:mm); will retry" }
 
 function Update-View {
-    # Rebuild on the cluster and list its images: the page (~100 KB) is fetched
-    # every time, the images (most of the bytes) only when that list changes.
-    $list = 'schub/bin/schub dashboard >/dev/null && cd schub/view && find img -type f -printf ''%p %s %T@\n'' 2>/dev/null | sort | cksum'
+    # Rebuild on the cluster and list its images and cell maps: the page (~100 KB) is
+    # fetched every time, the rest (most of the bytes) only when that list changes.
+    $list = 'schub/bin/schub dashboard >/dev/null && cd schub/view && find img pts -type f -printf ''%p %s %T@\n'' 2>/dev/null | sort | cksum'
     $images = (Invoke-Native { ssh -o BatchMode=yes $Alias $list } | Out-String).Trim()
     if ($LASTEXITCODE -ne 0 -or -not $images) { Say 'refresh failed'; return }
     $all = $images -ne $script:ImageSet -or -not (Test-Path (Join-Path $Dest 'img'))

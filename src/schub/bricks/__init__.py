@@ -5,18 +5,34 @@ from __future__ import annotations
 from types import MappingProxyType
 from typing import Mapping
 
-from . import annotate_celltypist, integrate_scvi, normalize_embed, pseudobulk_de, qc_filter
+from . import (
+    annotate_celltypist,
+    cellranger_count,
+    export_cellxgene,
+    integrate_scanvi,
+    integrate_scvi,
+    kb_count,
+    memento_de,
+    normalize_embed,
+    pseudobulk_de,
+    qc_filter,
+)
 from .base import BrickError, BrickParams, BrickSpec, PlanContext, Resources, StepIO
 
 REGISTRY: Mapping[str, BrickSpec] = MappingProxyType(
     {
         spec.name: spec
         for spec in (
+            kb_count.SPEC,
+            cellranger_count.SPEC,
             qc_filter.SPEC,
             normalize_embed.SPEC,
             integrate_scvi.SPEC,
+            integrate_scanvi.SPEC,
             annotate_celltypist.SPEC,
             pseudobulk_de.SPEC,
+            memento_de.SPEC,
+            export_cellxgene.SPEC,
         )
     }
 )

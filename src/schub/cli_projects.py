@@ -13,9 +13,16 @@ from .projects import BranchSpec
 from .service import Hub
 
 
+def read_arg(raw: str) -> str:
+    """The file's text if `raw` names a file, else `raw` itself (inline JSON/YAML)."""
+    try:
+        return Path(raw).read_text() if Path(raw).is_file() else raw
+    except OSError:  # e.g. inline JSON longer than a file name may be
+        return raw
+
+
 def _load_spec(raw: str) -> BranchSpec:
-    path = Path(raw)
-    text = path.read_text() if path.is_file() else raw
+    text = read_arg(raw)
     data = yaml.safe_load(text)  # YAML is a superset of JSON
     if not isinstance(data, dict):
         raise ValueError("branch spec must be a mapping (YAML or JSON)")

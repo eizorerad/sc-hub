@@ -63,3 +63,15 @@ def save_embedding(sc: Any, adata: Any, colors: Sequence[str], path: Path, basis
     fig.savefig(path.with_name(path.stem + "_thumb.png"), dpi=36, bbox_inches="tight")
     plt.close(fig)
     return str(path)
+
+
+def library_roots(io: StepIO) -> tuple[Path, ...]:
+    """Library roots the submitting side saw (shared first, then the local fallback)."""
+    return tuple(Path(p) for p in io.context.get("library_roots", "").split(os.pathsep) if p)
+
+
+def tail(path: Path, lines: int) -> str:
+    try:
+        return "\n".join(path.read_text(errors="replace").splitlines()[-lines:])
+    except OSError:
+        return ""

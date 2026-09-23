@@ -6,6 +6,7 @@ import anyio
 import pytest
 from mcp import Client
 
+from schub.bricks import REGISTRY
 from schub.datasets import write_catalog_entry
 from schub.mcp_server import build_server
 from schub.service import Hub
@@ -36,6 +37,13 @@ EXPECTED_TOOLS = {
     "add_logbook_entry",
     "fetch_asset",
     "make_dashboard",
+    "list_recipes",
+    "recipe_steps",
+    "register_fastq",
+    "import_seurat",
+    "start_session",
+    "list_sessions",
+    "stop_session",
 }
 
 
@@ -86,7 +94,7 @@ def test_discovery_tools(server):
     datasets = call(server, "list_datasets").structured_content
     assert datasets["result"][0]["name"] == "pbmc3k"
     bricks = call(server, "list_bricks").structured_content["result"]
-    assert len(bricks) == 5
+    assert len(bricks) == len(REGISTRY)
     assert call(server, "describe_brick", {"name": "qc_filter"}).structured_content["name"] == "qc_filter"
     assert call(server, "cluster_status").structured_content["partitions"][0]["name"] == "ws-ia"
     assert call(server, "inspect_dataset", {"dataset": "pbmc3k"}).structured_content["state"]["n_obs"] == 60

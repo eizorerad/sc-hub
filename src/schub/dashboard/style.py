@@ -81,4 +81,10 @@ ol.timeline{list-style:none;padding:0;margin:14px 0;border-left:2px solid var(--
 .board{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px}.column{background:var(--soft);border-radius:10px;padding:8px}
 .idea{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:6px 8px;margin-top:6px}
 .project{margin-top:14px}.project h2{margin:0}.question{font-size:15px;margin:6px 0 12px}
+.cellmap canvas{display:block;width:100%;max-width:340px;aspect-ratio:1;border:1px solid var(--line);border-radius:10px;background:var(--card)}
+.cm-bar{display:flex;gap:8px;align-items:center;margin:6px 0}.cm-bar select{max-width:220px;font:inherit;color:inherit;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:3px 8px}
+.cm-legend{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px}.cm-item{font-size:11px;padding:1px 7px;border-radius:999px;display:inline-flex;align-items:center;gap:5px}
+.cm-item i{width:9px;height:9px;border-radius:50%;display:inline-block}.cm-item.on{border-color:var(--text);background:var(--soft)}
+details.cells{margin:8px 0}.tag{display:inline-block;font-size:11px;padding:0 6px;border-radius:999px;background:var(--soft);color:var(--muted);margin-left:6px}
+.session{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center}.session code{background:var(--soft);padding:1px 6px;border-radius:6px}
 """

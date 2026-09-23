@@ -13,6 +13,8 @@ SCRIPT = r"""
     set: (k, v, local) => { try { (local ? localStorage : sessionStorage).setItem(k, v); } catch (e) {} },
   };
   let restoring = true;
+  const PALETTE = ['#4e79a7','#f28e2b','#e15759','#76b7b2','#59a14f','#edc948','#b07aa1','#ff9da7','#9c755f','#bab0ac',
+    '#1f77b4','#ff7f0e','#2ca02c','#d62728','#9467bd','#8c564b','#e377c2','#7f7f7f','#bcbd22','#17becf'];
   const decode = s => { try { return decodeURIComponent(s); } catch (e) { return s; } };
 
   function route() {
@@ -60,7 +62,54 @@ SCRIPT = r"""
         });
       }
     }
+    $$('.cellmap:not(.drawn)', panel).forEach(drawMap);
     if (remember) keep.set('node', key);
+  }
+
+  function loadPoints(src, key, done) {
+    const have = () => window.SCHUB_PTS && window.SCHUB_PTS[key];
+    if (have()) return done(have());
+    const tag = document.createElement('script');
+    tag.src = src; tag.onload = () => done(have()); tag.onerror = () => done(null);
+    document.head.appendChild(tag);
+  }
+
+  // A cell map: subsampled UMAP colored by one obs column; click a legend entry to focus it.
+  function drawMap(box) {
+    box.classList.add('drawn');
+    loadPoints(box.dataset.pts, box.dataset.key, data => {
+      if (!data) { box.textContent = 'Cell map unavailable.'; return; }
+      const select = $('select', box), canvas = $('canvas', box), legend = $('.cm-legend', box);
+      const names = Object.keys(data.cols);
+      select.replaceChildren(...names.map(n => new Option(n, n)));
+      select.hidden = !names.length;
+      $('.cm-n', box).textContent = `${data.x.length.toLocaleString()} of ${data.n.toLocaleString()} cells`;
+      let focus = -1;
+      const paint = () => {
+        const col = data.cols[select.value], ratio = window.devicePixelRatio || 1, size = canvas.clientWidth || 300;
+        canvas.width = canvas.height = Math.round(size * ratio);
+        const g = canvas.getContext('2d'), pad = 6, s = (size - 2 * pad) / 1000, r = data.x.length > 2000 ? 1.6 : 2.4;
+        g.scale(ratio, ratio);
+        const counts = col ? col.levels.map(() => 0) : [];
+        for (let i = 0; i < data.x.length; i++) {
+          const c = col ? col.codes[i] : 0;
+          if (col && c >= 0) counts[c]++;
+          g.globalAlpha = focus < 0 || c === focus ? 0.85 : 0.07;
+          g.fillStyle = c < 0 ? '#9a9a9a' : PALETTE[c % PALETTE.length];
+          g.fillRect(pad + data.x[i] * s - r / 2, pad + (1000 - data.y[i]) * s - r / 2, r, r);
+        }
+        legend.replaceChildren(...(col ? col.levels.map((name, k) => {
+          const item = document.createElement('button'), swatch = document.createElement('i');
+          item.type = 'button'; item.className = 'cm-item' + (focus === k ? ' on' : '');
+          swatch.style.background = PALETTE[k % PALETTE.length];
+          item.append(swatch, `${name} (${counts[k]})`);
+          item.onclick = () => { focus = focus === k ? -1 : k; paint(); };
+          return item;
+        }) : []));
+      };
+      select.onchange = () => { focus = -1; paint(); };
+      paint();
+    });
   }
 
   function filterRuns() {
@@ -88,6 +137,9 @@ SCRIPT = r"""
   });
   ['input', 'change'].forEach(t => document.addEventListener(t, e => { if (e.target.closest('#run-filters')) filterRuns(); }));
   window.addEventListener('hashchange', route);
+  document.addEventListener('toggle', e => {
+    if (e.target.open) $$('.cellmap:not(.drawn)', e.target).forEach(drawMap);
+  }, true);
 
   const auto = () => keep.get('autorefresh', true) !== 'off';
   const button = $('#autorefresh');

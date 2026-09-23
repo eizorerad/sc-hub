@@ -29,7 +29,7 @@ def run(capsys, *argv):
 
 def test_discovery_commands(env, capsys):
     code, out, _ = run(capsys, "bricks")
-    assert code == 0 and json.loads(out)[0]["name"] == "qc_filter"
+    assert code == 0 and "qc_filter" in [b["name"] for b in json.loads(out)]
     assert json.loads(run(capsys, "brick", "qc_filter")[1])["version"] == "0.1.0"
     assert json.loads(run(capsys, "datasets")[1])[0]["name"] == "pbmc3k"
     assert json.loads(run(capsys, "inspect", "pbmc3k")[1])["state"]["n_obs"] == 60
@@ -80,3 +80,10 @@ def test_project_commands(env, capsys, tmp_path):
     assert json.loads(run(capsys, "dashboard")[1])["projects"] == 1
     code, _, err = run(capsys, "branch-plan", "ghost", "main")
     assert code == 1 and "does not exist" in err
+
+
+def test_long_inline_json_is_not_mistaken_for_a_path():
+    from schub.cli_projects import read_arg
+
+    inline = '{"steps": [' + ",".join(['{"brick": "qc_filter", "params": {}}'] * 20) + "]}"
+    assert len(inline) > 300 and read_arg(inline) == inline

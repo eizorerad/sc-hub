@@ -4,6 +4,8 @@ import json
 import re
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
 import pytest
 
 from schub.dashboard import build_dashboard
@@ -214,3 +216,66 @@ def test_time_helpers(tmp_path):
     (tmp_path / SUCCESS).write_text("x")
     extras = step_extras(tmp_path, with_log=True)
     assert extras.resources == {"cpus": "8", "mem": "20G", "gpu": "gpu:1"} and extras.finished and extras.log_tail == ()
+
+
+def test_cell_map_points_are_small_scaled_and_cached(tmp_path, monkeypatch):
+    from schub.dashboard import _Images
+    from schub.dashboard import points as points_module
+    from schub.dashboard.points import points_payload
+    from schub.dashboard.views_runs import cell_map
+
+    adata = make_adata(n_obs=50)
+    adata.obs["leiden"] = pd.Categorical([str(i % 3) for i in range(50)])
+    adata.obs["weird"] = pd.Categorical(["</script><b>" if i % 2 else "ok" for i in range(50)])
+    adata.obsm["X_umap"] = np.random.default_rng(0).normal(size=(50, 2))
+    step_dir = tmp_path / "step"
+    step_dir.mkdir()
+    adata.write_h5ad(step_dir / "output.h5ad")
+    monkeypatch.setattr(points_module, "MAX_POINTS", 20)
+    payload = points_payload(step_dir / "output.h5ad")
+    assert payload["n"] == 50 and len(payload["x"]) == 20 and min(payload["x"]) >= 0 and max(payload["y"]) <= 1000
+    assert list(payload["cols"])[0] == "leiden" and "score" not in payload["cols"]
+
+    step = StepView(index=1, brick="normalize_embed", key="k1", state="COMPLETED", step_dir=str(step_dir))
+    images = _Images(tmp_path / "view", {"k1"})
+    assert cell_map(step, images, folded=False) == ""  # no _SUCCESS marker yet
+    (step_dir / SUCCESS).write_text("ok")
+    html = cell_map(step, images, folded=True)
+    assert 'data-pts="pts/k1.js"' in html and html.startswith("<details")
+    script = (tmp_path / "view" / "pts" / "k1.js").read_text()
+    assert "</script>" not in script and script.startswith("(window.SCHUB_PTS")
+    assert cell_map(step.model_copy(update={"key": "other"}), images, folded=False) == ""  # not a recent run
+    stale = tmp_path / "view" / "pts" / "old.js"
+    stale.write_text("x")
+    images.prune()
+    assert not stale.exists() and (tmp_path / "view" / "pts" / "k1.js").exists()
+
+
+def test_library_shows_references_tools_and_fastq(hub, settings):
+    from schub.dashboard.collect import collect
+    from schub.dashboard.views_main import render_library
+
+    tool = settings.library / "tools" / "cellxgene" / "1.3.0" / "bin" / "python"
+    tool.parent.mkdir(parents=True)
+    tool.write_text("#!/bin/sh\n")
+    tool.chmod(0o755)
+    (settings.library / "tools" / "cellxgene" / "current").symlink_to("1.3.0")
+    snap = collect(hub)
+    status = {r.name: r.status for r in snap.references}
+    assert status["cellxgene"] == "1.3.0" and status["cellranger"] == "not installed"
+    assert status["kallisto index (human)"].startswith("not installed")
+    assert "References and tools" in render_library(snap)
+
+
+def test_overview_lists_sessions_with_how_to_open(hub, settings, cluster):
+    from schub.dashboard.collect import collect
+    from schub.dashboard.views_main import render_overview
+    from schub.sessions import session_dir, write_connection
+
+    info = hub.start_session("jupyter", hours=3)
+    cluster.jobs[info.session_id] = "RUNNING"
+    write_connection(session_dir(settings, info.session_id), "ws-l1-004", 40999, "/lab?token=t")
+    snap = collect(hub)
+    assert snap.sessions[0].node == "ws-l1-004"
+    html = render_overview(snap)
+    assert "JupyterLab" in html and "./schub-lab jupyter" in html and "token" not in html

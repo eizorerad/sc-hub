@@ -13,7 +13,8 @@ from typing import Any, Sequence
 from pydantic import BaseModel
 
 from .config import load_settings
-from .cli_projects import add_parsers, handlers
+from .cli_projects import add_parsers, handlers, read_arg
+from .cli_tools import add_tool_parsers, tool_handlers
 from .h5ad_profile import UnsupportedFile
 from .library import celltypist_dirs, library_mode
 from .projects import ProjectError
@@ -28,7 +29,9 @@ DOCTOR_IMPORTS = {
     "scvi": "scvi-tools",
     "celltypist": "celltypist",
     "pydeseq2": "pydeseq2",
-    "marimo": "marimo",
+    "jupyterlab": "jupyterlab",
+    "kb_python": "kb-python",
+    "memento": "memento-de",
     "torch": "torch",
 }
 
@@ -46,9 +49,7 @@ def _emit(value: Any) -> None:
 
 
 def _load_steps(raw: str) -> list[StepRequest]:
-    path = Path(raw)
-    text = path.read_text() if path.exists() else raw
-    data = json.loads(text)
+    data = json.loads(read_arg(raw))
     return [StepRequest.model_validate(s) for s in data]
 
 
@@ -124,7 +125,7 @@ def _parser() -> argparse.ArgumentParser:
     logs.add_argument("--lines", type=int, default=80)
     sub.add_parser("results", help="run results").add_argument("run_id")
     sub.add_parser("cancel", help="cancel a run").add_argument("run_id")
-    sub.add_parser("notebook", help="write a marimo notebook").add_argument("run_id")
+    sub.add_parser("notebook", help="write a Jupyter notebook for a run").add_argument("run_id")
     sub.add_parser("cluster", help="partition availability")
     sub.add_parser("doctor", help="check the installation")
     sub.add_parser("gpu-check", help="exit 0 if torch sees a GPU (run inside a GPU job)")
@@ -134,6 +135,7 @@ def _parser() -> argparse.ArgumentParser:
     fetch.add_argument("--into", type=Path, help="library root to write to (default: your local library)")
     sub.add_parser("mcp", help="run the MCP server on stdio")
     add_parsers(sub)
+    add_tool_parsers(sub)
     return parser
 
 
@@ -156,6 +158,7 @@ def _dispatch(hub: Hub, args: argparse.Namespace) -> Any:
         "cluster": lambda: hub.cluster(),
         "doctor": lambda: _doctor(hub),
         **handlers(hub, args),
+        **tool_handlers(hub, args),
     }
     return table[args.command]()
 

@@ -11,6 +11,7 @@ from .audit import audited
 from .dashboard import DashboardInfo, build_dashboard
 from .datasets import DatasetEntry
 from .h5ad_profile import DatasetProfile, UnsupportedFile
+from .mcp_tools import register_tools
 from .planner import DatasetOverrides, PlanSummary, StepRequest
 from .projects import BranchSpec, Idea, IdeaStatus, ProjectError, ProjectMeta, ProjectSummary
 from .runs import RunError, RunManifest, RunResults, RunStatus
@@ -25,13 +26,27 @@ sc-hub runs single-cell analysis pipelines on the university Slurm cluster, unde
 the user's own account, from pre-built bricks with checked inputs and outputs.
 
 Workflow: list_projects (work inside a project; create_project if none fits) ->
-list_datasets / inspect_dataset -> list_bricks / describe_brick -> save_branch
-(a named pipeline variant; returns a dry-run plan, submits nothing; use
-from_branch + overrides to vary an existing branch) -> show the plan, warnings
-and GPU-hours to the user -> submit_plan -> run_status -> run_results (also
-writes the project logbook) -> make_dashboard. plan_pipeline is for one-off runs.
-Record hypotheses with add_idea and link them to branches with update_idea.
+list_datasets / inspect_dataset -> list_recipes (course-aligned templates) or
+list_bricks / describe_brick -> save_branch (a named pipeline variant; returns a
+dry-run plan, submits nothing; use from_branch + overrides to vary a branch) ->
+show the plan, warnings and GPU-hours to the user -> submit_plan -> run_status ->
+run_results (also writes the project logbook) -> make_dashboard. plan_pipeline is
+for one-off runs. Record hypotheses with add_idea, link them with update_idea.
 If a dataset is missing, fetch_asset queues a download job.
+
+Defaults (the MBZUAI single-cell course, CB703/803: Python, scverse, scvi-tools):
+- AnnData (.h5ad) with raw counts is the working format; raw counts are kept.
+- Count matrices: Scanpy for QC/normalization/clustering; scVI (integrate_scvi)
+  for batches, scANVI (integrate_scanvi) when trusted labels exist.
+- FASTQ: kb_count (kallisto|bustools; fast, the choice for many samples) or
+  cellranger_count (10x standard, when results must match common practice).
+  New FASTQ folders: register_fastq. Seurat .rds: import_seurat (Seurat is for
+  compatibility, not the default stack).
+- Condition DE with replicates: pseudobulk_de; memento_de adds differential
+  variability. Exploratory cluster markers are not replicate-aware DE.
+- Interactive work: export_cellxgene + start_session(kind='cellxgene'), or
+  start_session(kind='jupyter', gpu=true) for scvi-tools model development;
+  make_notebook writes a starter notebook. Stop sessions when done.
 
 Rules:
 - Never guess scientific metadata (condition, replicate, batch columns, reference
@@ -126,7 +141,7 @@ def build_server(hub: Hub) -> MCPServer:
 
     @mcp.tool()
     def make_notebook(run_id: str) -> NotebookInfo:
-        """Write a marimo notebook that loads the run's outputs, for manual work."""
+        """Write a Jupyter notebook that loads the run's outputs (and scvi-tools model), for manual work."""
         return call("make_notebook", {"run_id": run_id}, lambda: hub.notebook(run_id))
 
     @mcp.tool()
@@ -209,4 +224,5 @@ def build_server(hub: Hub) -> MCPServer:
         """Regenerate the static dashboard (jobs, lineage, projects, runs, library)."""
         return call("make_dashboard", {}, lambda: build_dashboard(hub))
 
+    register_tools(mcp, hub, call)
     return mcp

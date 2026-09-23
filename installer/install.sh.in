@@ -7,7 +7,8 @@
 #   1. creates an SSH key and an ssh alias `mbzuai-schub` (asks your cluster password once);
 #   2. copies sc-hub to the cluster and sets up your workspace there (in a Slurm job);
 #   3. connects sc-hub to Codex, Claude Code and Claude Desktop, whichever you have;
-#   4. creates ~/sc-hub-workspace with instructions for the assistant and ./schub-view.
+#   4. creates ~/sc-hub-workspace with instructions for the assistant, ./schub-view
+#      (dashboard) and ./schub-lab (JupyterLab / cellxgene sessions).
 # It never reads or stores your password: ssh asks for it directly.
 set -euo pipefail
 
@@ -240,6 +241,7 @@ make_workspace() {
   cp "$BUNDLE_DIR/templates/AGENTS.workspace.md" "$WORKSPACE/AGENTS.md"
   cp "$BUNDLE_DIR/templates/AGENTS.workspace.md" "$WORKSPACE/CLAUDE.md"
   install -m 755 "$BUNDLE_DIR/scripts/schub-view" "$WORKSPACE/schub-view"
+  install -m 755 "$BUNDLE_DIR/scripts/schub-lab" "$WORKSPACE/schub-lab"
 }
 
 main() {
@@ -264,6 +266,7 @@ Ready. Start your assistant in the workspace and just ask, for example:
     Claude Code:     cd $WORKSPACE && claude
     Claude Desktop:  restart it; the sc-hub tools appear in a new chat
 Watch your jobs and pipelines:  cd $WORKSPACE && ./schub-view
+Open a JupyterLab / cellxgene session the assistant started:  ./schub-lab [cellxgene]
 EOF
 }
 

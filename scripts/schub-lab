@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Open your running sc-hub session (JupyterLab or cellxgene) in the browser.
+# The session runs on a compute node; this opens an ssh tunnel through the login
+# node and the browser. Ask the assistant to start a session first.
+#
+#   ./schub-lab              JupyterLab
+#   ./schub-lab cellxgene    cellxgene
+set -euo pipefail
+
+ALIAS="${SCHUB_ALIAS:-mbzuai-schub}"
+REMOTE="${SCHUB_REMOTE_ROOT:-schub}"
+KIND="${1:-jupyter}"
+case "$KIND" in
+  jupyter | cellxgene) ;;
+  *) echo "usage: ./schub-lab [jupyter|cellxgene]" >&2; exit 2 ;;
+esac
+
+info="$(ssh -o BatchMode=yes "$ALIAS" "$REMOTE/bin/schub session-info $KIND" 2>/dev/null || true)"
+read -r node port path <<<"$info" || true
+# The reply comes from the cluster: accept only what a session can look like.
+if ! [[ "${node:-}" =~ ^[A-Za-z0-9.-]+$ && "${port:-}" =~ ^[0-9]{4,5}$ && "${path:-}" =~ ^/[A-Za-z0-9/?=._~-]*$ ]]; then
+  echo "No running $KIND session. Ask the assistant to start one (it may still be waiting in the queue)." >&2
+  exit 1
+fi
+local_port="${SCHUB_LAB_PORT:-$port}"
+
+ssh -o BatchMode=yes -o ExitOnForwardFailure=yes -N -L "127.0.0.1:$local_port:$node:$port" "$ALIAS" &
+tunnel=$!
+trap 'kill "$tunnel" 2>/dev/null || true' EXIT INT TERM
+sleep 2
+kill -0 "$tunnel" 2>/dev/null || { echo "The tunnel failed (is local port $local_port busy? set SCHUB_LAB_PORT)." >&2; exit 1; }
+
+url="http://localhost:$local_port$path"
+case "$(uname -s)" in
+  Darwin) open "$url" ;;
+  Linux) xdg-open "$url" >/dev/null 2>&1 || echo "Open $url in your browser" ;;
+  *) echo "Open $url in your browser" ;;
+esac
+echo "sc-hub $KIND on $node: $url (Ctrl-C closes the tunnel; the session keeps running)"
+wait "$tunnel"

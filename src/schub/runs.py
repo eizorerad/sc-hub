@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import secrets
 from datetime import datetime, timezone
 from pathlib import Path
@@ -194,7 +195,10 @@ class RunStore:
             output=None if step.terminal else str(output),
             results_dir=str(step_dir / "results"),
             state_in=step.state_in,
-            context={"celltypist_dirs": os.pathsep.join(str(d) for d in celltypist_dirs(self.settings))},
+            context={
+                "celltypist_dirs": os.pathsep.join(str(d) for d in celltypist_dirs(self.settings)),
+                "library_roots": os.pathsep.join(str(r) for r in self.settings.library_roots),
+            },
         )
         (step_dir / STEP_FILE).write_text(step_file.model_dump_json(indent=2))
         script = step_dir / "job.sbatch"
@@ -235,7 +239,10 @@ class RunStore:
 
     def _check_active_limit(self) -> None:
         jobs = self.slurm.active(self.settings.job_prefix)
-        pipelines = {job.name.split("-")[1] for job in jobs if job.name.count("-") >= 2}
+        # Pipeline steps are named <prefix>-<plan id>-<NN>-<brick>; sessions, imports
+        # and downloads (<prefix>-session-..., -import-, -fetch-) are not pipelines.
+        step = re.compile(rf"^{re.escape(self.settings.job_prefix)}-([0-9a-f]{{6}})-\d{{2}}-")
+        pipelines = {m.group(1) for job in jobs if (m := step.match(job.name))}
         limit = self.settings.limits.max_active_runs
         if len(pipelines) >= limit:
             raise LimitExceeded(

@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 
 from .config import Settings
 from .hashing import file_fingerprint, stable_hash
-from .library import CATALOG_FILE, DATA_FILE, Source, dataset_dirs
+from .fastq import FastqError, fastq_fingerprint, load_manifest
+from .library import CATALOG_FILE, DATA_FILE, FASTQ_FILE, Source, dataset_dirs
 from .state import Frozen
 
 MAX_USER_FILES = 200
@@ -20,6 +21,7 @@ class DatasetEntry(Frozen):
     name: str
     path: str
     source: Source
+    kind: Literal["h5ad", "fastq"] = "h5ad"
     title: str = ""
     organism: str = "unknown"
     license: str = "unknown"
@@ -68,6 +70,29 @@ def _catalogued(source: Source, base: Path) -> list[DatasetEntry]:
     return entries
 
 
+def _fastq_entries(source: Source, base: Path) -> list[DatasetEntry]:
+    entries = []
+    for manifest_file in sorted(base.glob(f"*/{FASTQ_FILE}")):
+        if (manifest_file.parent / DATA_FILE).is_file():
+            continue  # a folder is one dataset; the count matrix wins
+        try:
+            m = load_manifest(manifest_file)
+        except FastqError:
+            continue
+        size = sum(_size_mb(manifest_file.parent / f) for f in m.read_files())
+        entries.append(
+            DatasetEntry(
+                name=manifest_file.parent.name, path=str(manifest_file), source=source, kind="fastq",
+                title=m.title[:MAX_TEXT], organism=m.organism, license=m.license[:MAX_TEXT],
+                citation=m.citation[:MAX_TEXT],
+                description=(f"FASTQ, {len(m.samples)} sample(s), {m.technology or 'technology not set'}. "
+                             + m.description)[:MAX_TEXT],
+                size_mb=round(size, 1),
+            )
+        )
+    return entries
+
+
 def _loose_private(settings: Settings, known: set[str]) -> list[DatasetEntry]:
     base = settings.data_dir
     if not base.is_dir():
@@ -84,7 +109,8 @@ def list_datasets(settings: Settings) -> list[DatasetEntry]:
     """First occurrence of a name wins (shared library over local over private)."""
     seen: dict[str, DatasetEntry] = {}
     for source, base in dataset_dirs(settings):
-        for entry in _catalogued(source, base) if base.is_dir() else []:
+        found = (_catalogued(source, base) + _fastq_entries(source, base)) if base.is_dir() else []
+        for entry in found:
             seen.setdefault(entry.name, entry)
     entries = list(seen.values())
     return entries + _loose_private(settings, {e.path for e in entries})
@@ -105,6 +131,8 @@ def dataset_fingerprint(path: Path, trusted_roots: tuple[Path, ...] = ()) -> str
     """
     resolved = path.resolve()
     trusted = any(resolved.is_relative_to(root.resolve()) for root in trusted_roots)
+    if path.name == FASTQ_FILE:
+        return fastq_fingerprint(path, trusted)
     catalog = path.parent / CATALOG_FILE
     if trusted and path.name == DATA_FILE and catalog.is_file():
         meta = read_catalog(path.parent)

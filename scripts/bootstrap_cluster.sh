@@ -34,7 +34,8 @@ log() { printf '[sc-hub] %s\n' "$*"; }
 die() { printf '[sc-hub] ERROR: %s\n' "$*" >&2; exit 1; }
 
 make_layout() {
-  mkdir -p "$ROOT"/{bin,data,projects,plans,runs,cache/steps,logs,notebooks,view,trash,.cache}
+  mkdir -p "$ROOT"/{bin,data,projects,plans,runs,cache/steps,logs,notebooks,view,trash,.cache,sessions}
+  chmod 700 "$ROOT/sessions"  # session tokens
   # Workspaces created before the library existed kept datasets in shared/.
   if [ -d "$ROOT/shared" ] && [ ! -e "$ROOT/library-local" ]; then
     mv "$ROOT/shared" "$ROOT/library-local"
@@ -101,22 +102,9 @@ $exports
 $guard
 exec "\$SCHUB_PYTHON" -m schub.cli mcp
 EOF
-  cat >"$ROOT/bin/schub-notebook" <<EOF
-#!/usr/bin/env bash
-# Open a marimo notebook on a compute node:  schub-notebook <notebook.py>
-set -euo pipefail
-notebook="\${1:?usage: schub-notebook <notebook.py>}"
-if [ -z "\${SLURM_JOB_ID:-}" ]; then
-  exec srun --partition='$PARTITION' --cpus-per-task=4 --mem=32G --time=04:00:00 \\
-    --job-name=schub-notebook --pty "\$0" "\$@"
-fi
-port=\$(( 20000 + RANDOM % 20000 ))
-node=\$(hostname -s)
-echo "On your laptop:  ssh -N -L \$port:\$node:\$port mbzuai-schub"
-echo "Then open the URL below with 'localhost' as the host."
-exec '$(dirname "$PYTHON")/marimo' edit --headless --host 0.0.0.0 --port "\$port" "\$notebook"
-EOF
-  chmod 755 "$ROOT/bin/schub" "$ROOT/bin/schub-mcp" "$ROOT/bin/schub-notebook"
+  # Notebooks now open in a Jupyter session (schub session-start jupyter / ./schub-lab).
+  rm -f "$ROOT/bin/schub-notebook"
+  chmod 755 "$ROOT/bin/schub" "$ROOT/bin/schub-mcp"
 }
 
 build_private_env() {

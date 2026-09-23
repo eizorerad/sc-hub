@@ -39,6 +39,7 @@ class PlanContext:
     limits: Limits
     env_id: str = ""
     code_ids: Mapping[str, str] = field(default_factory=dict)
+    library_roots: tuple[Path, ...] = ()  # references and tools (kallisto index, Cell Ranger)
 
     def celltypist_models(self) -> tuple[str, ...]:
         found = {p.name for d in self.celltypist_dirs if d.is_dir() for p in d.glob("*.pkl")}
@@ -59,6 +60,8 @@ class StepIO:
 CheckFn = Callable[[DatasetState, Any, PlanContext], list[Issue]]
 TransformFn = Callable[[DatasetState, Any], DatasetState]
 ResourceFn = Callable[[DatasetState, Any], Resources]
+# Identity of external inputs (a reference index, a tool version) folded into the step key.
+KeyExtraFn = Callable[[DatasetState, Any, PlanContext], str]
 
 
 @dataclass(frozen=True)
@@ -73,6 +76,8 @@ class BrickSpec:
     impl: str
     terminal: bool = False
     uses_gpu: bool = False
+    source: bool = False  # reads FASTQ and writes the first count matrix
+    key_extra: KeyExtraFn | None = None
 
     def describe(self) -> dict[str, Any]:
         return {
@@ -81,6 +86,7 @@ class BrickSpec:
             "summary": self.summary,
             "terminal": self.terminal,
             "uses_gpu": self.uses_gpu,
+            "reads_fastq": self.source,
             "params_schema": self.params_model.model_json_schema(),
         }
 

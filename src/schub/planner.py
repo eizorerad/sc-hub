@@ -124,6 +124,15 @@ def _clamp(res: Resources, limits: Limits, step: int) -> tuple[Resources, list[I
     ]
 
 
+def _source_issues(state: DatasetState, spec: BrickSpec, step: int) -> list[Issue]:
+    """FASTQ must be counted first, and only FASTQ can be counted."""
+    if state.source == "fastq" and not spec.source:
+        return [error("needs_counting", f"The dataset is FASTQ reads; start with kb_count or cellranger_count, not {spec.name}.", step)]
+    if spec.source and state.source != "fastq":
+        return [error("not_fastq", f"{spec.name} counts FASTQ reads; this dataset is already a count matrix.", step)]
+    return []
+
+
 def build_plan(
     profile: DatasetProfile,
     fingerprint: str,
@@ -155,12 +164,17 @@ def build_plan(
             issues.append(
                 error("after_terminal", f"'{steps[-1].brick}' only writes tables; it must be last.", index)
             )
-        issues += [i.model_copy(update={"step": index}) for i in spec.check(state, params, ctx)]
+        source_issues = _source_issues(state, spec, index)
+        issues += source_issues
+        if not source_issues:
+            issues += [i.model_copy(update={"step": index}) for i in spec.check(state, params, ctx)]
         resources, clamp_issues = _clamp(spec.resources(state, params), ctx.limits, index)
         issues += clamp_issues
         dumped = params.model_dump(mode="json")
         code = ctx.code_ids.get(spec.name, "")
-        key = stable_hash(prev_key, spec.name, spec.version, dumped, code, ctx.env_id)
+        extra = spec.key_extra(state, params, ctx) if spec.key_extra else ""
+        parts = (prev_key, spec.name, spec.version, dumped, code, ctx.env_id) + ((extra,) if extra else ())
+        key = stable_hash(*parts)
         steps.append(
             PlannedStep(
                 index=index,

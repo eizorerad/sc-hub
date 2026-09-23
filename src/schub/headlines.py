@@ -28,7 +28,32 @@ def _de(s: Mapping[str, Any]) -> str:
     return f"{s.get('groups_tested', '?')} groups, {significant:,} DE genes"
 
 
+def _counted(s: Mapping[str, Any]) -> str:
+    cells = s.get("n_cells")
+    return f"{cells:,} cells from {len(s.get('samples', {}))} sample(s)" if isinstance(cells, int) else ""
+
+
+def _scanvi(s: Mapping[str, Any]) -> str:
+    return f"{s.get('n_labels', '?')} labels, {s.get('label_agreement_on_labeled', '?')} agreement"
+
+
+def _memento(s: Mapping[str, Any]) -> str:
+    groups = [g for g in s.get("groups", {}).values() if isinstance(g, dict)]
+    mean = sum(g.get("significant", 0) for g in groups)
+    var = sum(g.get("variability_significant", 0) for g in groups)
+    return f"{mean:,} mean / {var:,} variability genes"
+
+
+def _export(s: Mapping[str, Any]) -> str:
+    return f"{s.get('n_cells', '?'):,} cells, {s.get('size_mb', '?')} MB" if isinstance(s.get("n_cells"), int) else ""
+
+
 HEADLINES: dict[str, Callable[[Mapping[str, Any]], str]] = {
+    "kb_count": _counted,
+    "cellranger_count": _counted,
+    "integrate_scanvi": _scanvi,
+    "memento_de": _memento,
+    "export_cellxgene": _export,
     "qc_filter": _qc,
     "normalize_embed": _normalize,
     "integrate_scvi": _scvi,

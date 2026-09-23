@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from ..projects import ProjectSummary
 from ..slurm import QueueJob
 from .collect import RunView, Snapshot
@@ -79,6 +81,23 @@ def _run_card(run: RunView) -> str:
     )
 
 
+SESSION_NAMES = {"jupyter": "JupyterLab", "cellxgene": "cellxgene"}
+
+
+def _sessions(snap: Snapshot) -> str:
+    cards = []
+    for s in snap.sessions:
+        details = [s.node and f"on {s.node}", f"{s.hours} h", "GPU" if s.gpu else "", f"started {s.started}"]
+        target = f'<span class="muted small">{esc(Path(s.target).name)}</span>' if s.target else ""
+        how = (f"<span>Open on the laptop: <code>./schub-lab {esc(s.kind)}</code> "
+               f"<span class='muted small'>(Windows: .\\schub-lab.cmd {esc(s.kind)})</span></span>") if s.node else ""
+        cards.append(
+            f'<div class="card session"><b>{esc(SESSION_NAMES.get(s.kind, s.kind))}</b>{pill(s.state)}'
+            f'<span class="muted small">{esc(" · ".join(d for d in details if d))}</span>{target}{how}</div>'
+        )
+    return f'<h2>Interactive sessions</h2><div class="cards">{"".join(cards)}</div>' if cards else ""
+
+
 def render_overview(snap: Snapshot) -> str:
     running = sum(j.state == "RUNNING" for j in snap.jobs if j.name.startswith("schub-"))
     queued = sum(j.state == "PENDING" for j in snap.jobs if j.name.startswith("schub-"))
@@ -98,6 +117,7 @@ def render_overview(snap: Snapshot) -> str:
         + _metric("Completed runs", done, "#runs", "COMPLETED")
         + _metric("Failed runs", failed, "#runs", "FAILED")
         + "</div>"
+        + _sessions(snap)
         + (f'<h2>In progress</h2><div class="cards">{"".join(_run_card(r) for r in active)}</div>' if active else "")
         + (f'<h2>Latest runs</h2><div class="cards">{"".join(_run_card(r) for r in latest)}</div>' if latest else
            '<p class="empty">No runs yet.</p>')
@@ -110,7 +130,8 @@ def render_library(snap: Snapshot) -> str:
     for run in snap.runs:
         used[run.dataset] = used.get(run.dataset, 0) + 1
     datasets = [
-        f"<tr><td><b>{esc(d.name)}</b><div class='muted small'>{esc(d.title)}</div></td><td>{esc(d.source)}</td>"
+        f"<tr><td><b>{esc(d.name)}</b>{'<span class=tag>FASTQ</span>' if d.kind == 'fastq' else ''}"
+        f"<div class='muted small'>{esc(d.title)}</div></td><td>{esc(d.source)}</td>"
         f"<td class=num>{d.size_mb:g} MB</td><td>{esc(d.organism)}</td><td class=num>{used.get(d.name, 0)}</td>"
         f"<td class='muted small'>{esc(d.license)}</td></tr>"
         for d in snap.datasets
@@ -120,10 +141,16 @@ def render_library(snap: Snapshot) -> str:
         f'<tr><td>{esc(m.name)}</td><td><a href="#runs/{esc(m.run_id)}">{esc(m.origin)}</a></td><td class=num>{m.size_mb:g} MB</td></tr>'
         for m in snap.trained_models
     ]
+    refs = [
+        f"<tr><td>{esc(r.name)}</td><td class='muted'>{esc(r.kind)}</td>"
+        f"<td>{pill('COMPLETED', r.status) if not r.status.startswith('not ') else esc(r.status)}</td></tr>"
+        for r in snap.references
+    ]
     versions = " · ".join(f"{k} {v}" for k, v in snap.versions.items() if v != "absent")
     return (
         "<h2>Datasets</h2>" + table(("Dataset", "Where", "Size", "Organism", "Runs", "License"), datasets)
         + "<h2>Reference models</h2>" + (table(("Model", "Kind", "Where"), reference) if reference else '<p class="empty">None staged.</p>')
+        + "<h2>References and tools</h2>" + (table(("Reference / tool", "Used by", "Status"), refs) if refs else "")
         + "<h2>Models trained in your runs</h2>" + (table(("Model", "From run", "Size"), trained) if trained else '<p class="empty">None yet.</p>')
         + f'<h2>Environment</h2><p class="muted">{esc(snap.library_mode)}</p><p class="small">Environment <code>{esc(snap.env_id)}</code>: {esc(versions)}</p>'
     )

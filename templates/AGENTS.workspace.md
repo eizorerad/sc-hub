@@ -13,16 +13,45 @@ and records what was run.
    the student before planning: which obs column is the condition, which is the
    biological replicate (donor/sample), which is the technical batch, and the
    reference level. Never infer these silently from column names.
-3. `save_branch` for the pipeline (name the first one `main`). For a variant,
-   save a new branch with `from_branch` + `overrides`; shared steps are reused
-   from cache. Show the student the plan, its warnings and GPU-hours. If it has
-   errors, explain them; do not bypass them.
+3. `list_recipes` and pick the one that fits (below); fill it with
+   `recipe_steps`, then `save_branch` (name the first branch `main`). For a
+   variant, save a new branch with `from_branch` + `overrides`; shared steps are
+   reused from cache. Show the student the plan, its warnings and GPU-hours. If
+   it has errors, explain them; do not bypass them.
 4. `submit_plan`, then check `run_status` every few minutes, not in a tight loop.
 5. `run_results` for numbers (this also writes the project logbook), then
    `make_dashboard`; the student sees it with `./schub-view` (Windows:
-   `.\schub-view.cmd`).
+   `.\schub-view.cmd`). Each step there has a cell map (UMAP by any label).
 6. Hypotheses go in `add_idea` (with `reverses_if`), decisions in
    `add_logbook_entry`. Link ideas to branches with `update_idea`.
+
+## Defaults (the MBZUAI single-cell course: Python, scverse, scvi-tools)
+
+| Situation | Recipe / bricks |
+|---|---|
+| Count matrix, one batch, first look | `standard_analysis`: qc_filter, normalize_embed, annotate_celltypist, export_cellxgene |
+| Several samples/donors/lanes | `scvi_integration` (integrate_scvi) |
+| Trusted labels for some cells | `scanvi_labels` (integrate_scanvi) |
+| Condition effect with replicates | `condition_de` (pseudobulk_de); add memento_de for differential variability |
+| 10x FASTQ, many samples or quick reprocessing | `fastq_kallisto` (kb_count) |
+| 10x FASTQ, results must match common 10x practice | `fastq_cellranger` (cellranger_count; needs Cell Ranger in the library) |
+
+- AnnData (`.h5ad`) with raw counts is the working format. Seurat objects are
+  converted with `import_seurat` (Seurat is for compatibility, not the default).
+- New FASTQ folders under `data/` are described with `register_fastq`; ask the
+  student for the 10x chemistry (v2/v3), it is on the kit.
+- Cluster markers from one sample are exploratory; condition DE needs
+  replicates (pseudobulk_de or memento_de with replicate_key).
+
+## Interactive work
+
+- `start_session(kind="jupyter", gpu=true)` for scvi-tools model work;
+  `make_notebook` writes a starter notebook for a run.
+- `export_cellxgene`, then `start_session(kind="cellxgene", target=<its
+  cellxgene.h5ad>)` to explore cells and genes in the browser.
+- The student opens a session with `./schub-lab jupyter` or `./schub-lab
+  cellxgene` (Windows: `.\schub-lab.cmd ...`). A session holds one of their two
+  running-job slots: use few hours and `stop_session` when they are done.
 
 ## Rules
 
@@ -30,7 +59,9 @@ and records what was run.
 - Do not SSH in to write sbatch scripts or to run analysis on the login node for
   anything a brick covers. If nothing covers the request, say so and propose a
   new brick instead of improvising a one-off pipeline.
-- A missing dataset is downloaded with `fetch_asset` (a Slurm job), never on the
-  login node and never into someone else's folder.
+- A missing dataset or index is downloaded with `fetch_asset` (a Slurm job),
+  never on the login node and never into someone else's folder.
 - Data stays on the cluster: do not copy matrices to this laptop or into the chat.
 - Resubmitting the same plan is safe (it returns the existing run).
+- Never read `sessions/*/connection.json` or run `schub session-info`: they hold the
+  session token, which must not reach the chat. Only `schub-lab` on the laptop uses them.

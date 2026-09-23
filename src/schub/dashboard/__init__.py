@@ -12,6 +12,7 @@ from typing import Any
 from ..state import Frozen
 from .collect import StepView, collect
 from .page import render_page
+from .points import write_points
 
 RECENT_FULL_IMAGES = 5
 
@@ -63,7 +64,22 @@ class _Images:
         self.used.add(self.view / relative)
         return relative.as_posix()
 
+    def points(self, step: StepView) -> str | None:
+        """pts/<key>.js with a subsampled cell map, for steps of recent runs."""
+        if step.key not in self.full_keys:
+            return None
+        try:
+            relative = write_points(Path(step.step_dir), step.key, self.view)
+        except OSError:
+            return None
+        if relative:
+            self.used.add(self.view / relative)
+        return relative
+
     def prune(self) -> None:
+        for path in (self.view / "pts").glob("*.js") if (self.view / "pts").is_dir() else []:
+            if path not in self.used:
+                path.unlink(missing_ok=True)
         root = self.view / "img"
         if not root.is_dir():
             return

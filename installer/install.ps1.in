@@ -232,7 +232,7 @@ function New-Workspace($BundleDir) {
     New-Item -ItemType Directory -Force -Path $Workspace | Out-Null
     Copy-Item (Join-Path $BundleDir 'templates/AGENTS.workspace.md') (Join-Path $Workspace 'AGENTS.md') -Force
     Copy-Item (Join-Path $BundleDir 'templates/AGENTS.workspace.md') (Join-Path $Workspace 'CLAUDE.md') -Force
-    foreach ($name in 'schub-view.ps1', 'schub-view.cmd') {
+    foreach ($name in 'schub-view.ps1', 'schub-view.cmd', 'schub-lab.ps1', 'schub-lab.cmd') {
         Copy-Item (Join-Path $BundleDir "scripts/$name") (Join-Path $Workspace $name) -Force
     }
 }
@@ -263,5 +263,6 @@ Ready. Start your assistant in the workspace and just ask, for example:
     Claude Code:     cd $Workspace; claude
     Claude Desktop:  quit and reopen it; the sc-hub tools appear in a new chat
 Watch your jobs and pipelines:  cd $Workspace; .\schub-view.cmd
+Open a JupyterLab / cellxgene session the assistant started:  .\schub-lab.cmd [cellxgene]
 "@
 }

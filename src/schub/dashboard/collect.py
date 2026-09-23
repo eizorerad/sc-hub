@@ -16,10 +16,11 @@ from typing import Any
 from ..datasets import DatasetEntry
 from ..h5ad_profile import UnsupportedFile
 from ..headlines import headline
-from ..library import AssetLocation, celltypist_dirs, library_mode
+from ..library import AssetLocation, celltypist_dirs, find_tool, kallisto_ref, library_mode
 from ..projects import ProjectError, ProjectSummary
 from ..provenance import KEY_PACKAGES, _version, env_id
 from ..runs import RunManifest
+from ..sessions import SessionInfo
 from ..slurm import QueueJob, SlurmError
 from ..state import Frozen
 from ..stepfile import ERROR_FILE, STEP_FILE, SUCCESS, SUMMARY_FILE
@@ -82,6 +83,12 @@ class TrainedModel(Frozen):
     size_mb: float
 
 
+class Reference(Frozen):
+    name: str
+    kind: str
+    status: str  # a version or folder name, or "not installed"
+
+
 class Snapshot(Frozen):
     generated_at: str
     user: str
@@ -95,6 +102,8 @@ class Snapshot(Frozen):
     datasets: tuple[DatasetEntry, ...]
     models: tuple[AssetLocation, ...]
     trained_models: tuple[TrainedModel, ...] = ()
+    references: tuple[Reference, ...] = ()
+    sessions: tuple[SessionInfo, ...] = ()
     nodes: tuple[NodeView, ...]
     steps_by_key: dict[str, StepView] = {}
 
@@ -204,15 +213,40 @@ def _trained_models(runs: list[RunView]) -> list[TrainedModel]:
     found: dict[str, TrainedModel] = {}
     for run in runs:
         for step in run.steps:
-            folder = Path(step.step_dir) / "results" / "scvi_model"
-            if step.key in found or not folder.is_dir():
-                continue
-            latent = step.params.get("n_latent", "?")
-            found[step.key] = TrainedModel(
-                name=f"scVI latent {latent} · {run.dataset}", kind="scVI", run_id=run.run_id,
-                origin=run.label, path=str(folder), size_mb=trained_model_size_mb(folder),
-            )
+            for kind, name in (("scVI", "scvi_model"), ("scANVI", "scanvi_model")):
+                folder = Path(step.step_dir) / "results" / name
+                if step.key in found or not folder.is_dir():
+                    continue
+                latent = step.params.get("n_latent", "?")
+                found[step.key] = TrainedModel(
+                    name=f"{kind} latent {latent} · {run.dataset}", kind=kind, run_id=run.run_id,
+                    origin=run.label, path=str(folder), size_mb=trained_model_size_mb(folder),
+                )
     return list(found.values())
+
+
+def _references(hub: Any) -> tuple[Reference, ...]:
+    roots = hub.settings.library_roots
+    found = [
+        Reference(name=f"kallisto index ({organism})", kind="kb_count",
+                  status="ready" if kallisto_ref(roots, organism) else "not installed (fetch_asset)")
+        for organism in ("human", "mouse")
+    ]
+    for tool, executable, kind in (("cellranger", "cellranger", "cellranger_count"),
+                                   ("cellxgene", "bin/python", "cellxgene sessions"),
+                                   ("r-seurat", "bin/Rscript", "import_seurat")):
+        path = find_tool(roots, tool, executable)
+        # tools/<tool>/<version>/<executable>: the folder above the executable's own path
+        version = path.parents[len(Path(executable).parts) - 1].name if path else "not installed"
+        found.append(Reference(name=tool, kind=kind, status=version))
+    return tuple(found)
+
+
+def _sessions(hub: Any, queue: dict[str, str], queue_ok: bool) -> tuple[SessionInfo, ...]:
+    try:
+        return tuple(hub.sessions.list(queue if queue_ok else None))
+    except (OSError, ValueError, SlurmError):
+        return ()
 
 
 def _queue(hub: Any) -> tuple[list[QueueJob], str]:
@@ -256,6 +290,8 @@ def collect(hub: Any) -> Snapshot:
         datasets=tuple(hub.datasets()),
         models=_models(hub),
         trained_models=tuple(_trained_models(runs)),
+        references=_references(hub),
+        sessions=_sessions(hub, queue, not jobs_error),
         nodes=tuple(_nodes(hub, runs, projects)),
         steps_by_key=steps_by_key,
     )

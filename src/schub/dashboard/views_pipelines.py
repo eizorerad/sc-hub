@@ -7,7 +7,7 @@ from itertools import groupby
 from .collect import NodeView, Snapshot
 from .html import esc, kv, pill
 from .lineage import SHORT, pipeline_views, render_graph
-from .views_runs import ImageUrl, figures, log_block, step_facts
+from .views_runs import ImageUrl, cell_map, figures, log_block, step_facts
 
 
 def _view_state(nodes: dict[str, NodeView], keys: tuple[str, ...]) -> str:
@@ -46,6 +46,7 @@ def _node_template(node: NodeView, snap: Snapshot, run_of: dict[str, str], image
     body.append("<h4>Parameters</h4>" + (kv(node.params) or '<p class="muted">defaults</p>'))
     if step is not None:
         body.append(figures(step, image_url))
+        body.append(cell_map(step, image_url, folded=False))
         if step.summary:
             body.append("<h4>Result</h4>" + kv(step.summary))
         body.append(log_block(step))
