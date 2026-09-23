@@ -67,8 +67,15 @@ alternative from here" buttons that copy a request for you).
 
 ## Interactive work
 
-- `start_session(kind="jupyter", gpu=true)` for scvi-tools model work;
-  `make_notebook` writes a starter notebook for a run.
+- `start_session(kind="jupyter", gpu=true)` for scvi-tools model work.
+- "Show me the code" / "I want this as a notebook": `make_notebook(run_id)`
+  writes the run as a notebook with every step's exact brick code and
+  parameters; the student can change a step and re-run from there (results go
+  to `notebooks/work/`). Open it with `start_session(kind="jupyter",
+  target=<its path>)`, with `gpu=true` if it has scVI/scANVI steps. The
+  dashboard also shows each step's code and offers the notebook as a download.
+  A change the student wants to keep goes back into the branch with
+  `revise_branch` or `fork_branch`.
 - `export_cellxgene`, then `start_session(kind="cellxgene", target=<its
   cellxgene.h5ad>)` to explore cells and genes in the browser.
 - The student opens a session with `./schub-lab jupyter` or `./schub-lab

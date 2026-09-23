@@ -55,7 +55,7 @@ def view_id(label: str) -> str:
 
 
 def pipeline_views(nodes: tuple[NodeView, ...]) -> list[PipelineView]:
-    views = [PipelineView(view_id="v-all", label="All pipelines", group="Overview", keys=tuple(n.key for n in nodes))]
+    views = [PipelineView(view_id="v-all", label="All pipelines", group="All", keys=tuple(n.key for n in nodes))]
     taken = {"v-all"}
     for label in sorted({label for n in nodes for label in n.labels}):
         # The project (or subproject, a/b) is the group; the branch is the entry.

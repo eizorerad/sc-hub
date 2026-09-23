@@ -8,6 +8,7 @@ from ..projects import ProjectSummary
 from .collect import BranchInfo, RunView, Snapshot
 from .html import esc, pill, table
 from .lineage import view_id
+from .notebooks import notebook_button
 
 IDEA_COLUMNS = ("open", "planned", "running", "done", "dropped")
 IDEA_STATE = {"open": "PENDING", "planned": "PLANNED", "running": "RUNNING", "done": "COMPLETED", "dropped": "FAILED"}
@@ -21,6 +22,8 @@ def _idea_card(idea) -> str:
 
 
 def _ideas(project: ProjectSummary) -> str:
+    if not project.ideas:
+        return '<p class="muted small">No ideas yet. Ask your assistant to note one when a question comes up.</p>'
     columns = []
     for status in IDEA_COLUMNS:
         items = [i for i in project.ideas if i.status == status]
@@ -72,7 +75,8 @@ def _branch_rows(project: ProjectSummary, snap: Snapshot, runs: tuple[RunView, .
             f"<div class='muted small'>{esc(info.description)}</div></td>"
             f"<td>{_origin(info)}</td><td>{esc(', '.join(info.datasets))}</td>"
             f"<td>{state} {run_cell}</td><td>{_history(info)}</td>"
-            f'<td><a href="#pipelines/{esc(view_id(project.path + "/" + name))}">graph</a></td></tr>'
+            f'<td class="open"><a href="#pipelines/{esc(view_id(project.path + "/" + name))}">graph</a>'
+            f"{notebook_button(run, snap.notebooks, 'notebook') if run else ''}</td></tr>"
         )
     return rows
 
@@ -110,7 +114,7 @@ def _project(project: ProjectSummary, snap: Snapshot, children: list[str]) -> st
         + _software(project, snap)
         + (f'<div class="chips"><span class="muted small">Subprojects</span>{subs}</div>' if subs else "")
         + "<h3>Branches</h3>"
-        + (table(("Branch", "Based on", "Datasets", "Latest run", "History", "Pipeline"), rows) if rows
+        + (table(("Branch", "Based on", "Datasets", "Latest run", "History", "Open"), rows) if rows
            else '<p class="empty">No branches yet.</p>')
         + '<p class="muted small">A fix makes a new revision of the same branch (r2, r3…); '
           "an alternative from some step on is a fork (a new branch). Ask your assistant from any step's panel.</p>"

@@ -14,7 +14,7 @@ is a student's sc-hub workspace. Layout:
 | `plans/` | Validated plans |
 | `view/` | Static dashboard (mirrored to the laptop by `schub-view`) |
 | `sessions/<job>/` | Interactive sessions (JupyterLab, cellxgene); private, holds the session token |
-| `notebooks/` | Jupyter notebooks written by `schub notebook <run>` |
+| `notebooks/` | Run notebooks (`schub notebook <run>`: each step's exact code and parameters); `work/` holds what they re-run |
 | `logs/` | Audit log of tool calls; `fetch/` download job logs |
 | `trash/` | Move things here instead of deleting |
 

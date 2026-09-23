@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from itertools import groupby
 
-from .collect import NodeView, Snapshot
+from .collect import NodeView, RunView, Snapshot, run_label
 from .html import ask_block, esc, kv, pill
-from .lineage import SHORT, pipeline_views, render_graph
+from .lineage import SHORT, PipelineView, pipeline_views, render_graph
+from .notebooks import code_section, notebook_button
 from .views_runs import ImageUrl, cell_map, figures, log_block, step_facts
 
 
@@ -47,6 +48,7 @@ def _node_template(node: NodeView, snap: Snapshot, run_of: dict[str, str], image
         body.append(step_facts(step))
     body.append(f"<h4>Used by</h4><ul class=plain>{branches}</ul>")
     body.append("<h4>Parameters</h4>" + (kv(node.params) or '<p class="muted">defaults</p>'))
+    body.append(code_section(node.brick, step.code_id if step is not None else ""))
     if step is not None:
         body.append(figures(step, image_url))
         body.append(cell_map(step, image_url, folded=False))
@@ -69,14 +71,29 @@ def _node_template(node: NodeView, snap: Snapshot, run_of: dict[str, str], image
     return f'<template data-node="{esc(node.key)}">{"".join(body)}</template>'
 
 
+def _actions(view: PipelineView, latest: dict[str, RunView], notebooks: frozenset[str]) -> str:
+    """For one branch: its latest run and that run as a notebook."""
+    if view.view_id == "v-all":
+        return ""
+    run = latest.get(f"{view.group}/{view.label}") or latest.get(view.label)
+    if run is None:
+        return '<span class="muted small">not run yet</span>'
+    return (f'<span class="graph-actions">{pill(run.state)}<a href="#runs/{esc(run.run_id)}">latest run</a>'
+            f"{notebook_button(run, notebooks, 'Notebook')}</span>")
+
+
 def render_pipelines(snap: Snapshot, image_url: ImageUrl) -> str:
     if not snap.nodes:
         return '<p class="empty">No pipelines yet. Ask your assistant to save a branch in a project.</p>'
     run_of: dict[str, str] = {}
     for run in reversed(snap.runs):
         run_of.update({s.key: run.run_id for s in run.steps})
+    latest: dict[str, RunView] = {}
+    for run in snap.runs:  # newest first
+        latest.setdefault(run_label(run), run)
     graphs = "".join(
-        f'<div class="graph" data-pipe-view="{esc(v.view_id)}" hidden><h3>{esc(v.group)} · {esc(v.label)}</h3>'
+        f'<div class="graph" data-pipe-view="{esc(v.view_id)}" hidden><div class="graph-head"><h3>{esc(v.group)} · {esc(v.label)}</h3>'
+        f"{_actions(v, latest, snap.notebooks)}</div>"
         f"{render_graph(snap.nodes, v.keys, vertical=v.view_id != 'v-all')}</div>"
         for v in pipeline_views(snap.nodes)
     )

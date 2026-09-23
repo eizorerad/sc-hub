@@ -1,6 +1,7 @@
-"""Vanilla JS (~3 KB): hash routing, pipeline picker, step panel, run filter,
-auto-refresh that keeps the current view, selection, filters and scroll position,
-and waits while the student reads an opened section or types."""
+"""Vanilla JS (~4 KB): hash routing, pipeline picker, step panel, run filter, brick
+code and notebook downloads, and an auto-refresh that keeps the current view,
+selection, filters and scroll position, and waits while the student reads an
+opened section or types."""
 
 SCRIPT = r"""
 (() => {
@@ -17,14 +18,23 @@ SCRIPT = r"""
     '#1f77b4','#ff7f0e','#2ca02c','#d62728','#9467bd','#8c564b','#e377c2','#7f7f7f','#bcbd22','#17becf'];
   const decode = s => { try { return decodeURIComponent(s); } catch (e) { return s; } };
 
+  // Old addresses keep working: the overview became Projects, Jobs a part of Runs.
+  const ALIASES = {overview: 'projects', jobs: 'runs/queue'};
+  const RUN_SECTIONS = ['history', 'queue', 'sessions'];
+  const pickers = {};
+
   function route() {
-    const [view, ...rest] = (location.hash.slice(1) || 'overview').split('/');
+    let hash = location.hash.slice(1) || 'projects';
+    const first = hash.split('/')[0];
+    if (ALIASES[first]) hash = ALIASES[first];
+    const [view, ...rest] = hash.split('/');
     const arg = rest.join('/');  // project paths contain '/'
-    const name = $$('.view').some(v => v.dataset.view === view) ? view : 'overview';
+    const name = $$('.view').some(v => v.dataset.view === view) ? view : 'projects';
     $$('.view').forEach(v => v.classList.toggle('active', v.dataset.view === name));
     $$('[data-tab]').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
     $$('details.account').forEach(d => { d.open = false; });
-    if (name === 'runs') showRun(arg ? decode(arg) : null);
+    if (name === 'runs' && RUN_SECTIONS.includes(arg)) { pickers.runs?.(arg); showRun(null); }
+    else if (name === 'runs') showRun(arg ? decode(arg) : null);
     if (name === 'pipelines') selectPipe(arg || keep.get('pipe') || 'v-all');
     if (name === 'projects') selectProject(arg ? decode(arg) : keep.get('project'));
     if (!restoring) window.scrollTo(0, 0);
@@ -54,6 +64,11 @@ SCRIPT = r"""
   function askText(kind, box) {
     const ref = box.dataset.ref, brick = box.dataset.brick, branch = box.dataset.branch;
     if (kind === 'ref') return ref;
+    if (kind === 'jupyter') {
+      const run = box.dataset.nbRun, gpu = box.dataset.nbGpu ? ' with a GPU' : '';
+      return `In sc-hub, open run ${run} as a notebook: write it with make_notebook("${run}"), start a JupyterLab `
+        + `session${gpu} with that notebook as the target, and tell me when I can run ./schub-lab jupyter on my laptop.`;
+    }
     if (kind === 'fix') return `In sc-hub, fix step ${ref} (${brick}): <what is wrong and what it should do>. `
       + `Look at it with inspect_step("${ref}"), then use revise_branch (same branch, new revision) with a short reason, `
       + 'show me the plan, and submit it when I confirm.';
@@ -98,7 +113,13 @@ SCRIPT = r"""
         $$(`[data-subview="${name}"]`).forEach(v => { v.hidden = v.dataset.sub !== id; });
         keep.set('sub-' + name, id);
       };
-      buttons.forEach(b => b.addEventListener('click', () => pick(b.dataset.sub)));
+      buttons.forEach(b => b.addEventListener('click', () => {
+        pick(b.dataset.sub);
+        // Runs sections have addresses (#runs/queue): keep the address in step, so a reload
+        // stays here and a link to another section always changes the address.
+        if (name === 'runs') history.replaceState(null, '', '#runs/' + b.dataset.sub);
+      }));
+      pickers[name] = pick;
       pick(keep.get('sub-' + name));
     });
   }
@@ -107,6 +128,54 @@ SCRIPT = r"""
     const found = id && $(sel('data-run', id));
     $$('[data-run]').forEach(r => { r.hidden = r !== found; });
     $('#run-list').hidden = !!found;
+  }
+
+  // Brick code: copied from its template when a Code section opens, lightly colored.
+  const PY = /(#[^\n]*)|("{3}[\s\S]*?"{3}|'[^'\n]*'|"[^"\n]*")|\b(def|return|if|elif|else|for|while|in|not|and|or|is|import|from|as|with|try|except|finally|raise|lambda|class|yield|pass|break|continue|None|True|False)\b|\b(\d+(?:\.\d+)?)\b/g;
+  function fillCode(box) {
+    const pre = $('pre.code', box), tpl = $(sel('data-code-src', box.dataset.code));
+    if (!pre || pre.childNodes.length || !tpl) return;
+    const text = tpl.content.textContent;
+    let last = 0;
+    for (const m of text.matchAll(PY)) {
+      pre.append(text.slice(last, m.index));
+      const span = document.createElement('span');
+      span.className = m[1] ? 'c-com' : m[2] ? 'c-str' : m[3] ? 'c-key' : 'c-num';
+      span.textContent = m[0];
+      pre.append(span);
+      last = m.index + m[0].length;
+    }
+    pre.append(text.slice(last));
+  }
+
+  function loadScript(src, have, done) {
+    if (have()) return done(have());
+    const tag = document.createElement('script');
+    tag.src = src; tag.onload = () => done(have()); tag.onerror = () => done(null);
+    document.head.appendChild(tag);
+  }
+
+  // A run's notebook: nb/<run>.js (scripts load on file:// pages, fetch does not), saved as .ipynb.
+  function downloadNotebook(button) {
+    const id = button.dataset.notebook;
+    loadScript(`nb/${id}.js`, () => window.SCHUB_NB && window.SCHUB_NB[id], data => {
+      if (!data) { button.textContent = 'Notebook unavailable'; return; }
+      const blob = new Blob([JSON.stringify(data, null, 1)], {type: 'application/x-ipynb+json'});
+      const url = URL.createObjectURL(blob), link = document.createElement('a');
+      link.href = url; link.download = (button.dataset.name || id) + '.ipynb';
+      document.body.appendChild(link); link.click(); link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      button.classList.add('done'); setTimeout(() => button.classList.remove('done'), 1500);
+    });
+  }
+
+  function ago() {
+    $$('[data-ago]').forEach(el => {
+      const at = Date.parse(el.dataset.ago);
+      if (!at) return;
+      const minutes = Math.max(0, Math.round((Date.now() - at) / 60000));
+      el.textContent = minutes < 1 ? '(just now)' : minutes < 120 ? `(${minutes} min ago)` : `(${Math.round(minutes / 60)} h ago)`;
+    });
   }
 
   function selectPipe(id) {
@@ -139,15 +208,12 @@ SCRIPT = r"""
       }
     }
     $$('.cellmap:not(.drawn)', panel).forEach(drawMap);
+    $$('details.code[open]', panel).forEach(fillCode);
     if (remember) keep.set('node', key);
   }
 
   function loadPoints(src, key, done) {
-    const have = () => window.SCHUB_PTS && window.SCHUB_PTS[key];
-    if (have()) return done(have());
-    const tag = document.createElement('script');
-    tag.src = src; tag.onload = () => done(have()); tag.onerror = () => done(null);
-    document.head.appendChild(tag);
+    loadScript(src, () => window.SCHUB_PTS && window.SCHUB_PTS[key], done);
   }
 
   // A cell map: subsampled UMAP colored by one obs column; click a legend entry to focus it.
@@ -207,9 +273,11 @@ SCRIPT = r"""
   }
 
   document.addEventListener('click', e => {
+    const nb = e.target.closest('[data-notebook]');
+    if (nb) { downloadNotebook(nb); return; }
     const ask = e.target.closest('[data-ask]');
     if (ask) {
-      const box = ask.closest('.ask'), text = askText(ask.dataset.ask, box);
+      const box = ask.closest('.ask, .nb-box'), text = askText(ask.dataset.ask, box);
       copyText(text).then(ok => {
         const manual = $('textarea.manual', box), note = $('.copied', box);
         if (ok) {
@@ -225,7 +293,10 @@ SCRIPT = r"""
     if (e.target.id === 'runs-more') { runsExpanded = true; keep.set('runs-all', '1'); filterRuns(); return; }
     const project = e.target.closest('[data-project-link]');
     if (project) { location.hash = 'projects/' + project.dataset.projectLink; return; }
-    if (!e.target.closest('details.account')) $$('details.account').forEach(d => { d.open = false; });
+    // Outside the menu, or on one of its links (also when the address does not change): close it.
+    if (!e.target.closest('details.account') || e.target.closest('details.account .menu a')) {
+      $$('details.account').forEach(d => { d.open = false; });
+    }
     const node = e.target.closest('.node[data-key]');
     if (node && !node.classList.contains('ds')) return selectNode(node.dataset.key);
     const pipe = e.target.closest('[data-pipe]');
@@ -252,19 +323,24 @@ SCRIPT = r"""
   });
   window.addEventListener('hashchange', route);
   document.addEventListener('toggle', e => {
-    if (e.target.open) $$('.cellmap:not(.drawn)', e.target).forEach(drawMap);
+    if (!e.target.open) return;
+    $$('.cellmap:not(.drawn)', e.target).forEach(drawMap);
+    if (e.target.matches('details.code')) fillCode(e.target);
   }, true);
 
   const auto = () => keep.get('autorefresh', true) !== 'off';
   const button = $('#autorefresh');
-  const paint = () => { button.textContent = auto() ? 'Auto-refresh on' : 'Auto-refresh off'; button.setAttribute('aria-pressed', String(auto())); };
+  const paint = () => {
+    button.setAttribute('aria-checked', String(auto()));
+    $$('.paused').forEach(p => { p.hidden = auto(); });
+  };
   button.addEventListener('click', () => { keep.set('autorefresh', auto() ? 'off' : 'on', true); paint(); });
   // Not while the student types or reads an opened section (a reload would close it).
   // Filters survive reloads, so only recent typing counts, not a lingering focus.
   let typedAt = 0;
   document.addEventListener('input', () => { typedAt = Date.now(); });
   const busy = () => Date.now() - typedAt < 15000 ||
-    $$('.view.active details[open], #node-panel details[open], details.account[open], .ask textarea.manual:not([hidden])')
+    $$('.view.active details[open], #node-panel details[open], details.account[open], textarea.manual:not([hidden])')
       .some(d => d.getClientRects().length);
   setInterval(() => {
     if (auto() && !document.hidden && !busy()) { keep.set('scroll', String(window.scrollY)); location.reload(); }
@@ -275,7 +351,8 @@ SCRIPT = r"""
   if (st && [...st.options].some(o => o.value === keep.get('run-st'))) st.value = keep.get('run-st');
   setupListings(); setupSubtabs();
   filterRuns();
-  route(); paint();
+  route(); paint(); ago();
+  setInterval(ago, 30000);
   const y = Number(keep.get('scroll') || 0);
   if (y) window.scrollTo(0, y);
   keep.set('scroll', '0');

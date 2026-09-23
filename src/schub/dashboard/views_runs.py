@@ -1,4 +1,5 @@
-"""Runs: a filterable list and one detail view per run (step timeline)."""
+"""Runs: what is happening (numbers, queue, sessions), the history of runs, and one
+detail view per run (step timeline, its notebook)."""
 
 from __future__ import annotations
 
@@ -6,9 +7,12 @@ import csv
 from pathlib import Path
 from typing import Callable
 
+from ..bricks import REGISTRY
 from .collect import BranchInfo, RunView, Snapshot, StepView
-from .html import ask_block, dot, esc, kv, pill, table, warnings
+from .html import ask_block, dot, esc, kv, pill, subtabs, table, warnings
+from .notebooks import code_section, notebook_button
 from .steps import duration
+from .views_activity import metrics, render_queue, render_sessions
 
 DE_TOP = 12
 ImageUrl = Callable[[StepView, str, bool], str | None]
@@ -148,7 +152,8 @@ def _step_card(step: StepView, image_url: ImageUrl, ask: str = "") -> str:
         f'<p class="headline">{esc(step.headline)}</p>{message}{warnings(summary)}'
         f"{figures(step, image_url)}{cell_map(step, image_url, folded=True)}{ask}"
         f"<details><summary>Details</summary>{step_facts(step)}{kv(step.params)}{kv(summary)}{extra}"
-        f'<p class="muted small">Step key {esc(step.key)}</p></details>{log_block(step)}</li>'
+        f'<p class="muted small">Step key {esc(step.key)}</p></details>{code_section(step.brick, step.code_id)}'
+        f"{log_block(step)}</li>"
     )
 
 
@@ -164,12 +169,28 @@ def _safe_card(step: StepView, image_url: ImageUrl, ask: str = "") -> str:
         )
 
 
-def run_detail(run: RunView, image_url: ImageUrl, info: BranchInfo | None = None) -> str:
+def _notebook(run: RunView, notebooks: frozenset[str]) -> str:
+    """Download the run as a notebook, or have the assistant open it in JupyterLab on the cluster."""
+    button = notebook_button(run, notebooks, "Download notebook (.ipynb)")
+    gpu = any(s.brick in REGISTRY and REGISTRY[s.brick].uses_gpu for s in run.steps)
+    return (
+        f'<div class="nb-box" data-nb-run="{esc(run.run_id)}" data-nb-gpu="{"1" if gpu else ""}">'
+        '<div><b>Notebook</b> <span class="muted small">every step with the exact code and parameters it ran with; '
+        "change a step and run it again from there</span></div>"
+        f'<div class="ask-buttons">{button}<button type="button" data-ask="jupyter">Open in JupyterLab on the cluster</button></div>'
+        '<p class="muted small copied" hidden>Copied: paste it into Codex or Claude.</p>'
+        '<textarea class="manual" readonly hidden rows="3" aria-label="Request to copy"></textarea></div>'
+    )
+
+
+def run_detail(run: RunView, image_url: ImageUrl, info: BranchInfo | None = None,
+               notebooks: frozenset[str] = frozenset()) -> str:
     return (
         f'<div class="run-detail" data-run="{esc(run.run_id)}" hidden>'
-        f'<a class="back" href="#runs">← All runs</a>'
+        f'<a class="back" href="#runs/history">← All runs</a>'
         f'<div class="run-title"><h2>{esc(run.label)}</h2>{pill(run.state)}</div>'
         f'<p class="muted">Run <code>{esc(run.run_id)}</code> · dataset {esc(run.dataset)} · created {esc(run.created_at[:16].replace("T", " "))}</p>'
+        f"{_notebook(run, notebooks)}"
         f'<ol class="timeline">{"".join(_safe_card(s, image_url, _ask(run, s, info)) for s in run.steps)}</ol></div>'
     )
 
@@ -186,17 +207,25 @@ def _row(run: RunView) -> str:
     )
 
 
-def render_runs(snap: Snapshot, image_url: ImageUrl) -> str:
-    states = sorted({r.state for r in snap.runs})
+def _history(snap: Snapshot) -> str:
+    states = sorted({r.state for r in snap.runs} | {"COMPLETED", "FAILED"})  # the metrics filter by these
     options = '<option value="">All states</option>' + "".join(f'<option value="{esc(s)}">{esc(s.lower())}</option>' for s in states)
     rows = table(("Run", "Dataset", "State", "Steps", "Latest result"), [_row(r) for r in snap.runs], "runs clickable") \
         if snap.runs else '<p class="empty">No runs yet. Ask your assistant to plan and submit a branch.</p>'
     more = f'<button class="more" id="runs-more" type="button" hidden>Show all {len(snap.runs)} runs</button>'
+    return (f'<div class="toolbar" id="run-filters">'
+            f'<input id="run-search" type="search" placeholder="Filter runs, projects, results" aria-label="Filter runs">'
+            f'<select id="run-state" aria-label="State">{options}</select></div>{rows}{more}')
 
 
+def render_runs(snap: Snapshot, image_url: ImageUrl) -> str:
+    queued = sum(j.name.startswith("schub-") for j in snap.jobs)
+    sections = subtabs("runs", [
+        ("history", "History", len(snap.runs), _history(snap)),
+        ("queue", "Queue", queued, render_queue(snap)),
+        ("sessions", "Sessions", len(snap.sessions), render_sessions(snap)),
+    ])
     return (
-        f'<div id="run-list"><div class="toolbar" id="run-filters">'
-        f'<input id="run-search" type="search" placeholder="Filter runs, projects, results" aria-label="Filter runs">'
-        f'<select id="run-state" aria-label="State">{options}</select></div>{rows}{more}</div>'
-        + "".join(run_detail(r, image_url, snap.branches.get(f"{r.project}/{r.branch}")) for r in snap.runs)
+        f'<div id="run-list">{metrics(snap)}{sections}</div>'
+        + "".join(run_detail(r, image_url, snap.branches.get(f"{r.project}/{r.branch}"), snap.notebooks) for r in snap.runs)
     )

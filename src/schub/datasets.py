@@ -30,6 +30,12 @@ class DatasetEntry(Frozen):
     size_mb: float = 0.0
 
 
+def dataset_label(path: str) -> str:
+    """The dataset's name: its folder for data.h5ad / fastq.yaml, else the file name."""
+    p = Path(path)
+    return p.parent.name if p.name in (DATA_FILE, FASTQ_FILE) else p.stem
+
+
 def _size_mb(path: Path) -> float:
     return round(path.stat().st_size / 1e6, 1) if path.exists() else 0.0
 

@@ -75,3 +75,11 @@ def headline(brick: str, summary: Mapping[str, Any] | None) -> str:
         return HEADLINES.get(brick, lambda _s: "")(summary)
     except (TypeError, ValueError, AttributeError):
         return ""
+
+
+def duration(seconds: float | None) -> str:
+    if seconds is None:
+        return ""
+    minutes, secs = divmod(int(seconds), 60)
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h {minutes:02d}m" if hours else (f"{minutes}m {secs:02d}s" if minutes else f"{secs}s")

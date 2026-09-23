@@ -14,7 +14,7 @@ from .fastq import MANIFEST_FILE, FastqError, detect_samples, fastq_profile, wri
 from .h5ad_profile import DatasetProfile, profile_h5ad
 from .headlines import headline
 from .library import celltypist_dirs, find_dataset
-from .notebook import write_notebook
+from .notebook import load_run, write_notebook
 from .planner import DatasetOverrides, Plan, StepRequest, build_plan
 from .project_env import EnvError, EnvJob, built, check_packages, remove_env, slug, submit_env_build
 from .projects import BranchSpec, Idea, ProjectError, ProjectMeta, ProjectStore, ProjectSummary
@@ -260,11 +260,20 @@ class Hub:
         return self.store.cancel(_check_id(run_id, RUN_ID, "run_id"))
 
     def notebook(self, run_id: str) -> NotebookInfo:
+        """The run as a notebook: every step with the exact code and parameters it ran with."""
         run_id = _check_id(run_id, RUN_ID, "run_id")
-        path = write_notebook(self.settings.root / "notebooks", self.store.load(run_id), self.store.results(run_id))
+        manifest = self.store.load(run_id)
+        question = ""
+        if manifest.project:
+            try:
+                question = self.projects.meta(manifest.project).question
+            except ProjectError:
+                question = ""
+        path = write_notebook(self.settings.root / "notebooks", load_run(manifest, question))
         how = (
             f"start_session(kind='jupyter', target='{path.relative_to(self.settings.root)}') starts JupyterLab "
-            "on a compute node; then ./schub-lab on the laptop opens it."
+            "on a compute node (gpu=True for scVI steps); then ./schub-lab jupyter on the laptop opens it. "
+            "Each step can be re-run there with changed code or parameters; its results go to notebooks/work/."
         )
         return NotebookInfo(path=str(path), how_to_open=how)
 

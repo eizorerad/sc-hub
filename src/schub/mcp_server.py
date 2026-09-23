@@ -51,8 +51,10 @@ Defaults (the MBZUAI single-cell course, CB703/803: Python, scverse, scvi-tools)
 - Condition DE with replicates: pseudobulk_de; memento_de adds differential
   variability. Exploratory cluster markers are not replicate-aware DE.
 - Interactive work: export_cellxgene + start_session(kind='cellxgene'), or
-  start_session(kind='jupyter', gpu=true) for scvi-tools model development;
-  make_notebook writes a starter notebook. Stop sessions when done.
+  start_session(kind='jupyter', gpu=true) for scvi-tools model development.
+  make_notebook turns a run into a notebook: every step with the exact brick code
+  and parameters, re-runnable from any step (open it with start_session kind=jupyter,
+  target=<its path>). Stop sessions when done.
 
 Rules:
 - Never guess scientific metadata (condition, replicate, batch columns, reference
@@ -147,7 +149,8 @@ def build_server(hub: Hub) -> MCPServer:
 
     @mcp.tool()
     def make_notebook(run_id: str) -> NotebookInfo:
-        """Write a Jupyter notebook that loads the run's outputs (and scvi-tools model), for manual work."""
+        """Write the run as a Jupyter notebook: each step with the exact code (the brick) and parameters it
+        ran with, re-runnable from any step on the cluster (results go to notebooks/work/, never the cache)."""
         return call("make_notebook", {"run_id": run_id}, lambda: hub.notebook(run_id))
 
     @mcp.tool()

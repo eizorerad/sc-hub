@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from ..headlines import duration  # noqa: F401 - re-exported for the views
 from ..state import Frozen
 from ..stepfile import SUCCESS
 
@@ -103,14 +104,6 @@ def _size(path: Path) -> int:
 
 def trained_model_size_mb(folder: Path) -> float:
     return round(sum(_size(p) for p in folder.rglob("*")) / 1e6, 1)
-
-
-def duration(seconds: float | None) -> str:
-    if seconds is None:
-        return ""
-    minutes, secs = divmod(int(seconds), 60)
-    hours, minutes = divmod(minutes, 60)
-    return f"{hours}h {minutes:02d}m" if hours else (f"{minutes}m {secs:02d}s" if minutes else f"{secs}s")
 
 
 def slurm_seconds(text: str) -> int | None:

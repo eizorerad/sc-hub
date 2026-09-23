@@ -38,9 +38,20 @@ Interactive work runs on compute nodes: `start_session` opens JupyterLab
 and `./schub-lab` on the laptop tunnels to it. A project can add its own
 software for notebook work (`add_project_packages`: pip packages layered on the
 shared environment with uv, conda-forge/bioconda tools with micromamba), which
-appears as the Jupyter kernel "sc-hub: <project>". The avatar menu of the
-dashboard opens a cluster overview: Lustre quota, home usage, per-user job
-limits and what is in use, your jobs with CPU/RAM/GPU, partition load, logins. Seurat `.rds` objects are
+appears as the Jupyter kernel "sc-hub: <project>".
+
+Every step's code is visible: the dashboard shows the brick's implementation
+next to its parameters, and any run downloads as a notebook (`make_notebook`
+on the cluster) with each step's exact code and parameters. In JupyterLab on
+the cluster a step can be changed and re-run; the steps after it read the new
+result, earlier ones come from the pipeline's cache, and nothing is written
+into the cache.
+
+The dashboard starts at Projects (the root: question, datasets, branches),
+then Pipelines, Runs (history, queue, interactive sessions) and Library. The
+sc-hub square at the top left is the account menu: the cluster overview (Lustre
+quota, home usage, per-user job limits and what is in use, your jobs with
+CPU/RAM/GPU, partition load, logins), sessions, the last update and auto-refresh. Seurat `.rds` objects are
 converted with `import_seurat`; Seurat is for compatibility, not the default.
 
 Starter assets fetched by bootstrap: 10x PBMC 3k, Kang 2018 (IFN-beta
@@ -188,10 +199,11 @@ branches share their common prefix: `latent-10` (from `main` with
 ## Dashboard on a weak laptop
 
 `schub dashboard` (about 3 s on the login node) writes `view/`: one static
-`index.html` (about 100 KB) plus small images. Six views: overview, pipelines,
-runs, jobs, library, projects. Pick a branch to see its graph, click a step to
-see its params, job, resources, timing, log tail, figures and results; open a run
-for its step timeline and top DE genes. Plain HTML, CSS and 3 KB of vanilla JS:
+`index.html` plus small images, cell maps and run notebooks. Four tabs:
+projects, pipelines, runs, library (and the cluster overview in the menu). Pick
+a branch to see its graph, click a step to see its params, code, job, resources,
+timing, log tail, figures and results; open a run for its step timeline, top DE
+genes and its notebook. Plain HTML, CSS and a few KB of vanilla JS:
 no server, no framework, no external requests. `./schub-view` mirrors it every
 60 s over ssh + rsync (`schub-view.cmd` with scp on Windows, skipping the
 download when nothing changed); the page refreshes itself, keeps your place and

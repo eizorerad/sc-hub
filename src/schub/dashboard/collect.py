@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ..datasets import DatasetEntry
+from ..datasets import DatasetEntry, dataset_label
 from ..h5ad_profile import UnsupportedFile
 from ..headlines import headline
 from ..library import AssetLocation, celltypist_dirs, find_tool, kallisto_ref, library_mode
@@ -48,6 +48,7 @@ class StepView(Frozen):
     params: dict[str, Any] = {}
     summary: dict[str, Any] | None = None
     step_dir: str = ""
+    code_id: str = ""  # the brick code this step ran with (differs after an sc-hub update)
     extras: StepExtras = StepExtras()
 
 
@@ -61,6 +62,7 @@ class RunView(Frozen):
     steps: tuple[StepView, ...]
     revision: int | None = None
     inputs: tuple[str, ...] = ()  # every dataset the run read (merge steps add more)
+    schub_version: str = ""
 
     @property
     def label(self) -> str:
@@ -133,12 +135,7 @@ class Snapshot(Frozen):
     overview: Overview | None = None
     nodes: tuple[NodeView, ...]
     steps_by_key: dict[str, StepView] = {}
-
-
-def dataset_label(path: str) -> str:
-    """The dataset's name: its folder for data.h5ad / fastq.yaml, else the file name."""
-    p = Path(path)
-    return p.parent.name if p.name in ("data.h5ad", "fastq.yaml") else p.stem
+    notebooks: frozenset[str] = frozenset()  # runs with nb/<run_id>.js (set when the page is built)
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:
@@ -189,6 +186,7 @@ def _run_view(manifest: RunManifest, queue: dict[str, str], queue_ok: bool, with
                 index=record.index, brick=record.brick, key=record.step_key, state=state,
                 job_id=record.job_id, headline=headline(record.brick, summary), message=message,
                 params=step_file.get("params", {}), summary=summary, step_dir=str(step_dir),
+                code_id=str(step_file.get("code_id", "")),
                 extras=step_extras(step_dir, with_log=with_logs and state != "PENDING"),
             )
         )
@@ -197,7 +195,7 @@ def _run_view(manifest: RunManifest, queue: dict[str, str], queue_ok: bool, with
         run_id=manifest.run_id, project=manifest.project, branch=manifest.branch,
         created_at=manifest.created_at, dataset=dataset_label(manifest.dataset),
         state=run_state([s.state for s in steps]), steps=tuple(steps), revision=manifest.revision,
-        inputs=(dataset_label(manifest.dataset), *extra),
+        inputs=(dataset_label(manifest.dataset), *extra), schub_version=manifest.schub_version,
     )
 
 

@@ -9,10 +9,10 @@ import pandas as pd
 import pytest
 
 from schub.dashboard import build_dashboard
-from schub.dashboard.collect import NodeView, RunView, StepView, collect, run_state, step_state
+from schub.dashboard.collect import NodeView, RunView, Snapshot, StepView, collect, run_state, step_state
 from schub.dashboard.lineage import pipeline_views, render_lineage, view_id
 from schub.dashboard.steps import StepExtras, duration, slurm_seconds, step_extras
-from schub.dashboard.views_main import render_jobs
+from schub.dashboard.views_activity import render_queue, status_chip
 from schub.dashboard.views_runs import run_detail
 from schub.datasets import write_catalog_entry
 from schub.projects import BranchSpec
@@ -75,8 +75,12 @@ def test_snapshot_merges_runs_and_planned_branches(hub, two_branches):
 def test_page_has_every_view_selectors_and_step_templates(hub, two_branches, settings):
     info = build_dashboard(hub)
     page = Path(info.path).read_text()
-    for view in ("overview", "pipelines", "runs", "jobs", "library", "projects"):
+    for view in ("projects", "pipelines", "runs", "library", "cluster"):
         assert f'data-view="{view}"' in page
+    tabs = re.findall(r'data-tab="([a-z]+)"', page)
+    assert tabs == ["projects", "pipelines", "runs", "library"]  # projects first: they are the root
+    assert 'class="account"' in page and 'id="autorefresh"' in page and 'data-ago="' in page
+    assert page.index('class="account"') < page.index('class="tabs"')  # the sc-hub square is the menu
     assert 'data-pipe="v-ifn-main"' in page and 'data-pipe-view="v-ifn-res-2"' in page
     assert f'data-run="{two_branches.run_id}"' in page and 'id="run-search"' in page
     qc_key = two_branches.steps[0].step_key
@@ -204,7 +208,7 @@ def test_jobs_view_shows_progress_and_plain_reasons():
 
     snap = Snapshot(generated_at="t", user="u", library_mode="m", env_id="e", versions={}, jobs=jobs, runs=(),
                     projects=(), datasets=(), models=(), nodes=())
-    html = render_jobs(snap)
+    html = render_queue(snap)
     assert "width:50%" in html and "max 2 running jobs" in html and "1 other jobs" in html
 
 
@@ -253,7 +257,7 @@ def test_cell_map_points_are_small_scaled_and_cached(tmp_path, monkeypatch):
 
 def test_library_shows_references_tools_and_fastq(hub, settings):
     from schub.dashboard.collect import collect
-    from schub.dashboard.views_main import render_library
+    from schub.dashboard.views_library import render_library
 
     tool = settings.library / "tools" / "cellxgene" / "1.3.0" / "bin" / "python"
     tool.parent.mkdir(parents=True)
@@ -269,7 +273,7 @@ def test_library_shows_references_tools_and_fastq(hub, settings):
 
 def test_overview_lists_sessions_with_how_to_open(hub, settings, cluster):
     from schub.dashboard.collect import collect
-    from schub.dashboard.views_main import render_overview
+    from schub.dashboard.views_activity import render_sessions
     from schub.sessions import session_dir, write_connection
 
     info = hub.start_session("jupyter", hours=3)
@@ -277,7 +281,7 @@ def test_overview_lists_sessions_with_how_to_open(hub, settings, cluster):
     write_connection(session_dir(settings, info.session_id), "ws-l1-004", 40999, "/lab?token=t")
     snap = collect(hub)
     assert snap.sessions[0].node == "ws-l1-004"
-    html = render_overview(snap)
+    html = render_sessions(snap)
     assert "JupyterLab" in html and "./schub-lab jupyter" in html and "token" not in html
 
 
@@ -334,3 +338,48 @@ def test_cluster_view_renders_limits_storage_and_load():
     assert "2 of 2 (100%)" in html and 'class="bar bad"' in html and "no per-user limit" in html
     assert "waiting for a free job slot" in html and "2.0 TB of 3.0 TB" in html and "lo-02" in html
     assert "10 of 100" in html
+
+
+def test_runs_carry_their_notebook_and_steps_show_their_code(hub, two_branches, settings, cluster):
+    info = build_dashboard(hub)
+    page = Path(info.path).read_text()
+    run_id = two_branches.run_id
+    script = settings.view_dir / "nb" / f"{run_id}.js"
+    notebook = json.loads(script.read_text().split("]=", 1)[1].rstrip(";\n"))
+    text = json.dumps(notebook)
+    assert "def qc_filter(" in text and "nb.io(2)" in text and "ifn/main#1" in text
+    assert f'data-notebook="{run_id}"' in page and 'data-name="ifn-main-r1"' in page and 'data-ask="jupyter"' in page
+    assert '<template data-code-src="qc_filter">' in page and 'data-code="normalize_embed"' in page
+    assert "def qc_filter(" in page and "earlier version of this code" not in page
+    before = script.stat().st_mtime_ns
+    partial = script.with_name(f".{script.name}.abc123")  # another build's file, not yet renamed
+    partial.write_text("x")
+    (script.parent / "index.json").write_text("{}")  # left by an earlier version
+    build_dashboard(hub)
+    assert script.stat().st_mtime_ns == before  # unchanged notebooks are not rewritten
+    assert partial.exists() and not (script.parent / "index.json").exists()
+    (settings.runs_dir / run_id / "manifest.json").unlink()
+    build_dashboard(hub)
+    assert not script.exists()  # notebooks of runs no longer shown are removed
+
+
+def test_status_chip_says_what_runs_now():
+    base = dict(generated_at="t", user="u", library_mode="m", env_id="e", versions={}, runs=(), projects=(),
+                datasets=(), models=(), nodes=())
+    idle = Snapshot(jobs=(), **base)
+    assert "nothing running" in status_chip(idle)
+    busy = Snapshot(jobs=(
+        QueueJob(job_id="1", name="schub-abc-01-qc", state="RUNNING", partition="ws-ia", elapsed="1:00", time_limit="2:00", reason="None"),
+        QueueJob(job_id="2", name="schub-abc-02-norm", state="PENDING", partition="ws-ia", elapsed="0:00", time_limit="2:00", reason="Dependency"),
+        QueueJob(job_id="3", name="other", state="RUNNING", partition="ws-ia", elapsed="1:00", time_limit="2:00", reason="None"),
+    ), **base)
+    chip = status_chip(busy)
+    assert "1 running · 1 queued" in chip and 'href="#runs/queue"' in chip
+    assert "queue unreadable" in status_chip(idle.model_copy(update={"jobs_error": "down"}))
+
+
+def test_code_of_a_step_run_with_older_code_is_flagged():
+    from schub.dashboard.notebooks import code_section
+
+    assert "earlier version of this code" in code_section("qc_filter", "0" * 16)
+    assert "earlier version" not in code_section("qc_filter", "") and code_section("no_such", "") == ""

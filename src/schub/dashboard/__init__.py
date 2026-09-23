@@ -11,6 +11,7 @@ from typing import Any
 
 from ..state import Frozen
 from .collect import StepView, collect
+from .notebooks import write_notebooks
 from .page import render_page
 from .points import write_points
 
@@ -102,6 +103,7 @@ class _Images:
 def build_dashboard(hub: Any, out: Path | None = None) -> DashboardInfo:
     view = out or hub.settings.view_dir
     snapshot = collect(hub)
+    snapshot = snapshot.model_copy(update={"notebooks": frozenset(write_notebooks(view, snapshot, _write))})
     full_keys = {s.key for run in snapshot.runs[:RECENT_FULL_IMAGES] for s in run.steps}
     map_keys = {s.key for run in snapshot.runs[:RECENT_CELL_MAPS] for s in run.steps}
     images = _Images(view, full_keys, map_keys)
