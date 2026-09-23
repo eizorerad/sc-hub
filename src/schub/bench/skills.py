@@ -33,8 +33,17 @@ def _parse(text: str) -> tuple[dict[str, str], str]:
     return head, match["body"]
 
 
+GENERATED = {"checks": "The checks a cell can ask for and their parameters (generated from the registry)."}
+
+
+def _generated(name: str) -> str:
+    from .checks import describe
+
+    return describe() if name == "checks" else ""
+
+
 def list_skills(folder: Path = SKILLS_DIR) -> list[SkillInfo]:
-    found = []
+    found = [SkillInfo(name=name, description=text) for name, text in GENERATED.items()]
     for path in sorted(folder.glob("*.md")):
         head, _ = _parse(path.read_text())
         found.append(SkillInfo(name=path.stem, description=head.get("description", "")))
@@ -44,6 +53,8 @@ def list_skills(folder: Path = SKILLS_DIR) -> list[SkillInfo]:
 def get_skill(name: str, folder: Path = SKILLS_DIR) -> str:
     if not NAME.fullmatch(name):
         raise SkillError(f"'{name}' is not a skill name")
+    if name in GENERATED:
+        return _generated(name).strip()
     path = folder / f"{name}.md"
     if not path.is_file():
         available = ", ".join(s.name for s in list_skills(folder))

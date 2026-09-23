@@ -152,6 +152,7 @@ class Journal:
         verdict: str | None = None,
         audience: str = "both",
         actor: Actor | None = None,
+        unresolved_numbers: Sequence[str] = (),
     ) -> NoteEntry:
         text, reverses_if = text.strip(), reverses_if.strip()
         self._check_note(kind, text, because, reverses_if, verdict)
@@ -159,7 +160,7 @@ class Journal:
         note = NoteEntry(
             kind=kind, ref=self.ref(nid), project=self.project, nid=nid, text=text,
             because=tuple(because), reverses_if=reverses_if, verdict=verdict, audience=audience,
-            actor=actor or Actor(), created=self.now(),
+            actor=actor or Actor(), created=self.now(), unresolved_numbers=tuple(unresolved_numbers),
         )
         if not create_json_exclusive(self.notes_dir / f"{nid}.json", note.model_dump(mode="json")):
             raise JournalError(f"note {nid} already exists")
@@ -180,6 +181,22 @@ class Journal:
             project, record_id = parse_ref(ref)
             if project != self.project or not self.exists(record_id):
                 raise JournalError(f"{ref} is not in this journal")
+
+    def evidence(self, refs: Sequence[str]) -> list[str]:
+        """The text of the cited records: cell outputs and check messages, note texts."""
+        found: list[str] = []
+        for ref in refs:
+            project, record_id = parse_ref(ref)
+            if project != self.project:
+                continue
+            if record_id.startswith("c"):
+                cell = self.cell(record_id)
+                if cell is not None:
+                    found += [o.text for o in cell.outputs] + [c.message for c in cell.check_results]
+            else:
+                note = self.note(record_id)
+                found += [note.text] if note is not None else []
+        return found
 
     def exists(self, record_id: str) -> bool:
         if not (re.fullmatch(CID_PATTERN, record_id) or re.fullmatch(NID_PATTERN, record_id)):

@@ -176,3 +176,38 @@ def test_a_second_runner_refuses_to_start(bench: Settings) -> None:
     write_json_atomic(bench.bench_dir / "workbench.json",
                       {"state": "running", "job_id": "1", "heartbeat": "2020-01-01T00:00:00.000+00:00"})
     assert not Runner(bench, job_id="2").other_runner_alive()
+
+
+def test_kernels_have_bench_and_slurm_cells_submit_jobs(bench: Settings, monkeypatch) -> None:
+    fake_bin = Path(__file__).parent / "fake_bin"
+    monkeypatch.setenv("PATH", f"{fake_bin}:{__import__('os').environ['PATH']}")
+    monkeypatch.setenv("SCHUB_ROOT", str(bench.root))
+    thread = start(Runner(bench, job_id="910"))
+    helper = wait_final(bench, submit(bench, "print(bench.work_dir().name)"))
+    journal = journal_of(bench)
+    cid = journal.allocate("c")
+    Inbox(bench.bench_dir).submit(CellRequest(
+        project="demo", cid=cid, code="%%slurm --time 10m\nprint(adata)", why="send a job", expect="a job id",
+        checks=({"name": "file", "params": {"path": "work/never.txt"}},), created=stamp()))
+    sent = wait_final(bench, cid)
+    stop(bench, thread)
+    assert helper.status == "ok" and helper.outputs[0].text.strip() == "work"
+    assert sent.status == "ok" and [(j.job_id, j.state) for j in sent.jobs] == [("4242", "PENDING")]
+    assert "Submitted Slurm job 4242" in sent.outputs[0].text and "kernel names: adata" in sent.outputs[0].text
+    assert sent.check_results == ()  # the job runs the checks when it ends
+    job_dirs = list((bench.projects_dir / "demo" / "jobs").iterdir())
+    assert len(job_dirs) == 1 and (job_dirs[0] / "cell.py").read_text().strip() == "print(adata)"
+    assert sent.files == ()  # the snapshot is bench bookkeeping, not an output
+
+
+def test_cell_checks_run_after_the_cell(bench: Settings) -> None:
+    thread = start(Runner(bench, job_id="911"))
+    journal = journal_of(bench)
+    cid = journal.allocate("c")
+    Inbox(bench.bench_dir).submit(CellRequest(
+        project="demo", cid=cid, code="open('t.csv', 'w').write('gene,lfc\\nA,1\\n')", why="w", expect="a table",
+        checks=({"name": "table_columns", "params": {"path": "work/t.csv", "columns": ["gene", "pvalue"]}},),
+        created=stamp()))
+    entry = wait_final(bench, cid)
+    stop(bench, thread)
+    assert entry.status == "ok" and [(c.name, c.status) for c in entry.check_results] == [("table_columns", "fail")]

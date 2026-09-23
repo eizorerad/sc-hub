@@ -49,6 +49,7 @@ def compact(entry: CellEntry | NoteEntry, max_chars: int = 1500, for_agent: bool
             "ref": entry.ref, "kind": entry.kind, "created": entry.created, "audience": entry.audience,
             "text": HUMAN_ONLY if hidden else _trim(entry.text, max_chars), "because": list(entry.because),
             "reverses_if": entry.reverses_if, "verdict": entry.verdict, "by": entry.actor.client or entry.actor.kind,
+            "unresolved_numbers": list(entry.unresolved_numbers),
         }
     per_output = max(200, max_chars // max(1, len(entry.outputs)))
     return {

@@ -6,6 +6,8 @@
 - A runner that is gone (its job ended) left claimed cells: sweep them (lost / back
   to the inbox), so the journal never shows a cell "running" forever.
 - Cells wait in the inbox and no workbench job exists: start one.
+- %%slurm jobs that Slurm ended without a result (killed, time limit, out of memory):
+  record that in their cell's journal entry.
 - Otherwise idle for dormant_after_h: let the chain lapse (the next cell re-arms it).
 """
 
@@ -20,6 +22,7 @@ from ..state import Frozen
 from .clock import Clock, stamp
 from .fsio import write_json_atomic
 from .inbox import Inbox
+from .jobs import reap
 from .runner import Runner
 from .workbench import WORKBENCH, Workbench
 
@@ -41,6 +44,9 @@ def check(settings: Settings, slurm: Slurm, own_job_id: str | None = None, now: 
     swept = Runner(settings, now=now, job_id=f"watchdog-{own_job_id or os.getpid()}", slurm=slurm).sweep()
     if swept:
         actions.append(f"swept {swept} cell(s) a dead workbench left behind")
+    ended = reap(settings, slurm)
+    if ended:
+        actions.append(f"recorded {len(ended)} job(s) that ended without a result: {', '.join(ended)}")
     waiting = inbox.pending()
     if waiting and not has_job:
         job_id = bench.submit_workbench()

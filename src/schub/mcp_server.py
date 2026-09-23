@@ -41,8 +41,14 @@ run(project, code, why, expect) runs a cell (Python; %%bash for shell):
   cells until the kernel restarts; files persist always, so save what matters.
 - Status "queued" or "running": call wait(ref). Never run the same code again.
 - Try things on a small subset (a twin of the dataset) first, then the full data.
-- Heavy or long work (GPU, many hours, big memory) goes to a Slurm job, not the
-  kernel; read skills('mbzuai_slurm') for the limits.
+- Heavy or long work (GPU, many hours, big memory) goes to a Slurm job: start the
+  cell with %%slurm --gpus 1 --time 6h (skills('slurm_jobs')). It returns at once;
+  the job's state, files and checks land in the same journal entry when it ends.
+- In cells, `bench.fetch(url)` downloads data with a recorded checksum
+  (skills('fetching_data')) and `bench.run_brick(...)` runs sc-hub's checked
+  single-cell steps (skills('bricks_library')).
+- run(..., checks=[...]) validates what a cell produced (skills('checks')). A failed
+  check marks the result: do not build on it until it passes.
 Record reasoning with note(): registration before a deciding test; decision with
 because=[cell refs] and reverses_if; finding with because; error for your own
 mistakes. Before you stop, handoff(project, text, disposition, next_action).

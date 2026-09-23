@@ -172,3 +172,14 @@ def test_figures_reach_clients_that_show_images(server, bench: Settings) -> None
     assert [c.type for c in claude.content] == ["text", "image"] and claude.structured_content["status"] == "ok"
     codex = call(server, "wait", {"ref": ref})
     assert [c.type for c in codex.content] == ["text"]
+
+
+def test_run_takes_checks_and_the_checks_skill_lists_them(server, bench: Settings) -> None:
+    ok(call(server, "create_project", {"project": "p", "question": "q"}))
+    ok(call(server, "run", {"project": "p", "code": "1", "why": "w", "expect": "e",
+                            "checks": [{"name": "file", "params": {"path": "work/x.csv"}}]}))
+    [request] = Inbox(bench.bench_dir).pending()
+    assert request.checks[0].name == "file"
+    text = ok(call(server, "skills", {"name": "checks"}))["text"]
+    assert "`perturbation(" in text and "`de_design(" in text
+    assert "checks" in [s["name"] for s in ok(call(server, "skills"))["skills"]]

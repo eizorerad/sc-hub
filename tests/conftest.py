@@ -102,6 +102,7 @@ class FakeCluster:
         self.sacct_down = False
         self.recently_finished: dict[str, str] = {}
         self.calls: list[list[str]] = []
+        self.comments: dict[str, str] = {}
 
     def _ok(self, args: Sequence[str], out: str = "") -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(list(args), 0, out, "")
@@ -123,6 +124,9 @@ class FakeCluster:
             line.split("=", 1)[1] for line in script.splitlines() if line.startswith("#SBATCH --job-name=")
         )
         self.jobs[job_id] = "PENDING"
+        comment = next((line.split("=", 1)[1] for line in script.splitlines() if line.startswith("#SBATCH --comment=")), "")
+        if comment:
+            self.comments[job_id] = comment
         return self._ok(args, f"{job_id}\n")
 
     def _sacct(self, args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -132,6 +136,9 @@ class FakeCluster:
         return self._ok(args, "".join(f"{i}|{self.jobs[i]}\n" for i in ids if i in self.jobs))
 
     def _squeue(self, args: list[str]) -> subprocess.CompletedProcess[str]:
+        if "--me" in args and args[args.index("-o") + 1] == "%i|%k":
+            rows = [f"{i}|{self.comments.get(i, '')}\n" for i, s in self.jobs.items() if s in self.ACTIVE]
+            return self._ok(args, "".join(rows))
         if "--me" in args:
             wide = args[args.index("-o") + 1].count("|") >= 5
             extra = "|0:42|None|ws-ia|1:00:00" if wide else ""

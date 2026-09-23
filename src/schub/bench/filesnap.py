@@ -14,7 +14,7 @@ from pathlib import Path
 
 from .models import FileChange
 
-SKIP_DIRS = frozenset({"journal", ".ipynb_checkpoints", "__pycache__", "scratch", ".git", "envs", "tmp",
+SKIP_DIRS = frozenset({"journal", "jobs", ".ipynb_checkpoints", "__pycache__", "scratch", ".git", "envs", "tmp",
                        ".cache", "node_modules", ".venv"})
 
 

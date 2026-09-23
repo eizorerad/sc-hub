@@ -157,6 +157,10 @@ class Hub:
 
     # ---- planning & execution ------------------------------------------
 
+    def plan_context(self) -> PlanContext:
+        """What brick checks need to know (models, limits, code identities, libraries)."""
+        return self._context()
+
     def _context(self) -> PlanContext:
         return PlanContext(
             celltypist_dirs=celltypist_dirs(self.settings),

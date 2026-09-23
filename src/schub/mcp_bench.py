@@ -16,7 +16,7 @@ from mcp.types import CallToolResult, ImageContent, TextContent, ToolAnnotations
 from .audit import audited
 from .bench.clients import ClientProfile, actor_for, profile_for
 from .bench.files import FileView, view
-from .bench.models import Actor, Checkpoint, NoteEntry
+from .bench.models import Actor, Checkpoint, CheckSpec, NoteEntry
 from .bench.results import CellResult, trimmed
 from .bench.service import BenchService
 from .bench.skills import SkillInfo, get_skill, list_skills
@@ -126,15 +126,17 @@ def register_bench_tools(mcp: MCPServer, hub: Hub, bench: BenchService) -> None:
 
     @mcp.tool(annotations=RUN)
     async def run(project: str, code: str, why: str, expect: str, setup: bool = False,
-                  data_scope: Scope = "unknown", ctx: Context = None) -> CellResult:  # type: ignore[assignment]
-        """Run a cell (Python; %%bash for shell) in the project's live kernel on a compute node.
-        `why`: what the cell is for; `expect`: what you expect to see. `setup`: a cell to replay after a
-        kernel restart (imports, loading data). `data_scope`: twin or full data. Returns the outputs, or
-        status "queued"/"running" with a ref: then call wait(ref), never run the same code again."""
+                  data_scope: Scope = "unknown", checks: list[CheckSpec] | None = None,
+                  ctx: Context = None) -> CellResult:  # type: ignore[assignment]
+        """Run a cell (Python; %%bash for shell; %%slurm to send it as a Slurm job) in the project's live
+        kernel on a compute node. `why`: what the cell is for; `expect`: what you expect to see. `setup`: a
+        cell to replay after a kernel restart. `data_scope`: twin or full data. `checks`: validations of
+        what the cell produced (skills('checks')). Returns the outputs, or status "queued"/"running" with a
+        ref: then call wait(ref), never run the same code again."""
         actor, profile = _client(ctx)
-        args = {"project": project, "why": why[:200], "client": actor.client}
-        result = await acall("run", args, lambda: bench.run(project, code, why, expect, setup=setup,
-                                                             data_scope=data_scope, actor=actor,
+        args = {"project": project, "why": why[:200], "client": actor.client, "checks": len(checks or [])}
+        result = await acall("run", args, lambda: bench.run(project, code, why, expect, checks=checks or (),
+                                                             setup=setup, data_scope=data_scope, actor=actor,
                                                              wait_s=profile.run_wait_s))
         return answer(result, profile, hub.settings.projects_dir)  # type: ignore[return-value]
 
@@ -211,6 +213,6 @@ def register_bench_tools(mcp: MCPServer, hub: Hub, bench: BenchService) -> None:
 
     @mcp.tool(annotations=WRITE)
     def stop(target: str) -> str:
-        """Interrupt a running cell ('project#c0007'), or 'workbench' to stop the workbench now and free
-        its job slot (its variables are lost; files stay)."""
+        """Interrupt a running cell ('project#c0007'), cancel a job the bench sent (its job id), or
+        'workbench' to stop the workbench now and free its job slot (variables are lost; files stay)."""
         return call("stop", {"target": target}, lambda: bench.stop(target))

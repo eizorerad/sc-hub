@@ -1,0 +1,3 @@
+#!/bin/sh
+# A stand-in for Slurm's sbatch in tests: accepts every script as job 4242.
+echo 4242

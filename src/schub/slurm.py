@@ -193,6 +193,14 @@ class Slurm:
             if len(r) >= 3 and r[1].startswith(f"{prefix}-")
         ]
 
+    def find_by_comment(self, comment: str) -> str | None:
+        """The job carrying this --comment (an idempotency key), if it is queued or running."""
+        proc = self._run(["squeue", "--me", "-h", "-o", "%i|%k"])
+        for row in _rows(proc.stdout):
+            if len(row) >= 2 and row[1].strip() == comment:
+                return row[0]
+        return None
+
     def my_jobs(self) -> list[QueueJob]:
         out = self._checked(["squeue", "--me", "-h", "-o", "%i|%j|%T|%M|%R|%P|%l"])
         return [

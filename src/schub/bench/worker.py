@@ -20,7 +20,8 @@ from pydantic import ValidationError
 from ..config import Settings
 from ..projects import ProjectError, ProjectStore
 from .clock import Clock, seconds_between
-from .executor import drain_ledger, execute
+from .checks import run_checks
+from .executor import announce, drain_ledger, execute, prime
 from .filesnap import diff, scan
 from .inbox import Claimed, Inbox
 from .journal import Journal, JournalError
@@ -179,6 +180,7 @@ class ProjectWorker:
         config = self.host.settings.bench
         before = scan(project_dir, config.snapshot_max_files)
         collector = OutputCollector(journal.folder, entry.cid, config.output_chars)
+        announce(kernel, entry.ref, [c.model_dump() for c in entry.checks])
         result = execute(kernel, item.request.code, collector, poll_s=config.poll_s,
                          on_progress=self._progress(journal, entry, collector),
                          should_interrupt=lambda: self._should_interrupt(entry.cid, project_dir),
@@ -188,9 +190,12 @@ class ProjectWorker:
         events = [] if result.status == "lost" else parse_user_expression(drain_ledger(kernel))
         downloads, jobs = _events(events)
         status, message = self._outcome(result.status, project_dir)
+        # A cell that sent a job is checked by the job when it ends (its outputs appear then).
+        checks = run_checks(self.host.settings, entry.project, entry.checks) \
+            if status == "ok" and entry.checks and not jobs else ()
         entry = entry.model_copy(update={
             "outputs": collector.snapshot(), "files": files, "files_truncated": after.truncated or before.truncated,
-            "downloads": downloads, "jobs": jobs,
+            "downloads": downloads, "jobs": jobs, "check_results": checks,
         })
         self._final(journal, item, entry, status, message=message)
 
@@ -280,6 +285,8 @@ class ProjectWorker:
         })
         kernel = self.host.kernel_factory(kernel_name(self.host.settings, self.project), project_dir / "work", env, epoch)
         kernel.start()
+        if not prime(kernel):
+            _warn(f"{self.project}: sc-hub is not importable in the kernel; bench.* and %%slurm are unavailable")
         self.kernel = kernel
         return kernel
 

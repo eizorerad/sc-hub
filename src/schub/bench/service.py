@@ -16,12 +16,17 @@ from ..slurm import Slurm, SlurmError
 from .checkpoint import CheckpointError, CheckpointStore
 from .clock import Clock, stamp
 from .inbox import Inbox
+from .jobs import FINAL_JOB_STATES, lookup
 from .journal import Journal, JournalError, parse_ref
 from .models import Actor, CellEntry, CellRequest, Checkpoint, CheckSpec, NoteEntry, WaitingJob
+from .numbers import unresolved
 from .results import CellResult, cell_result, waiting_result
 from .slots import slot_usage
 from .views import JournalView, ProjectCard, journal_view, project_cards
 from .workbench import BenchStopped, Workbench
+
+
+NUMBERED_KINDS = ("finding", "verdict", "decision")
 
 
 class BenchError(ValueError):
@@ -121,7 +126,21 @@ class BenchService:
                 raise BenchError(f"{ref} does not exist")
             return waiting_result(ref, "queued", self._where())
         previous = _previous_epoch(journal, entry)
-        return cell_result(entry, previous, self._where() if not entry.final else "", self._setup_refs(journal))
+        return cell_result(self._live_jobs(entry), previous, self._where() if not entry.final else "",
+                           self._setup_refs(journal))
+
+    def _live_jobs(self, entry: CellEntry) -> CellEntry:
+        """Current Slurm states of the cell's jobs that have not reported yet (not stored)."""
+        open_jobs = [j.job_id for j in entry.jobs if j.state not in FINAL_JOB_STATES]
+        if not open_jobs:
+            return entry
+        try:
+            states = self.slurm.states(open_jobs)
+        except SlurmError:
+            return entry
+        jobs = tuple(j.model_copy(update={"state": states.get(j.job_id, "ENDED (no result yet)")})
+                     if j.job_id in open_jobs else j for j in entry.jobs)
+        return entry.model_copy(update={"jobs": jobs})
 
     def _where(self) -> str:
         try:
@@ -163,8 +182,10 @@ class BenchService:
              verdict: str | None = None, audience: str = "both", actor: Actor | None = None) -> NoteEntry:
         if kind == "handoff":
             raise BenchError("write the hand-over with handoff(), not as a note")
+        journal = self.journal(project)
         try:
-            return self.journal(project).add_note(kind, text, because, reverses_if, verdict, audience, actor)
+            missing = unresolved(text, journal.evidence(because)) if kind in NUMBERED_KINDS else ()
+            return journal.add_note(kind, text, because, reverses_if, verdict, audience, actor, missing)
         except (JournalError, ValidationError) as exc:
             raise BenchError(str(exc)) from exc
 
@@ -197,7 +218,17 @@ class BenchService:
             return self.stop_workbench()
         if "#" in target:
             return self.interrupt(target)
-        raise BenchError("stop takes a cell reference like 'project#c0007' or 'workbench'")
+        if target.isdigit():
+            return self.cancel_job(target)
+        raise BenchError("stop takes a cell reference like 'project#c0007', a job id, or 'workbench'")
+
+    def cancel_job(self, job_id: str) -> str:
+        """Only jobs the bench submitted (a %%slurm cell) can be cancelled here."""
+        record = lookup(self.settings, job_id)
+        if record is None:
+            raise BenchError(f"job {job_id} was not sent by the bench; sc-hub only cancels its own jobs")
+        self.slurm.cancel([job_id])
+        return f"cancelled job {job_id} of {record.ref}"
 
 
 def _previous_epoch(journal: Journal, entry: CellEntry) -> str:

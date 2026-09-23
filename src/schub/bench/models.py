@@ -168,6 +168,7 @@ class NoteEntry(Frozen):
     audience: Audience = "both"
     actor: Actor = Field(default_factory=Actor)
     created: str
+    unresolved_numbers: tuple[str, ...] = ()  # numbers in `text` not found in the cited cells
 
 
 class WaitingJob(Frozen):

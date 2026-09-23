@@ -148,3 +148,34 @@ def drain_ledger(kernel: ProjectKernel, timeout_s: float = 10.0) -> dict[str, An
     reply = _shell_reply(kernel, msg_id, timeout_s)
     expressions = (reply or {}).get("content", {}).get("user_expressions") or {}
     return expressions.get("ledger")
+
+
+PRIME = ("get_ipython().run_line_magic('load_ext', 'schub.bench.magics')\n"
+         "import schub.bench.kernel_api as bench")
+
+
+def silent(kernel: ProjectKernel, code: str, timeout_s: float = 30.0) -> dict[str, Any] | None:
+    """Run bookkeeping code in the kernel without output or history; the reply's content."""
+    client = kernel.client
+    if client is None or not kernel.alive():
+        return None
+    try:
+        msg_id = client.execute(code, silent=True, store_history=False, allow_stdin=False)
+    except Exception:  # noqa: BLE001 - bookkeeping must never break the cell
+        return None
+    reply = _shell_reply(kernel, msg_id, timeout_s)
+    return (reply or {}).get("content")
+
+
+def prime(kernel: ProjectKernel) -> bool:
+    """%%slurm and `bench` in a fresh kernel. False if sc-hub is not importable there."""
+    content = silent(kernel, PRIME, timeout_s=60.0)
+    return bool(content and content.get("status") == "ok")
+
+
+def announce(kernel: ProjectKernel, ref: str, checks: list[dict[str, Any]]) -> None:
+    """Tell the kernel which cell runs next (a %%slurm job then belongs to it)."""
+    import json
+
+    silent(kernel, f"__import__('schub.bench.kernel_api', fromlist=['set_cell']).set_cell({ref!r}, "
+                   f"{json.dumps(checks)!r})")
