@@ -48,7 +48,13 @@ def _export(s: Mapping[str, Any]) -> str:
     return f"{s.get('n_cells', '?'):,} cells, {s.get('size_mb', '?')} MB" if isinstance(s.get("n_cells"), int) else ""
 
 
+def _merged(s: Mapping[str, Any]) -> str:
+    cells = s.get("n_cells")
+    return f"{len(s.get('datasets', {}))} datasets, {cells:,} cells" if isinstance(cells, int) else ""
+
+
 HEADLINES: dict[str, Callable[[Mapping[str, Any]], str]] = {
+    "merge_datasets": _merged,
     "kb_count": _counted,
     "cellranger_count": _counted,
     "integrate_scanvi": _scanvi,

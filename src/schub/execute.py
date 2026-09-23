@@ -6,6 +6,7 @@ import argparse
 import importlib
 import json
 import sys
+import time
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,6 +18,11 @@ from .stepfile import ERROR_FILE, STEP_FILE, SUCCESS, SUMMARY_FILE, StepFile
 
 EXIT_CHECK_FAILED = 2
 EXIT_CRASH = 1
+# Lustre clients on this cluster sometimes fail a write with EFAULT ("Bad address")
+# or EIO; the same step usually succeeds when simply run again.
+TRANSIENT_ERRNOS = {5, 14}
+ATTEMPTS = 3
+RETRY_PAUSE_S = 30
 
 
 def load_impl(dotted: str) -> Callable[..., dict[str, Any]]:
@@ -49,6 +55,26 @@ def _prepare(step_dir: Path, registry: Mapping[str, BrickSpec]) -> tuple[BrickSp
     return spec, params, io
 
 
+def transient(exc: BaseException) -> bool:
+    """A storage hiccup worth retrying (h5py only puts the errno in its message)."""
+    if isinstance(exc, OSError) and exc.errno in TRANSIENT_ERRNOS:
+        return True
+    text = str(exc)
+    return isinstance(exc, OSError) and any(f"errno = {n}," in text for n in TRANSIENT_ERRNOS)
+
+
+def _run_with_retries(run: Callable[[], dict[str, Any]], pause_s: float = RETRY_PAUSE_S) -> dict[str, Any]:
+    for attempt in range(1, ATTEMPTS + 1):
+        try:
+            return run()
+        except Exception as exc:  # noqa: BLE001 - re-raised unless it is a storage hiccup
+            if attempt == ATTEMPTS or not transient(exc):
+                raise
+            print(f"[schub] storage error ({exc}); retrying the step ({attempt}/{ATTEMPTS - 1})", file=sys.stderr)
+            time.sleep(pause_s * attempt)
+    raise AssertionError("unreachable")
+
+
 def run_step(step_dir: Path, registry: Mapping[str, BrickSpec] = REGISTRY) -> int:
     try:
         spec, params, io = _prepare(step_dir, registry)
@@ -61,7 +87,8 @@ def run_step(step_dir: Path, registry: Mapping[str, BrickSpec] = REGISTRY) -> in
     results_dir = io.results_dir
     started = datetime.now(timezone.utc)
     try:
-        summary = load_impl(spec.impl)(io, params)
+        implementation = load_impl(spec.impl)
+        summary = _run_with_retries(lambda: implementation(io, params))
     except BrickError as exc:
         _write_error(step_dir, "check_failed", str(exc))
         print(f"[schub] check failed: {exc}", file=sys.stderr)

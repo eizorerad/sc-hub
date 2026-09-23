@@ -78,7 +78,7 @@ def test_export_cellxgene_needs_an_embedding(profile, ctx):
 def test_every_recipe_uses_real_bricks_and_valid_params(profile, ctx):
     values = {
         "celltypist_model": "Immune_All_Low.pkl", "batch_key": "donor", "labels_key": "sample_name",
-        "replicate_key": "donor", "group_key": "sample_name", **DESIGN,
+        "replicate_key": "donor", "group_key": "sample_name", "other_dataset": "pbmc3k", **DESIGN,
     }
     for recipe in list_recipes():
         steps = fill_recipe(recipe.name, values)
@@ -105,3 +105,62 @@ def test_headlines_for_new_bricks():
     assert headline("memento_de", {"groups": {"B": {"significant": 3, "variability_significant": 1}}}) == "3 mean / 1 variability genes"
     assert headline("integrate_scanvi", {"n_labels": 8, "label_agreement_on_labeled": 0.93}) == "8 labels, 0.93 agreement"
     assert headline("export_cellxgene", {"n_cells": 5000, "size_mb": 12.5}) == "5,000 cells, 12.5 MB"
+
+
+def test_merge_datasets_plans_a_combined_state(settings, ctx, write_h5ad):
+    from schub.service import Hub
+    from schub.slurm import Slurm
+
+    from .conftest import FakeCluster, library_datasets
+
+    for name, n in (("study_a", 40), ("study_b", 60)):
+        write_h5ad(make_adata(n_obs=n), name="data.h5ad", directory=library_datasets(settings) / name)
+    hub = Hub(settings, Slurm(FakeCluster()))
+    plan = hub.plan("study_a", [
+        {"brick": "merge_datasets", "params": {"others": ["study_b"]}},
+        {"brick": "qc_filter", "params": {"batch_key": "dataset", "min_genes": 5}},
+        {"brick": "normalize_embed", "params": {"batch_key": "dataset"}},
+        {"brick": "integrate_scvi", "params": {"batch_key": "dataset", "condition_key": "label"}},
+    ])
+    assert plan.ok, plan.issues
+    merged = plan.steps[1].state_in
+    assert merged.n_obs == 100 and merged.has_obs("dataset") and merged.has_obs("donor") and merged.x_kind == "raw_counts"
+    key = plan.steps[0].step_key
+    make_adata(n_obs=61, seed=3).write_h5ad(library_datasets(settings) / "study_b" / "data.h5ad")
+    assert hub.build("study_a", [{"brick": "merge_datasets", "params": {"others": ["study_b"]}}]).steps[0].step_key != key
+    missing = hub.build("study_a", [{"brick": "merge_datasets", "params": {"others": ["nope"]}}])
+    assert "missing_dataset" in {i.code for i in missing.issues}
+    late = hub.build("study_a", [{"brick": "qc_filter"}, {"brick": "merge_datasets", "params": {"others": ["study_b"]}}])
+    assert "must_be_first" in {i.code for i in late.issues}
+    lognorm = write_h5ad(make_adata(x="lognorm"), name="data.h5ad", directory=library_datasets(settings) / "normed")
+    assert lognorm.exists()
+    bad = hub.build("study_a", [{"brick": "merge_datasets", "params": {"others": ["normed"]}}])
+    assert "merge_needs_counts" in {i.code for i in bad.issues}
+    empty = hub.build("study_a", [{"brick": "merge_datasets", "params": {"others": []}}])
+    assert "bad_params" in {i.code for i in empty.issues}
+
+
+def test_merged_datasets_are_pinned_and_checked_again(settings, write_h5ad):
+    from schub.service import Hub, HubError
+    from schub.slurm import Slurm
+
+    from .conftest import FakeCluster, library_datasets
+
+    for name, n in (("study_a", 40), ("study_b", 60)):
+        write_h5ad(make_adata(n_obs=n), name="data.h5ad", directory=library_datasets(settings) / name)
+    hub = Hub(settings, Slurm(FakeCluster()))
+    small = hub.build("study_a", [{"brick": "qc_filter"}]).steps[0].resources.mem_gb
+    plan = hub.plan("study_a", [{"brick": "merge_datasets", "params": {"others": ["study_b"]}}])
+    pin = plan.steps[0].pins["study_b"]
+    assert pin.startswith(str(library_datasets(settings) / "study_b" / "data.h5ad") + "\t")
+    assert plan.steps[0].resources.mem_gb >= small  # sized on the merged cells
+    make_adata(n_obs=61, seed=5).write_h5ad(library_datasets(settings) / "study_b" / "data.h5ad")
+    with pytest.raises(HubError, match="'study_b' .* changed after planning"):
+        hub.submit(plan.plan_id)
+    itself = hub.build("study_a", [{"brick": "merge_datasets", "params": {"others": ["study_a"]}}])
+    assert "merge_with_itself" in {i.code for i in itself.issues}
+    # a copy of the same data elsewhere, under the same name: caught by content and by label
+    copy = settings.data_dir / "study_a.h5ad"
+    copy.write_bytes((library_datasets(settings) / "study_a" / "data.h5ad").read_bytes())
+    twin = hub.build("study_a", [{"brick": "merge_datasets", "params": {"others": [str(copy)]}}])
+    assert {"duplicate_label"} <= {i.code for i in twin.issues}

@@ -116,3 +116,19 @@ def test_link_run_tolerates_dangling_link(store, settings):
     link.symlink_to(settings.runs_dir / "ghost")
     store.link_run("ifn", "ghost")
     assert link.is_symlink()
+
+
+def test_old_or_broken_project_files_do_not_hide_other_projects(settings, cluster, ctx):
+    from schub.service import Hub
+    from schub.slurm import Slurm
+
+    hub = Hub(settings, Slurm(cluster))
+    hub.create_project("good")
+    hub.create_project("older")
+    older = settings.projects_dir / "older" / "project.yaml"
+    older.write_text(older.read_text() + "pip:\n- harmonypy\n")  # a field this version does not know
+    hub.create_project("broken")
+    (settings.projects_dir / "broken" / "project.yaml").write_text("status: [not valid")
+    projects = {p.path: p for p in hub.list_projects()}
+    assert set(projects) == {"good", "older", "broken"}
+    assert not projects["older"].problems and projects["broken"].problems

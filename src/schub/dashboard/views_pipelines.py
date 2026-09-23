@@ -5,7 +5,7 @@ from __future__ import annotations
 from itertools import groupby
 
 from .collect import NodeView, Snapshot
-from .html import esc, kv, pill
+from .html import ask_block, esc, kv, pill
 from .lineage import SHORT, pipeline_views, render_graph
 from .views_runs import ImageUrl, cell_map, figures, log_block, step_facts
 
@@ -26,12 +26,15 @@ def _selector(snap: Snapshot) -> str:
     parts = []
     for group, views in groupby(pipeline_views(snap.nodes), key=lambda v: v.group):
         buttons = "".join(
-            f'<button class="pipe" data-pipe="{esc(v.view_id)}"><span class="dot {esc(_view_state(nodes, v.keys))}"></span>'
+            f'<button class="pipe" data-pipe="{esc(v.view_id)}" data-text="{esc((group + " " + v.label).lower())}">'
+            f'<span class="dot {esc(_view_state(nodes, v.keys))}"></span>'
             f'{esc(v.label)}<span class="muted small">{len(v.keys)}</span></button>'
             for v in views
         )
         parts.append(f'<div class="pipe-group"><h4>{esc(group)}</h4>{buttons}</div>')
-    return "".join(parts)
+    many = len(pipeline_views(snap.nodes)) > 12
+    search = '<input class="tree-filter" type="search" placeholder="Filter branches" aria-label="Filter branches">' if many else ""
+    return search + "".join(parts)
 
 
 def _node_template(node: NodeView, snap: Snapshot, run_of: dict[str, str], image_url: ImageUrl) -> str:
@@ -52,6 +55,12 @@ def _node_template(node: NodeView, snap: Snapshot, run_of: dict[str, str], image
         body.append(log_block(step))
         if step.message:
             body.append(f'<p class="note bad">{esc(step.message)}</p>')
+    for ref in node.refs[:4]:  # one per branch that uses this step
+        label, _, index = ref.rpartition("#")
+        info = snap.branches.get(label)
+        note = ("This result comes from an earlier version of the branch; the request refers to the "
+                "branch as it is now.") if info and info.keys and node.key not in info.keys else ""
+        body.append(ask_block(ref, node.brick, label.rsplit("/", 1)[-1], note))
     if node.key in run_of:
         body.append(f'<a class="button" href="#runs/{esc(run_of[node.key])}">Open the run →</a>')
     if node.state == "PLANNED":
@@ -68,7 +77,7 @@ def render_pipelines(snap: Snapshot, image_url: ImageUrl) -> str:
         run_of.update({s.key: run.run_id for s in run.steps})
     graphs = "".join(
         f'<div class="graph" data-pipe-view="{esc(v.view_id)}" hidden><h3>{esc(v.group)} · {esc(v.label)}</h3>'
-        f"{render_graph(snap.nodes, v.keys)}</div>"
+        f"{render_graph(snap.nodes, v.keys, vertical=v.view_id != 'v-all')}</div>"
         for v in pipeline_views(snap.nodes)
     )
     legend = "".join(pill(s, label) for s, label in (

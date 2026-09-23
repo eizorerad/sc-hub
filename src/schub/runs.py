@@ -62,6 +62,7 @@ class RunManifest(Frozen):
     schub_version: str
     project: str | None = None
     branch: str | None = None
+    revision: int | None = None
 
 
 class StepStatus(Frozen):
@@ -163,6 +164,7 @@ class RunStore:
                 schub_version=__version__,
                 project=plan.project,
                 branch=plan.branch,
+                revision=plan.revision,
             )
             self._write_manifest(manifest, plan)
         except Exception:
@@ -198,6 +200,7 @@ class RunStore:
             context={
                 "celltypist_dirs": os.pathsep.join(str(d) for d in celltypist_dirs(self.settings)),
                 "library_roots": os.pathsep.join(str(r) for r in self.settings.library_roots),
+                **({"pins": json.dumps(step.pins)} if step.pins else {}),
             },
         )
         (step_dir / STEP_FILE).write_text(step_file.model_dump_json(indent=2))

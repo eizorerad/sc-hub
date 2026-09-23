@@ -44,6 +44,12 @@ EXPECTED_TOOLS = {
     "start_session",
     "list_sessions",
     "stop_session",
+    "inspect_step",
+    "revise_branch",
+    "fork_branch",
+    "branch_history",
+    "cluster_overview",
+    "add_project_packages",
 }
 
 

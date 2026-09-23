@@ -1,19 +1,15 @@
-"""Overview, jobs, library and projects views."""
+"""Overview, jobs and library views (projects: views_projects, cluster: views_cluster)."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from ..projects import ProjectSummary
 from ..slurm import QueueJob
 from .collect import RunView, Snapshot
-from .html import dot, esc, pill, table
-from .lineage import view_id
+from .html import dot, esc, listing, pill, subtabs
 from .steps import slurm_seconds
 
-IDEA_COLUMNS = ("open", "planned", "running", "done", "dropped")
-IDEA_STATE = {"open": "PENDING", "planned": "PLANNED", "running": "RUNNING", "done": "COMPLETED", "dropped": "FAILED"}
-PROJECT_STATE = {"active": "RUNNING", "paused": "PENDING", "done": "COMPLETED"}
+OVERVIEW_PROJECTS = 6
 REASONS = {
     "QOSMaxJobsPerUserLimit": "waiting for a free slot (max 2 running jobs per user on ws-ia)",
     "QOSMaxCpuPerUserLimit": "waiting: your jobs already use the 24-CPU per-user limit",
@@ -43,10 +39,11 @@ def _progress(job: QueueJob) -> str:
     )
 
 
-def _job_rows(jobs: list[QueueJob]) -> list[str]:
+def _job_rows(jobs: list[QueueJob]) -> list[tuple[str, str]]:
     return [
-        f"<tr><td><code>{esc(j.job_id)}</code></td><td>{esc(j.name)}</td><td>{pill(j.state)}</td>"
-        f"<td>{esc(j.partition)}</td><td>{_progress(j)}</td></tr>"
+        (f"{j.job_id} {j.name} {j.state} {j.partition}",
+         f"<td><code>{esc(j.job_id)}</code></td><td>{esc(j.name)}</td><td>{pill(j.state)}</td>"
+         f"<td>{esc(j.partition)}</td><td>{_progress(j)}</td>")
         for j in jobs
     ]
 
@@ -57,9 +54,9 @@ def render_jobs(snap: Snapshot) -> str:
     ours = [j for j in snap.jobs if j.name.startswith("schub-")]
     others = [j for j in snap.jobs if not j.name.startswith("schub-")]
     headers = ("Job", "Name", "State", "Partition", "Progress or why it waits")
-    html = table(headers, _job_rows(ours)) if ours else '<p class="empty">No sc-hub jobs in the queue.</p>'
+    html = listing(headers, _job_rows(ours), "Filter jobs", key="jobs-schub") if ours else '<p class="empty">No sc-hub jobs in the queue.</p>'
     if others:
-        html += f"<details><summary>{len(others)} other jobs of yours</summary>{table(headers, _job_rows(others))}</details>"
+        html += f"<details><summary>{len(others)} other jobs of yours</summary>{listing(headers, _job_rows(others), 'Filter jobs', key='jobs-other')}</details>"
     return html + (
         '<p class="note">Cluster rule: on ws-ia each person runs at most 2 jobs at once (24 CPUs, about 107 GB). '
         "Extra steps wait in the queue and start by themselves.</p>"
@@ -105,11 +102,14 @@ def render_overview(snap: Snapshot) -> str:
     failed = sum(r.state == "FAILED" for r in snap.runs)
     active = [r for r in snap.runs if r.state in {"RUNNING", "PENDING", "UNKNOWN"}]
     latest = [r for r in snap.runs if r not in active][:6]
+    recent = sorted(snap.projects, key=lambda p: p.runs[0] if p.runs else "", reverse=True)[:OVERVIEW_PROJECTS]
     projects = "".join(
-        f'<a class="card" href="#projects"><b>{esc(p.path)}</b><div class="muted small">{esc(p.meta.question or "No question yet")}</div>'
+        f'<a class="card" href="#projects/{esc(p.path)}"><b>{esc(p.path)}</b><div class="muted small">{esc(p.meta.question or "No question yet")}</div>'
         f'<div class="small">{len(p.branches)} branches · {len(p.ideas)} ideas · {len(p.runs)} runs</div></a>'
-        for p in snap.projects
+        for p in recent
     )
+    more = len(snap.projects) - len(recent)
+    all_projects = f'<p><a href="#projects">All {len(snap.projects)} projects →</a></p>' if more > 0 else ""
     return (
         '<div class="metrics">'
         + _metric("Running steps", running, "#jobs")
@@ -121,82 +121,49 @@ def render_overview(snap: Snapshot) -> str:
         + (f'<h2>In progress</h2><div class="cards">{"".join(_run_card(r) for r in active)}</div>' if active else "")
         + (f'<h2>Latest runs</h2><div class="cards">{"".join(_run_card(r) for r in latest)}</div>' if latest else
            '<p class="empty">No runs yet.</p>')
-        + (f'<h2>Projects</h2><div class="cards">{projects}</div>' if projects else "")
+        + (f'<h2>Projects</h2><div class="cards">{projects}</div>{all_projects}' if projects else "")
     )
 
 
 def render_library(snap: Snapshot) -> str:
+    """Datasets, models, references/tools and the environment behind sub-tabs, each a
+    filterable list: 100 datasets never push the models out of sight."""
     used: dict[str, int] = {}
     for run in snap.runs:
-        used[run.dataset] = used.get(run.dataset, 0) + 1
+        for name in set(run.inputs or (run.dataset,)):
+            used[name] = used.get(name, 0) + 1
     datasets = [
-        f"<tr><td><b>{esc(d.name)}</b>{'<span class=tag>FASTQ</span>' if d.kind == 'fastq' else ''}"
-        f"<div class='muted small'>{esc(d.title)}</div></td><td>{esc(d.source)}</td>"
-        f"<td class=num>{d.size_mb:g} MB</td><td>{esc(d.organism)}</td><td class=num>{used.get(d.name, 0)}</td>"
-        f"<td class='muted small'>{esc(d.license)}</td></tr>"
+        (f"{d.name} {d.title} {d.organism} {d.source} {d.kind}",
+         f"<td><b>{esc(d.name)}</b>{'<span class=tag>FASTQ</span>' if d.kind == 'fastq' else ''}"
+         f"<div class='muted small'>{esc(d.title)}</div></td><td>{esc(d.source)}</td>"
+         f"<td class=num>{d.size_mb:g} MB</td><td>{esc(d.organism)}</td><td class=num>{used.get(d.name, 0)}</td>"
+         f"<td class='muted small'>{esc(d.license)}</td>")
         for d in snap.datasets
     ]
-    reference = [f"<tr><td>{esc(m.name)}</td><td>CellTypist</td><td>{esc(m.source)}</td></tr>" for m in snap.models]
-    trained = [
-        f'<tr><td>{esc(m.name)}</td><td><a href="#runs/{esc(m.run_id)}">{esc(m.origin)}</a></td><td class=num>{m.size_mb:g} MB</td></tr>'
+    models = [
+        (f"{m.name} celltypist {m.source}", f"<td>{esc(m.name)}</td><td>CellTypist (reference)</td><td>{esc(m.source)}</td><td></td>")
+        for m in snap.models
+    ] + [
+        (f"{m.name} {m.kind} {m.origin}",
+         f'<td>{esc(m.name)}</td><td>{esc(m.kind)} (trained)</td><td><a href="#runs/{esc(m.run_id)}">{esc(m.origin)}</a></td>'
+         f"<td class=num>{m.size_mb:g} MB</td>")
         for m in snap.trained_models
     ]
     refs = [
-        f"<tr><td>{esc(r.name)}</td><td class='muted'>{esc(r.kind)}</td>"
-        f"<td>{pill('COMPLETED', r.status) if not r.status.startswith('not ') else esc(r.status)}</td></tr>"
+        (f"{r.name} {r.kind} {r.status}",
+         f"<td>{esc(r.name)}</td><td class='muted'>{esc(r.kind)}</td>"
+         f"<td>{pill('COMPLETED', r.status) if not r.status.startswith('not ') else esc(r.status)}</td>")
         for r in snap.references
     ]
     versions = " · ".join(f"{k} {v}" for k, v in snap.versions.items() if v != "absent")
-    return (
-        "<h2>Datasets</h2>" + table(("Dataset", "Where", "Size", "Organism", "Runs", "License"), datasets)
-        + "<h2>Reference models</h2>" + (table(("Model", "Kind", "Where"), reference) if reference else '<p class="empty">None staged.</p>')
-        + "<h2>References and tools</h2>" + (table(("Reference / tool", "Used by", "Status"), refs) if refs else "")
-        + "<h2>Models trained in your runs</h2>" + (table(("Model", "From run", "Size"), trained) if trained else '<p class="empty">None yet.</p>')
-        + f'<h2>Environment</h2><p class="muted">{esc(snap.library_mode)}</p><p class="small">Environment <code>{esc(snap.env_id)}</code>: {esc(versions)}</p>'
-    )
-
-
-def _idea_card(idea) -> str:
-    hypothesis = f'<div class="muted small">{esc(idea.hypothesis)}</div>' if idea.hypothesis else ""
-    branches = f'<div class="small">branches: {esc(", ".join(idea.branches))}</div>' if idea.branches else ""
-    return f'<div class="idea" title="{esc(idea.hypothesis)}"><b>{esc(idea.title)}</b>{hypothesis}{branches}</div>'
-
-
-def _ideas(project: ProjectSummary) -> str:
-    columns = []
-    for status in IDEA_COLUMNS:
-        items = [i for i in project.ideas if i.status == status]
-        if not items and status == "dropped":
-            continue
-        cards = "".join(_idea_card(i) for i in items)
-        columns.append(f"<div class=column>{pill(IDEA_STATE[status], status)}{cards or '<p class=empty>none</p>'}</div>")
-    return f'<div class="board">{"".join(columns)}</div>'
-
-
-def _project(project: ProjectSummary, runs: tuple[RunView, ...]) -> str:
-    latest: dict[str, RunView] = {}
-    for run in runs:
-        if run.project == project.path and run.branch and run.branch not in latest:
-            latest[run.branch] = run
-    rows = [
-        f"<tr><td><code>{esc(b)}</code></td><td>{pill(latest[b].state) if b in latest else pill('PLANNED', 'not run yet')}</td>"
-        f"<td>{'<a href=' + chr(34) + '#runs/' + esc(latest[b].run_id) + chr(34) + '>open run</a>' if b in latest else ''}</td>"
-        f'<td><a href="#pipelines/{esc(view_id(project.path + "/" + b))}">graph</a></td></tr>'
-        for b in project.branches
-    ]
-    log = "".join(f"<pre class=entry>{esc(e)}</pre>" for e in reversed(project.logbook_tail)) or '<p class="empty">Empty.</p>'
-    problems = "".join(f'<p class="note bad">{esc(p)}</p>' for p in project.problems)
-    return (
-        f'<div class="card project"><div class="run-title"><h2>{esc(project.path)}</h2>'
-        f"{pill(PROJECT_STATE[project.meta.status], project.meta.status)}</div>"
-        f'<p class="question">{esc(project.meta.question or "No question written yet.")}</p>'
-        + (table(("Branch", "Latest", "Run", "Pipeline"), rows) if rows else '<p class="empty">No branches yet.</p>')
-        + f"<h3>Ideas</h3>{problems}{_ideas(project)}"
-        + f"<details><summary>Logbook, latest first</summary>{log}</details></div>"
-    )
-
-
-def render_projects(snap: Snapshot) -> str:
-    if not snap.projects:
-        return '<p class="empty">No projects yet. Ask your assistant to create one with your research question.</p>'
-    return "".join(_project(p, snap.runs) for p in snap.projects)
+    environment = (f'<p class="muted">{esc(snap.library_mode)}</p>'
+                   f'<p class="small">Environment <code>{esc(snap.env_id)}</code>: {esc(versions)}</p>')
+    return subtabs("library", [
+        ("datasets", "Datasets", len(datasets),
+         listing(("Dataset", "Where", "Size", "Organism", "Runs", "License"), datasets, "Filter datasets", key="library-datasets")
+         if datasets else '<p class="empty">No datasets yet.</p>'),
+        ("models", "Models", len(models),
+         listing(("Model", "Kind", "From", "Size"), models, "Filter models", key="library-models") if models else '<p class="empty">None yet.</p>'),
+        ("refs", "References and tools", len(refs), listing(("Reference / tool", "Used by", "Status"), refs, "Filter", key="library-refs")),
+        ("env", "Environment", None, environment),
+    ])

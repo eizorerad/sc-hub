@@ -116,3 +116,21 @@ def test_notebook_refreshes_until_the_student_edits_it(tmp_path):
     path.write_text(_json.dumps(edited))
     write_notebook(tmp_path, manifest, running)
     assert "my analysis" in path.read_text()  # edited: kept
+
+
+def test_storage_hiccups_are_retried_but_real_errors_are_not():
+    from schub.execute import _run_with_retries, transient
+
+    calls = []
+
+    def flaky():
+        calls.append(1)
+        if len(calls) < 3:
+            raise OSError("Can't synchronously write data (file write failed: errno = 14, error message = 'Bad address')")
+        return {"ok": True}
+
+    assert _run_with_retries(flaky, pause_s=0) == {"ok": True} and len(calls) == 3
+    assert transient(OSError(14, "Bad address")) and not transient(OSError(2, "No such file"))
+    assert not transient(ValueError("errno = 14,"))
+    with pytest.raises(ValueError):
+        _run_with_retries(lambda: (_ for _ in ()).throw(ValueError("bad params")), pause_s=0)

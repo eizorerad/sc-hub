@@ -7,6 +7,7 @@ unchanged prefix of a pipeline is reused instead of recomputed.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any, Mapping, Sequence
 
 from pydantic import Field, ValidationError
@@ -39,6 +40,7 @@ class PlannedStep(Frozen):
     code_id: str
     terminal: bool
     state_in: DatasetState
+    pins: dict[str, str] = Field(default_factory=dict)  # extra input datasets: name -> "path\tfingerprint"
 
 
 class Plan(Frozen):
@@ -51,6 +53,7 @@ class Plan(Frozen):
     final_state: DatasetState
     project: str | None = None
     branch: str | None = None
+    revision: int | None = None
 
     @property
     def ok(self) -> bool:
@@ -70,6 +73,7 @@ class Plan(Frozen):
             final_obs_columns=tuple(c.name for c in self.final_state.obs),
             project=self.project,
             branch=self.branch,
+            revision=self.revision,
         )
 
 
@@ -90,6 +94,7 @@ class PlanSummary(Frozen):
     final_obs_columns: tuple[str, ...]
     project: str | None = None
     branch: str | None = None
+    revision: int | None = None
 
 
 def _apply_overrides(state: DatasetState, overrides: DatasetOverrides | None) -> DatasetState:
@@ -142,6 +147,7 @@ def build_plan(
     registry: Mapping[str, BrickSpec] = REGISTRY,
 ) -> Plan:
     state = _apply_overrides(profile.state, overrides)
+    ctx = replace(ctx, primary_path=profile.path, primary_fingerprint=fingerprint)
     issues: list[Issue] = []
     steps: list[PlannedStep] = []
     prev_key = fingerprint
@@ -165,10 +171,14 @@ def build_plan(
                 error("after_terminal", f"'{steps[-1].brick}' only writes tables; it must be last.", index)
             )
         source_issues = _source_issues(state, spec, index)
+        if spec.first_only and index != 1:
+            source_issues.append(error("must_be_first", f"{spec.name} reads datasets directly; it must be step 1.", index))
         issues += source_issues
         if not source_issues:
             issues += [i.model_copy(update={"step": index}) for i in spec.check(state, params, ctx)]
-        resources, clamp_issues = _clamp(spec.resources(state, params), ctx.limits, index)
+        # Bricks that read other datasets are sized on what they produce (the merged data).
+        sized = spec.transform_ctx(state, params, ctx) if spec.transform_ctx and not source_issues else state
+        resources, clamp_issues = _clamp(spec.resources(sized, params), ctx.limits, index)
         issues += clamp_issues
         dumped = params.model_dump(mode="json")
         code = ctx.code_ids.get(spec.name, "")
@@ -186,9 +196,10 @@ def build_plan(
                 code_id=code,
                 terminal=spec.terminal,
                 state_in=state,
+                pins=spec.input_pins(state, params, ctx) if spec.input_pins else {},
             )
         )
-        state = spec.transform(state, params)
+        state = spec.transform_ctx(state, params, ctx) if spec.transform_ctx else spec.transform(state, params)
         prev_key = key
     gpu_hours = round(sum(s.resources.gpu_hours for s in steps), 2)
     if gpu_hours > ctx.limits.max_gpu_hours_per_plan:

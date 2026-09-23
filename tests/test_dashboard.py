@@ -279,3 +279,58 @@ def test_overview_lists_sessions_with_how_to_open(hub, settings, cluster):
     assert snap.sessions[0].node == "ws-l1-004"
     html = render_overview(snap)
     assert "JupyterLab" in html and "./schub-lab jupyter" in html and "token" not in html
+
+
+def test_revisions_forks_subprojects_and_merges_are_visible(hub, two_branches, settings, write_h5ad):
+    from schub.dashboard.page import render_page
+    from schub.dashboard.views_projects import render_projects
+
+    write_h5ad(make_adata(n_obs=30, seed=2), directory=library_datasets(settings) / "atlas")
+    hub.revise_branch("ifn", "main", 1, "stricter QC", params={"min_genes": 20})
+    hub.fork_branch("ifn", "main", 2, "coarse", "fewer clusters", params={"leiden_resolution": 0.4})
+    hub.create_project("ifn/atlas", question="Does the atlas agree?")
+    hub.save_branch("ifn/atlas", "joint", BranchSpec(dataset="kang2018", steps=(
+        {"brick": "merge_datasets", "params": {"others": ["atlas"]}}, {"brick": "qc_filter", "params": {"min_genes": 5}})))
+    snap = collect(hub)
+    assert snap.branches["ifn/main"].revision == 2 and snap.branches["ifn/coarse"].forked_from == "main@r2#2"
+    assert snap.branches["ifn/atlas/joint"].datasets == ("kang2018", "atlas")
+    merge = next(n for n in snap.nodes if n.brick == "merge_datasets")
+    assert merge.inputs == ("ds:atlas",) and "ifn/atlas/joint#1" in merge.refs
+    projects = render_projects(snap)
+    assert 'data-project="ifn/atlas"' in projects and "fork</span> of <code>main@r2</code> at step 2" in projects
+    assert "stricter QC" in projects and "step 1 qc_filter: min_genes default → 20" in projects
+    page = render_page(snap, lambda *_: None)
+    assert 'class="edge merge"' in page and 'data-ref="ifn/atlas/joint#1"' in page and 'data-ask="fork"' in page
+    assert "revise_branch" in page and "fork_branch" in page and 'href="#cluster"' in page
+
+
+def test_long_lists_get_a_filter_and_show_all(settings):
+    from schub.dashboard.html import listing, subtabs
+
+    rows = [(f"dataset {i}", f"<td>d{i}</td>") for i in range(40)]
+    html = listing(("Dataset",), rows, "Filter datasets")
+    assert 'class="list-filter"' in html and 'class="more"' in html and html.count("data-row") == 40
+    short = listing(("Dataset",), rows[:3], "Filter datasets")
+    assert "list-filter" not in short and "more" not in short
+    tabs = subtabs("library", [("a", "Datasets", 40, html), ("b", "Models", 2, "m")])
+    assert tabs.count('data-subview="library"') == 2 and "<span class=count>40</span>" in tabs
+
+
+def test_cluster_view_renders_limits_storage_and_load():
+    from schub.dashboard.views_cluster import render_cluster
+    from schub.overview import Job, Limit, Overview, PartitionLoad, QosLimits, Storage
+
+    ov = Overview(
+        user="me", login_node="lo-02", generated_at="now", logins=("pts/1 today",),
+        storage=(Storage(name="Lustre (/l)", path="/l", used_gb=2069, limit_gb=3072, files=10, files_limit=100),),
+        limits=(QosLimits(qos="ia-std", partitions=("ws-ia",), limits=(Limit(name="running jobs", used=2, limit=2),
+                                                                         Limit(name="GPUs", used=0, limit=None))),),
+        jobs=(Job(job_id="1", name="x", state="PENDING", partition="ws-ia", cpus=8, mem_gb=32, gpus=1,
+                  elapsed="0:00", time_limit="1:00:00", node="", reason="QOSMaxJobsPerUserLimit"),),
+        partitions=(PartitionLoad(name="gpu", qos="gpu-1", max_time="UNLIMITED", nodes=4, cpus_alloc=34,
+                                  cpus_total=512, gpus_used=2, gpus_total=32, mem_gb_per_node=754),),
+    )
+    html = render_cluster(ov)
+    assert "2 of 2 (100%)" in html and 'class="bar bad"' in html and "no per-user limit" in html
+    assert "waiting for a free job slot" in html and "2.0 TB of 3.0 TB" in html and "lo-02" in html
+    assert "10 of 100" in html

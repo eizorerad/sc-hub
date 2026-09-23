@@ -34,6 +34,12 @@ run_results (also writes the project logbook) -> make_dashboard. plan_pipeline i
 for one-off runs. Record hypotheses with add_idea, link them with update_idea.
 If a dataset is missing, fetch_asset queues a download job.
 
+Changing a pipeline: the student often points at a step shown in the dashboard,
+as '<project>/<branch>#<step>'. inspect_step(ref) shows it. "This step is wrong,
+fix it" -> revise_branch (same branch, new revision, reason kept). "From here on,
+try something else" -> fork_branch (new branch; the original stays). Never
+overwrite a branch to try an alternative. branch_history lists the revisions.
+
 Defaults (the MBZUAI single-cell course, CB703/803: Python, scverse, scvi-tools):
 - AnnData (.h5ad) with raw counts is the working format; raw counts are kept.
 - Count matrices: Scanpy for QC/normalization/clustering; scVI (integrate_scvi)
@@ -176,8 +182,8 @@ def build_server(hub: Hub) -> MCPServer:
         """Save a named pipeline variant and return its dry-run plan (nothing runs).
         Either give dataset + steps, or from_branch + overrides ({brick or step index:
         {param: value}}) + optional append. The branch is saved only if its plan has no
-        errors; replacing an existing branch needs overwrite=true. Submit the returned
-        plan_id with submit_plan."""
+        errors. To fix an existing branch prefer revise_branch; overwrite=true replaces it
+        as a new revision. Submit the returned plan_id with submit_plan."""
         spec = BranchSpec(
             dataset=dataset, from_branch=from_branch, steps=tuple(steps or ()),
             overrides=overrides or {}, append=tuple(append or ()), idea=idea, description=description,

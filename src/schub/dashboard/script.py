@@ -18,13 +18,89 @@ SCRIPT = r"""
   const decode = s => { try { return decodeURIComponent(s); } catch (e) { return s; } };
 
   function route() {
-    const [view, arg] = (location.hash.slice(1) || 'overview').split('/');
+    const [view, ...rest] = (location.hash.slice(1) || 'overview').split('/');
+    const arg = rest.join('/');  // project paths contain '/'
     const name = $$('.view').some(v => v.dataset.view === view) ? view : 'overview';
     $$('.view').forEach(v => v.classList.toggle('active', v.dataset.view === name));
     $$('[data-tab]').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+    $$('details.account').forEach(d => { d.open = false; });
     if (name === 'runs') showRun(arg ? decode(arg) : null);
     if (name === 'pipelines') selectPipe(arg || keep.get('pipe') || 'v-all');
+    if (name === 'projects') selectProject(arg ? decode(arg) : keep.get('project'));
     if (!restoring) window.scrollTo(0, 0);
+  }
+
+  function selectProject(path) {
+    const cards = $$('.project[data-project]');
+    if (!cards.length) return;
+    if (!cards.some(c => c.dataset.project === path)) path = cards[0].dataset.project;
+    cards.forEach(c => { c.hidden = c.dataset.project !== path; });
+    $$('.project-tree [data-project-link]').forEach(b => b.classList.toggle('active', b.dataset.projectLink === path));
+    keep.set('project', path);
+  }
+
+  async function copyText(text) {
+    try { await navigator.clipboard.writeText(text); return true; } catch (e) { /* file:// pages may refuse */ }
+    const area = document.createElement('textarea');
+    area.value = text; area.style.position = 'fixed'; area.style.opacity = '0';
+    document.body.appendChild(area); area.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    area.remove();
+    return ok;
+  }
+
+  // The requests the step buttons copy (built here so the page stays small).
+  function askText(kind, box) {
+    const ref = box.dataset.ref, brick = box.dataset.brick, branch = box.dataset.branch;
+    if (kind === 'ref') return ref;
+    if (kind === 'fix') return `In sc-hub, fix step ${ref} (${brick}): <what is wrong and what it should do>. `
+      + `Look at it with inspect_step("${ref}"), then use revise_branch (same branch, new revision) with a short reason, `
+      + 'show me the plan, and submit it when I confirm.';
+    return `In sc-hub, from step ${ref} (${brick}) on, try this instead: <the alternative>. `
+      + `Look at it with inspect_step("${ref}"), then use fork_branch into a new branch (keep ${branch} as it is), `
+      + 'show me the plan, and submit it when I confirm.';
+  }
+
+  // Long lists: a filter box and 'Show all N' instead of one endless table.
+  function setupListings() {
+    $$('.listing').forEach(box => {
+      const limit = Number(box.dataset.limit) || 25, rows = $$('[data-row]', box);
+      const input = $('input.list-filter', box), more = $('button.more', box), id = 'list-' + box.dataset.key;
+      let expanded = keep.get(id + '-all') === '1';
+      if (input) input.value = keep.get(id) || '';  // filters survive the auto-refresh
+      const apply = () => {
+        const q = (input?.value || '').toLowerCase();
+        keep.set(id, q);
+        let shown = 0, matched = 0;
+        rows.forEach(r => {
+          const hit = !q || r.dataset.text.includes(q);
+          if (hit) matched++;
+          const show = hit && (expanded || q || shown < limit);
+          r.hidden = !show;
+          if (show) shown++;
+        });
+        if (more) { more.hidden = expanded || !!q || matched <= limit; more.textContent = `Show all ${matched}`; }
+      };
+      if (input) input.addEventListener('input', apply);
+      if (more) more.addEventListener('click', () => { expanded = true; keep.set(id + '-all', '1'); apply(); });
+      apply();
+    });
+  }
+
+  // Sections of one view behind pills (e.g. Library: datasets, models, references).
+  function setupSubtabs() {
+    $$('[data-subtabs]').forEach(group => {
+      const name = group.dataset.subtabs, buttons = $$('button[data-sub]', group);
+      const pick = id => {
+        if (!buttons.some(b => b.dataset.sub === id)) id = buttons[0]?.dataset.sub;
+        buttons.forEach(b => b.classList.toggle('active', b.dataset.sub === id));
+        $$(`[data-subview="${name}"]`).forEach(v => { v.hidden = v.dataset.sub !== id; });
+        keep.set('sub-' + name, id);
+      };
+      buttons.forEach(b => b.addEventListener('click', () => pick(b.dataset.sub)));
+      pick(keep.get('sub-' + name));
+    });
   }
 
   function showRun(id) {
@@ -112,16 +188,44 @@ SCRIPT = r"""
     });
   }
 
+  const RUNS_SHOWN = 30;
+  let runsExpanded = keep.get('runs-all') === '1';
   function filterRuns() {
     const q = ($('#run-search')?.value || '').toLowerCase();
     const st = $('#run-state')?.value || '';
     keep.set('run-q', q); keep.set('run-st', st);
+    let shown = 0, matched = 0;
     $$('#run-list tbody tr').forEach(r => {
-      r.hidden = (st && r.dataset.state !== st) || (q && !r.dataset.text.includes(q));
+      const hit = !((st && r.dataset.state !== st) || (q && !r.dataset.text.includes(q)));
+      if (hit) matched++;
+      const show = hit && (runsExpanded || q || st || shown < RUNS_SHOWN);
+      r.hidden = !show;
+      if (show) shown++;
     });
+    const more = $('#runs-more');
+    if (more) more.hidden = runsExpanded || !!q || !!st || matched <= RUNS_SHOWN;
   }
 
   document.addEventListener('click', e => {
+    const ask = e.target.closest('[data-ask]');
+    if (ask) {
+      const box = ask.closest('.ask'), text = askText(ask.dataset.ask, box);
+      copyText(text).then(ok => {
+        const manual = $('textarea.manual', box), note = $('.copied', box);
+        if (ok) {
+          ask.classList.add('done'); setTimeout(() => ask.classList.remove('done'), 1500);
+          if (note) { note.hidden = false; setTimeout(() => { note.hidden = true; }, 5000); }
+          if (manual) manual.hidden = true;
+        } else if (manual) {  // copying was refused: show the text to copy by hand
+          manual.value = text; manual.hidden = false; manual.select();
+        }
+      });
+      return;
+    }
+    if (e.target.id === 'runs-more') { runsExpanded = true; keep.set('runs-all', '1'); filterRuns(); return; }
+    const project = e.target.closest('[data-project-link]');
+    if (project) { location.hash = 'projects/' + project.dataset.projectLink; return; }
+    if (!e.target.closest('details.account')) $$('details.account').forEach(d => { d.open = false; });
     const node = e.target.closest('.node[data-key]');
     if (node && !node.classList.contains('ds')) return selectNode(node.dataset.key);
     const pipe = e.target.closest('[data-pipe]');
@@ -136,6 +240,16 @@ SCRIPT = r"""
     if (node && !node.classList.contains('ds')) selectNode(node.dataset.key);
   });
   ['input', 'change'].forEach(t => document.addEventListener(t, e => { if (e.target.closest('#run-filters')) filterRuns(); }));
+  const filterTree = input => {
+    const q = input.value.toLowerCase();
+    keep.set('tree-' + (input.closest('[data-tree]')?.dataset.tree || input.placeholder), q);
+    $$('button[data-text]', input.parentElement).forEach(b => { b.hidden = !!q && !b.dataset.text.includes(q); });
+  };
+  document.addEventListener('input', e => { if (e.target.matches('.tree-filter')) filterTree(e.target); });
+  $$('.tree-filter').forEach(input => {
+    input.value = keep.get('tree-' + (input.closest('[data-tree]')?.dataset.tree || input.placeholder)) || '';
+    if (input.value) filterTree(input);
+  });
   window.addEventListener('hashchange', route);
   document.addEventListener('toggle', e => {
     if (e.target.open) $$('.cellmap:not(.drawn)', e.target).forEach(drawMap);
@@ -150,7 +264,8 @@ SCRIPT = r"""
   let typedAt = 0;
   document.addEventListener('input', () => { typedAt = Date.now(); });
   const busy = () => Date.now() - typedAt < 15000 ||
-    $$('.view.active details[open], #node-panel details[open]').some(d => d.getClientRects().length);
+    $$('.view.active details[open], #node-panel details[open], details.account[open], .ask textarea.manual:not([hidden])')
+      .some(d => d.getClientRects().length);
   setInterval(() => {
     if (auto() && !document.hidden && !busy()) { keep.set('scroll', String(window.scrollY)); location.reload(); }
   }, REFRESH_MS);
@@ -158,6 +273,7 @@ SCRIPT = r"""
   if ($('#run-search')) { $('#run-search').value = keep.get('run-q') || ''; }
   const st = $('#run-state');
   if (st && [...st.options].some(o => o.value === keep.get('run-st'))) st.value = keep.get('run-st');
+  setupListings(); setupSubtabs();
   filterRuns();
   route(); paint();
   const y = Number(keep.get('scroll') || 0);

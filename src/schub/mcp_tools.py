@@ -7,16 +7,60 @@ from typing import Any, Callable, Literal, TypeVar
 from mcp.server import MCPServer
 
 from .datasets import DatasetEntry
+from .overview import Overview, collect_overview
+from .planner import PlanSummary, StepRequest
+from .project_env import EnvJob
 from .recipes import Recipe
+from .revisions import Revision
 from .seurat import ImportJob
 from .service import Hub
 from .sessions import SessionInfo
+from .step_detail import StepDetail
 
 T = TypeVar("T")
 Call = Callable[[str, dict[str, Any], Callable[[], T]], T]
 
 
 def register_tools(mcp: MCPServer, hub: Hub, call: Call) -> None:
+    @mcp.tool()
+    def cluster_overview() -> Overview:
+        """The user's footprint on the cluster: Lustre quota and home usage, per-user job
+        limits and how much is in use, their jobs with CPU/RAM/GPU, partition load, logins."""
+        return call("cluster_overview", {}, lambda: collect_overview(hub.settings))
+
+    @mcp.tool()
+    def inspect_step(ref: str) -> StepDetail:
+        """One step of a branch as the dashboard shows it, by reference '<project>/<branch>#<step>'
+        (the student can copy it from the dashboard): brick, params, state, results, log, runs."""
+        return call("inspect_step", {"ref": ref}, lambda: hub.inspect_step(ref))
+
+    @mcp.tool()
+    def revise_branch(
+        project: str, branch: str, step: int, reason: str,
+        params: dict[str, Any] | None = None, brick: str | None = None,
+    ) -> PlanSummary:
+        """FIX a step of a branch in place: same branch, next revision (r2, r3...), history and
+        reason kept. params are patched (null resets one to its default); brick replaces the
+        step. Returns the dry-run plan; earlier steps come from cache. Use when a step was wrong."""
+        args = {"project": project, "branch": branch, "step": step, "brick": brick}
+        return call("revise_branch", args, lambda: hub.revise_branch(project, branch, step, reason, params, brick).summary())
+
+    @mcp.tool()
+    def fork_branch(
+        project: str, branch: str, step: int, new_branch: str, reason: str,
+        params: dict[str, Any] | None = None, brick: str | None = None, then: list[StepRequest] | None = None,
+    ) -> PlanSummary:
+        """An ALTERNATIVE from a step on, as a new branch: copies steps before `step`, changes
+        `step` (params patch or another brick), then keeps the parent's remaining steps or uses
+        `then`. The parent branch is not touched. Use for "from here on, try it differently"."""
+        args = {"project": project, "branch": branch, "step": step, "new_branch": new_branch}
+        return call("fork_branch", args, lambda: hub.fork_branch(project, branch, step, new_branch, reason, params, brick, then).summary())
+
+    @mcp.tool()
+    def branch_history(project: str, branch: str) -> list[Revision]:
+        """Revisions of a branch, oldest first, with the reason and the changes of each."""
+        return call("branch_history", {"project": project, "branch": branch}, lambda: hub.branch_history(project, branch))
+
     @mcp.tool()
     def list_recipes() -> list[Recipe]:
         """Pipeline templates that follow the course defaults (scverse + scvi-tools):
@@ -39,6 +83,18 @@ def register_tools(mcp: MCPServer, hub: Hub, call: Call) -> None:
         cellranger_count. technology: 10xv2, 10xv3 (ask the user; it is on the kit)."""
         args = {"folder": folder, "technology": technology, "organism": organism}
         return call("register_fastq", args, lambda: hub.register_fastq(folder, technology, organism, title, expected_cells))
+
+    @mcp.tool()
+    def add_project_packages(
+        project: str, pip: list[str] | None = None, conda: list[str] | None = None, remove: bool = False,
+    ) -> EnvJob:
+        """Extra software for one project's own analysis in Jupyter (not for bricks): pip packages
+        layered on the shared environment (only missing ones are installed, versions compatible
+        with it) and/or conda-forge/bioconda tools. Builds the kernel 'sc-hub: <project>' in a job;
+        a failed build keeps the previous kernel. remove=true drops the listed packages.
+        Prefer what the shared environment already has; add only what the analysis needs."""
+        args = {"project": project, "pip": pip, "conda": conda, "remove": remove}
+        return call("add_project_packages", args, lambda: hub.add_project_packages(project, pip or [], conda or [], remove))
 
     @mcp.tool()
     def import_seurat(rds: str, name: str) -> ImportJob:

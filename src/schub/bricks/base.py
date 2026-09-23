@@ -40,6 +40,10 @@ class PlanContext:
     env_id: str = ""
     code_ids: Mapping[str, str] = field(default_factory=dict)
     library_roots: tuple[Path, ...] = ()  # references and tools (kallisto index, Cell Ranger)
+    # Profile + fingerprint of another dataset by name or path (merge_datasets); raises KeyError.
+    dataset_lookup: Callable[[str], tuple[Any, str]] | None = None
+    primary_path: str = ""  # the plan's own dataset (set by the planner)
+    primary_fingerprint: str = ""
 
     def celltypist_models(self) -> tuple[str, ...]:
         found = {p.name for d in self.celltypist_dirs if d.is_dir() for p in d.glob("*.pkl")}
@@ -62,6 +66,9 @@ TransformFn = Callable[[DatasetState, Any], DatasetState]
 ResourceFn = Callable[[DatasetState, Any], Resources]
 # Identity of external inputs (a reference index, a tool version) folded into the step key.
 KeyExtraFn = Callable[[DatasetState, Any, PlanContext], str]
+ContextTransformFn = Callable[[DatasetState, Any, PlanContext], DatasetState]
+# Datasets a step reads besides its input: {name: "<resolved path>\t<fingerprint>"}.
+PinsFn = Callable[[DatasetState, Any, PlanContext], dict[str, str]]
 
 
 @dataclass(frozen=True)
@@ -78,6 +85,9 @@ class BrickSpec:
     uses_gpu: bool = False
     source: bool = False  # reads FASTQ and writes the first count matrix
     key_extra: KeyExtraFn | None = None
+    first_only: bool = False  # must be step 1 (it reads datasets, not a previous step)
+    transform_ctx: ContextTransformFn | None = None  # replaces transform when it needs the context
+    input_pins: PinsFn | None = None  # extra datasets, checked again at submit and in the job
 
     def describe(self) -> dict[str, Any]:
         return {

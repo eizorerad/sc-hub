@@ -16,9 +16,12 @@ from .headlines import headline
 from .library import celltypist_dirs, find_dataset
 from .notebook import write_notebook
 from .planner import DatasetOverrides, Plan, StepRequest, build_plan
-from .projects import BranchSpec, Idea, ProjectMeta, ProjectStore, ProjectSummary
+from .project_env import EnvError, EnvJob, built, check_packages, remove_env, slug, submit_env_build
+from .projects import BranchSpec, Idea, ProjectError, ProjectMeta, ProjectStore, ProjectSummary
 from .provenance import code_id, env_id
 from .recipes import Recipe, fill_recipe, list_recipes
+from .revisions import Revision, forked_spec, history, parse_step_ref, revised_spec
+from .step_detail import StepDetail, step_detail
 from .runs import RunManifest, RunResults, RunStatus, RunStore
 from .sessions import SessionError, SessionInfo, SessionStore
 from .seurat import ImportJob, SeuratImportError, submit_import
@@ -154,7 +157,16 @@ class Hub:
             env_id=env_id(),
             code_ids={name: code_id(spec) for name, spec in REGISTRY.items()},
             library_roots=self.settings.library_roots,
+            dataset_lookup=self._lookup,
         )
+
+    def _lookup(self, ref: str) -> tuple[DatasetProfile, str]:
+        """Profile and fingerprint of another dataset (for bricks that read several)."""
+        try:
+            path = self.resolve_dataset(ref)
+        except HubError as exc:
+            raise KeyError(str(exc)) from exc
+        return self._profile(path), self.fingerprint(path)
 
     def plan(
         self,
@@ -163,8 +175,9 @@ class Hub:
         overrides: DatasetOverrides | None = None,
         project: str | None = None,
         branch: str | None = None,
+        revision: int | None = None,
     ) -> Plan:
-        plan = self.build(dataset, steps, overrides, project, branch)
+        plan = self.build(dataset, steps, overrides, project, branch).model_copy(update={"revision": revision})
         self.settings.plans_dir.mkdir(parents=True, exist_ok=True)
         (self.settings.plans_dir / f"{plan.plan_id}.json").write_text(plan.model_dump_json(indent=2))
         return plan
@@ -188,7 +201,8 @@ class Hub:
     def preview_branch(self, project: str, branch: str) -> Plan:
         resolved = self.projects.resolve(project, branch)
         overrides = DatasetOverrides(species=resolved.species, gene_ids=resolved.gene_ids)
-        return self.build(resolved.dataset, resolved.steps, overrides, project=project, branch=branch)
+        plan = self.build(resolved.dataset, resolved.steps, overrides, project=project, branch=branch)
+        return plan.model_copy(update={"revision": self.projects.load_branch(project, branch).revision})
 
     def load_plan(self, plan_id: str) -> Plan:
         path = self.settings.plans_dir / f"{_check_id(plan_id, PLAN_ID, 'plan_id')}.json"
@@ -201,6 +215,11 @@ class Hub:
         dataset = Path(plan.dataset)
         if not dataset.exists() or self.fingerprint(dataset) != plan.dataset_fingerprint:
             raise HubError("the dataset changed after planning; plan again")
+        for step in plan.steps:
+            for name, pin in step.pins.items():
+                path, _, fingerprint = pin.partition("\t")
+                if not Path(path).exists() or self.fingerprint(Path(path)) != fingerprint:
+                    raise HubError(f"dataset '{name}' (step {step.index}) changed after planning; plan again")
         manifest = self.store.submit(plan, force_new=force_new)
         if manifest.project:
             try:
@@ -282,6 +301,34 @@ class Hub:
             raise HubError(f"no running {kind} session")
         return line
 
+    def add_project_packages(self, project: str, pip: Sequence[str] = (), conda: Sequence[str] = (),
+                             remove: bool = False) -> EnvJob:
+        """Add (or with remove=True drop) extra packages of a project's Jupyter kernel and
+        rebuild it in a job. The request builds on what is installed now, never on a
+        previous request that failed."""
+        self.projects.require(project)
+        building = f"{self.settings.job_prefix}-env-{slug(project)}"
+        queued = [j for j in self.slurm.active(self.settings.job_prefix) if j.name == building]
+        if queued:
+            raise HubError(f"the kernel of '{project}' is being built (job {queued[0].job_id}); "
+                           "ask again when it has finished, so no request is lost")
+        current = built(self.settings, project)
+        have_pip, have_conda = (current.pip, current.conda) if current else ((), ())
+        if remove:
+            new_pip = tuple(x for x in have_pip if x not in set(pip))
+            new_conda = tuple(x for x in have_conda if x not in set(conda))
+        else:
+            new_pip, new_conda = tuple(dict.fromkeys((*have_pip, *pip))), tuple(dict.fromkeys((*have_conda, *conda)))
+        try:
+            check_packages(new_pip, new_conda)
+            if not new_pip and not new_conda:
+                remove_env(self.settings, project)
+                return EnvJob(project=project, job_id="", log="", env="", kernel="",
+                              note="No extra packages left: the project uses the shared environment only.")
+            return submit_env_build(self.settings, self.slurm, project, new_pip, new_conda)
+        except EnvError as exc:
+            raise HubError(str(exc)) from exc
+
     def import_seurat(self, rds: str, name: str) -> ImportJob:
         try:
             return submit_import(self.settings, self.slurm, rds, name)
@@ -332,28 +379,75 @@ class Hub:
     # ---- projects ----------------------------------------------------------
 
     def list_projects(self) -> list[ProjectSummary]:
-        return [self.projects.summary(name) for name in self.projects.names()]
+        """Every project; one unreadable project.yaml is reported, never hides the others."""
+        found = []
+        for name in self.projects.names():
+            try:
+                found.append(self.projects.summary(name))
+            except ProjectError as exc:
+                found.append(ProjectSummary(path=name, meta=ProjectMeta(name=name), branches=(), ideas=(), runs=(),
+                                            logbook_tail=(), problems=(str(exc)[:300],)))
+        return found
 
     def create_project(self, project: str, question: str = "", datasets: Sequence[str] = ()) -> ProjectMeta:
         return self.projects.create(project, question, tuple(datasets))
 
-    def save_branch(self, project: str, name: str, spec: BranchSpec, overwrite: bool = False) -> Plan:
-        """Validate a branch in memory; save it only if its dry-run plan is clean."""
+    def save_branch(self, project: str, name: str, spec: BranchSpec, overwrite: bool = False, reason: str = "") -> Plan:
+        """Validate a branch in memory; save it only if its dry-run plan is clean.
+        Replacing an existing branch (overwrite) saves a new revision of it."""
         if self.projects.branch_exists(project, name) and not overwrite:
-            raise HubError(f"branch '{name}' already exists in '{project}'; pass overwrite=true to replace it")
+            raise HubError(f"branch '{name}' already exists in '{project}'; to fix it use revise_branch "
+                           "(new revision), for an alternative use fork_branch (new branch)")
+        return self._save_checked(project, name, spec, reason)
+
+    def _save_checked(self, project: str, name: str, spec: BranchSpec, reason: str) -> Plan:
         resolved = self.projects.resolve(project, name, spec)
         overrides = DatasetOverrides(species=resolved.species, gene_ids=resolved.gene_ids)
         preview = self.build(resolved.dataset, resolved.steps, overrides, project=project, branch=name)
         if not preview.ok:
             errors = "; ".join(f"step {i.step}: {i.message}" for i in preview.issues if i.level == "error")
             raise HubError(f"branch '{name}' not saved, its plan has errors: {errors}")
-        self.projects.save_branch(project, name, spec)
+        self.projects.save_branch(project, name, spec, reason)
         return self.plan_branch(project, name)
 
     def plan_branch(self, project: str, branch: str) -> Plan:
         resolved = self.projects.resolve(project, branch)
         overrides = DatasetOverrides(species=resolved.species, gene_ids=resolved.gene_ids)
-        return self.plan(resolved.dataset, resolved.steps, overrides, project=project, branch=branch)
+        revision = self.projects.load_branch(project, branch).revision
+        return self.plan(resolved.dataset, resolved.steps, overrides, project=project, branch=branch, revision=revision)
+
+    def revise_branch(self, project: str, branch: str, step: int, reason: str,
+                      params: dict[str, Any] | None = None, brick: str | None = None) -> Plan:
+        """Fix step `step` of a branch: same branch, next revision (history kept)."""
+        if not reason.strip():
+            raise HubError("give a reason: it is kept in the branch history")
+        spec = revised_spec(self.projects, project, branch, step, params, brick)
+        before = self.projects.resolve(project, branch)
+        after = self.projects.resolve(project, branch, spec)
+        if (after.dataset, after.steps, after.species, after.gene_ids) == (before.dataset, before.steps, before.species, before.gene_ids):
+            raise HubError(f"that change leaves {project}/{branch} as it is (nothing to revise)")
+        return self._save_checked(project, branch, spec, reason.strip())
+
+    def fork_branch(self, project: str, branch: str, step: int, new_branch: str, reason: str,
+                    params: dict[str, Any] | None = None, brick: str | None = None,
+                    then: Sequence[StepRequest | dict[str, Any]] | None = None) -> Plan:
+        """An alternative from step `step` on, as a new branch; `branch` stays as it is."""
+        if self.projects.branch_exists(project, new_branch):
+            raise HubError(f"branch '{new_branch}' already exists in '{project}'")
+        rest = None if then is None else tuple(s if isinstance(s, StepRequest) else StepRequest.model_validate(s) for s in then)
+        spec = forked_spec(self.projects, project, branch, step, params, brick, rest, reason.strip())
+        return self._save_checked(project, new_branch, spec, reason.strip())
+
+    def branch_history(self, project: str, branch: str) -> list[Revision]:
+        return history(self.projects, project, branch)
+
+    def inspect_step(self, ref: str) -> StepDetail:
+        """What one step of a branch is and did: '<project>/<branch>#<step>'."""
+        project, branch, index = parse_step_ref(ref)
+        plan = self.preview_branch(project, branch)
+        if not any(s.index == index for s in plan.steps):
+            raise HubError(f"{ref}: the branch has steps 1-{max((s.index for s in plan.steps), default=0)}")
+        return step_detail(self, ref, plan, index)
 
     def add_idea(self, project: str, slug: str, title: str, hypothesis: str = "", reverses_if: str = "") -> Idea:
         return self.projects.add_idea(project, slug, title, hypothesis, reverses_if)

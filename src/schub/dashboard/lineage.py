@@ -15,19 +15,31 @@ from ..state import Frozen
 from .collect import NodeView
 
 COL_W, NODE_W, NODE_H, ROW_H, PAD = 164, 144, 44, 56, 10
+V_ROW_H = 68  # vertical layout: one step per row
 SHORT = {
+    "kb_count": "kallisto|bus",
+    "cellranger_count": "Cell Ranger",
+    "merge_datasets": "Merge",
     "qc_filter": "QC",
     "normalize_embed": "Normalize",
     "integrate_scvi": "scVI",
+    "integrate_scanvi": "scANVI",
     "annotate_celltypist": "CellTypist",
     "pseudobulk_de": "Pseudobulk DE",
+    "memento_de": "memento",
+    "export_cellxgene": "cellxgene file",
 }
 KEY_PARAMS = {
+    "kb_count": ("technology",),
+    "merge_datasets": ("others", "join"),
     "integrate_scvi": ("n_latent", "batch_key"),
+    "integrate_scanvi": ("labels_key", "batch_key"),
     "normalize_embed": ("n_top_genes", "leiden_resolution"),
     "qc_filter": ("min_genes", "max_pct_mt"),
     "annotate_celltypist": ("model",),
     "pseudobulk_de": ("group_key",),
+    "memento_de": ("group_key", "capture_rate"),
+    "export_cellxgene": ("max_cells",),
 }
 
 
@@ -46,7 +58,8 @@ def pipeline_views(nodes: tuple[NodeView, ...]) -> list[PipelineView]:
     views = [PipelineView(view_id="v-all", label="All pipelines", group="Overview", keys=tuple(n.key for n in nodes))]
     taken = {"v-all"}
     for label in sorted({label for n in nodes for label in n.labels}):
-        group = label.split("/")[0] if "/" in label else "Other runs"
+        # The project (or subproject, a/b) is the group; the branch is the entry.
+        group = label.rsplit("/", 1)[0] if "/" in label else "Other runs"
         # Labels differing only in case or punctuation get -2, -3 (stable: labels are sorted).
         base = unique = view_id(label)
         suffix = 2
@@ -56,7 +69,7 @@ def pipeline_views(nodes: tuple[NodeView, ...]) -> list[PipelineView]:
         views.append(
             PipelineView(
                 view_id=unique,
-                label=label.split("/", 1)[1] if "/" in label else label,
+                label=label.rsplit("/", 1)[1] if "/" in label else label,
                 group=group,
                 keys=tuple(n.key for n in nodes if label in n.labels),
             )
@@ -69,8 +82,9 @@ def _layout(nodes: Iterable[NodeView]) -> tuple[dict[str, tuple[int, int]], dict
     roots: list[str] = []
     for node in nodes:
         children.setdefault(node.parent, []).append(node.key)
-        if node.parent.startswith("ds:") and node.parent not in roots:
-            roots.append(node.parent)
+        for root in (node.parent, *node.inputs):
+            if root.startswith("ds:") and root not in roots:
+                roots.append(root)
     positions: dict[str, tuple[int, int]] = {}
     row = 0
 
@@ -125,29 +139,47 @@ def _box(x: int, y: int, css: str, title: str, subtitle: str, key: str, path: st
     )
 
 
-def render_graph(nodes: tuple[NodeView, ...], keys: tuple[str, ...]) -> str:
+def _origin(depth: int, row: int, vertical: bool) -> tuple[int, int]:
+    """Top-left corner of a node box: steps flow left-to-right, or top-to-bottom."""
+    if vertical:
+        return row * COL_W + PAD, depth * V_ROW_H + PAD
+    return depth * COL_W + PAD, row * ROW_H + PAD
+
+
+def _edge(start: tuple[int, int], end: tuple[int, int], vertical: bool, css: str, to: str, bend: int = 14) -> str:
+    (sx, sy), (ex, ey) = start, end
+    if vertical:
+        x1, y1, x2, y2 = sx + NODE_W // 2, sy + NODE_H, ex + NODE_W // 2, ey
+        curve = f"C{x1},{y1 + bend} {x2},{y2 - bend}"
+    else:
+        x1, y1, x2, y2 = sx + NODE_W, sy + NODE_H // 2, ex, ey + NODE_H // 2
+        curve = f"C{x1 + bend},{y1} {x2 - bend},{y2}"
+    return f'<path class="{css}" data-to="{escape(to, quote=True)}" d="M{x1},{y1} {curve} {x2},{y2}"/>'
+
+
+def render_graph(nodes: tuple[NodeView, ...], keys: tuple[str, ...], vertical: bool = False) -> str:
+    """The lineage of `keys`. Vertical suits one branch next to the step panel;
+    horizontal suits the forest of every branch."""
     wanted = set(keys)
     subset = tuple(n for n in nodes if n.key in wanted)
     if not subset:
         return '<p class="muted">Nothing to show yet.</p>'
     by_key = {n.key: n for n in subset}
     positions, children = _layout(subset)
-    width = (max(d for d, _ in positions.values()) + 1) * COL_W + PAD
-    height = (max(r for _, r in positions.values()) + 1) * ROW_H + PAD
+    origin = {key: _origin(depth, row, vertical) for key, (depth, row) in positions.items()}
+    width = max(x for x, _ in origin.values()) + NODE_W + PAD
+    height = max(y for _, y in origin.values()) + NODE_H + PAD
     edges, boxes = [], []
     for parent, kids in children.items():
-        px, py = positions[parent]
         for kid in kids:
-            kx, ky = positions[kid]
-            x1, y1 = px * COL_W + NODE_W + PAD, py * ROW_H + PAD + NODE_H // 2
-            x2, y2 = kx * COL_W + PAD, ky * ROW_H + PAD + NODE_H // 2
             dashed = " dashed" if by_key[kid].state == "PLANNED" else ""
-            edges.append(
-                f'<path class="edge{dashed}" data-to="{escape(kid, quote=True)}" '
-                f'd="M{x1},{y1} C{x1 + 14},{y1} {x2 - 14},{y2} {x2},{y2}"/>'
-            )
-    for key, (depth, row) in positions.items():
-        x, y = depth * COL_W + PAD, row * ROW_H + PAD
+            edges.append(_edge(origin[parent], origin[kid], vertical, f"edge{dashed}", kid))
+    for node in subset:
+        # Extra datasets a merge step reads: one more edge per dataset root.
+        for root in node.inputs:
+            if root in origin and node.key in origin:
+                edges.append(_edge(origin[root], origin[node.key], vertical, "edge merge", node.key, bend=40))
+    for key, (x, y) in origin.items():
         if key.startswith("ds:"):
             boxes.append(_box(x, y, "ds", key[3:], "dataset", key, key))
             continue

@@ -15,6 +15,7 @@ from .page import render_page
 from .points import write_points
 
 RECENT_FULL_IMAGES = 5
+RECENT_CELL_MAPS = 12  # ~90 KB each: more runs than full images
 
 
 class DashboardInfo(Frozen):
@@ -45,9 +46,10 @@ def _copy(source: Path, dest: Path) -> None:
 class _Images:
     """Copies only what the page shows: thumbnails, and full images of recent runs."""
 
-    def __init__(self, view: Path, full_keys: set[str]) -> None:
+    def __init__(self, view: Path, full_keys: set[str], map_keys: set[str] | None = None) -> None:
         self.view = view
         self.full_keys = full_keys
+        self.map_keys = full_keys if map_keys is None else map_keys
         self.used: set[Path] = set()
 
     def __call__(self, step: StepView, name: str, full: bool) -> str | None:
@@ -66,7 +68,7 @@ class _Images:
 
     def points(self, step: StepView) -> str | None:
         """pts/<key>.js with a subsampled cell map, for steps of recent runs."""
-        if step.key not in self.full_keys:
+        if step.key not in self.map_keys:
             return None
         try:
             relative = write_points(Path(step.step_dir), step.key, self.view)
@@ -101,7 +103,8 @@ def build_dashboard(hub: Any, out: Path | None = None) -> DashboardInfo:
     view = out or hub.settings.view_dir
     snapshot = collect(hub)
     full_keys = {s.key for run in snapshot.runs[:RECENT_FULL_IMAGES] for s in run.steps}
-    images = _Images(view, full_keys)
+    map_keys = {s.key for run in snapshot.runs[:RECENT_CELL_MAPS] for s in run.steps}
+    images = _Images(view, full_keys, map_keys)
     _write(view / "index.html", render_page(snapshot, images))
     images.prune()
     shutil.rmtree(view / "runs", ignore_errors=True)  # per-run pages of the previous layout

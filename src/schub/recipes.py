@@ -66,6 +66,22 @@ RECIPES: tuple[Recipe, ...] = (
         notes="If there is no biological condition, drop condition_key from integrate_scvi.",
     ),
     Recipe(
+        name="multi_dataset",
+        title="Several datasets in one analysis: merge, then integrate with scVI",
+        input="two or more h5ad count matrices (e.g. your data + a published study)",
+        when="A project that starts from more than one dataset; cells keep a 'dataset' column.",
+        steps=(
+            {"brick": "merge_datasets", "params": {"others": ["<other_dataset>"]}},
+            {"brick": "qc_filter", "params": {"batch_key": "dataset"}},
+            {"brick": "normalize_embed", "params": {"batch_key": "dataset"}},
+            {"brick": "integrate_scvi", "params": {"batch_key": "dataset"}},
+            _ANNOTATE,
+            _EXPORT,
+        ),
+        placeholders={"other_dataset": "the dataset to merge with the branch's own dataset", **_MODEL},
+        notes="List more names in merge_datasets.others for three or more datasets.",
+    ),
+    Recipe(
         name="condition_de",
         title="Condition comparison with replicates: pseudobulk DESeq2 (course Lab 8)",
         input="h5ad with raw counts, condition and replicate columns",
@@ -138,7 +154,10 @@ def fill_recipe(name: str, values: Mapping[str, str]) -> list[dict[str, Any]]:
             return value
         return values[key]
 
-    steps = [{"brick": s["brick"], "params": {k: fill(v) for k, v in s["params"].items()}} for s in recipe.steps]
+    def fill_any(value: Any) -> Any:
+        return [fill(v) for v in value] if isinstance(value, list) else fill(value)
+
+    steps = [{"brick": s["brick"], "params": {k: fill_any(v) for k, v in s["params"].items()}} for s in recipe.steps]
     if missing:
         raise KeyError(f"recipe '{name}' needs values for: {', '.join(sorted(missing))}")
     return json.loads(json.dumps(steps))

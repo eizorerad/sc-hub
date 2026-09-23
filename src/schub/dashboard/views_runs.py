@@ -6,8 +6,8 @@ import csv
 from pathlib import Path
 from typing import Callable
 
-from .collect import RunView, Snapshot, StepView
-from .html import dot, esc, kv, pill, table, warnings
+from .collect import BranchInfo, RunView, Snapshot, StepView
+from .html import ask_block, dot, esc, kv, pill, table, warnings
 from .steps import duration
 
 DE_TOP = 12
@@ -125,7 +125,19 @@ def log_block(step: StepView) -> str:
     return f"<details><summary>Log, last {len(step.extras.log_tail)} lines</summary><pre class=log>{esc(chr(10).join(step.extras.log_tail))}</pre></details>"
 
 
-def _step_card(step: StepView, image_url: ImageUrl) -> str:
+def _ask(run: RunView, step: StepView, info: BranchInfo | None) -> str:
+    if not (run.project and run.branch):
+        return ""
+    note = ""
+    # Changed if the branch as it is now (also through a revised parent) has other steps.
+    if info and info.keys and run.steps and run.steps[-1].key not in info.keys:
+        now = f" (now r{info.revision})" if run.revision and info.revision != run.revision else ""
+        note = (f"This run used an earlier version of the branch{now}. The request refers to the branch "
+                "as it is now; check the step with inspect_step first.")
+    return ask_block(f"{run.project}/{run.branch}#{step.index}", step.brick, run.branch, note)
+
+
+def _step_card(step: StepView, image_url: ImageUrl, ask: str = "") -> str:
     summary = step.summary or {}
     message = f'<p class="note bad">{esc(step.message)}</p>' if step.message else ""
     extra = _extra(step, summary)
@@ -134,16 +146,16 @@ def _step_card(step: StepView, image_url: ImageUrl) -> str:
         f'<b>{step.index}. {esc(step.brick)}</b> {pill(step.state)}'
         f'<span class="muted right">{esc(duration(step.extras.seconds))}</span></div>'
         f'<p class="headline">{esc(step.headline)}</p>{message}{warnings(summary)}'
-        f"{figures(step, image_url)}{cell_map(step, image_url, folded=True)}"
+        f"{figures(step, image_url)}{cell_map(step, image_url, folded=True)}{ask}"
         f"<details><summary>Details</summary>{step_facts(step)}{kv(step.params)}{kv(summary)}{extra}"
         f'<p class="muted small">Step key {esc(step.key)}</p></details>{log_block(step)}</li>'
     )
 
 
-def _safe_card(step: StepView, image_url: ImageUrl) -> str:
+def _safe_card(step: StepView, image_url: ImageUrl, ask: str = "") -> str:
     """One unreadable step folder must not take the whole page down."""
     try:
-        return _step_card(step, image_url)
+        return _step_card(step, image_url, ask)
     except Exception as error:  # noqa: BLE001 - shown on the page instead
         return (
             f'<li class="step {esc(step.state)}"><div class="step-head">{dot(step.state)}'
@@ -152,13 +164,13 @@ def _safe_card(step: StepView, image_url: ImageUrl) -> str:
         )
 
 
-def run_detail(run: RunView, image_url: ImageUrl) -> str:
+def run_detail(run: RunView, image_url: ImageUrl, info: BranchInfo | None = None) -> str:
     return (
         f'<div class="run-detail" data-run="{esc(run.run_id)}" hidden>'
         f'<a class="back" href="#runs">← All runs</a>'
         f'<div class="run-title"><h2>{esc(run.label)}</h2>{pill(run.state)}</div>'
         f'<p class="muted">Run <code>{esc(run.run_id)}</code> · dataset {esc(run.dataset)} · created {esc(run.created_at[:16].replace("T", " "))}</p>'
-        f'<ol class="timeline">{"".join(_safe_card(s, image_url) for s in run.steps)}</ol></div>'
+        f'<ol class="timeline">{"".join(_safe_card(s, image_url, _ask(run, s, info)) for s in run.steps)}</ol></div>'
     )
 
 
@@ -169,7 +181,7 @@ def _row(run: RunView) -> str:
     return (
         f'<tr data-href="runs/{esc(run.run_id)}" data-state="{esc(run.state)}" data-text="{esc(text)}">'
         f'<td><a href="#runs/{esc(run.run_id)}">{esc(run.label)}</a><div class="muted small">{esc(run.run_id)}</div></td>'
-        f"<td>{esc(run.dataset)}</td><td>{pill(run.state)}</td><td class=dots>{dots}</td>"
+        f"<td>{esc(' + '.join(run.inputs) or run.dataset)}</td><td>{pill(run.state)}</td><td class=dots>{dots}</td>"
         f'<td class="muted">{esc(last)}</td></tr>'
     )
 
@@ -177,11 +189,14 @@ def _row(run: RunView) -> str:
 def render_runs(snap: Snapshot, image_url: ImageUrl) -> str:
     states = sorted({r.state for r in snap.runs})
     options = '<option value="">All states</option>' + "".join(f'<option value="{esc(s)}">{esc(s.lower())}</option>' for s in states)
-    listing = table(("Run", "Dataset", "State", "Steps", "Latest result"), [_row(r) for r in snap.runs], "runs clickable") \
+    rows = table(("Run", "Dataset", "State", "Steps", "Latest result"), [_row(r) for r in snap.runs], "runs clickable") \
         if snap.runs else '<p class="empty">No runs yet. Ask your assistant to plan and submit a branch.</p>'
+    more = f'<button class="more" id="runs-more" type="button" hidden>Show all {len(snap.runs)} runs</button>'
+
+
     return (
         f'<div id="run-list"><div class="toolbar" id="run-filters">'
         f'<input id="run-search" type="search" placeholder="Filter runs, projects, results" aria-label="Filter runs">'
-        f'<select id="run-state" aria-label="State">{options}</select></div>{listing}</div>'
-        + "".join(run_detail(r, image_url) for r in snap.runs)
+        f'<select id="run-state" aria-label="State">{options}</select></div>{rows}{more}</div>'
+        + "".join(run_detail(r, image_url, snap.branches.get(f"{r.project}/{r.branch}")) for r in snap.runs)
     )

@@ -25,11 +25,27 @@ and records what was run.
 6. Hypotheses go in `add_idea` (with `reverses_if`), decisions in
    `add_logbook_entry`. Link ideas to branches with `update_idea`.
 
+## Changing a pipeline: fix or fork
+
+The student often points at a step from the dashboard, as a reference like
+`pbmc1k-fastq/main#4` (every step there has "Fix this step" / "Try an
+alternative from here" buttons that copy a request for you).
+
+- `inspect_step("<ref>")` first: brick, params, state, results, log.
+- "This step is wrong" -> `revise_branch(project, branch, step, reason, params
+  or brick)`: same branch, next revision (r2, r3...), the reason is kept in the
+  branch history. Earlier steps come from cache.
+- "From here on, try something else" -> `fork_branch(project, branch, step,
+  new_branch, reason, params/brick/then)`: a new branch; the original stays.
+- Never overwrite a branch to try an alternative. `branch_history` shows the
+  revisions with reasons and changes.
+
 ## Defaults (the MBZUAI single-cell course: Python, scverse, scvi-tools)
 
 | Situation | Recipe / bricks |
 |---|---|
 | Count matrix, one batch, first look | `standard_analysis`: qc_filter, normalize_embed, annotate_celltypist, export_cellxgene |
+| Two or more datasets in one analysis | `multi_dataset` (merge_datasets first, then scVI on `dataset`) |
 | Several samples/donors/lanes | `scvi_integration` (integrate_scvi) |
 | Trusted labels for some cells | `scanvi_labels` (integrate_scanvi) |
 | Condition effect with replicates | `condition_de` (pseudobulk_de); add memento_de for differential variability |
@@ -42,6 +58,12 @@ and records what was run.
   student for the 10x chemistry (v2/v3), it is on the kit.
 - Cluster markers from one sample are exploratory; condition DE needs
   replicates (pseudobulk_de or memento_de with replicate_key).
+- A subproject (`create_project("parent/child")`) may use another dataset; a
+  project that starts from several datasets merges them in its first step.
+- Extra software for the student's own notebook work: `add_project_packages`
+  (pip packages on top of the shared environment, conda-forge/bioconda tools)
+  builds a Jupyter kernel "sc-hub: <project>". Bricks keep the shared env.
+- "How much space / how many jobs do I have?": `cluster_overview`.
 
 ## Interactive work
 

@@ -26,9 +26,21 @@ Recipes (`list_recipes`) name the course's standard paths: `standard_analysis`,
 `fastq_cellranger`. The assistant fills in the metadata columns, the student
 confirms them, and sc-hub validates the plan before anything is queued.
 
+Branches are versioned. Fixing a step (`revise_branch`) makes a new revision of
+the same branch (r2, r3…, with the reason and the changes kept); an alternative
+from some step on (`fork_branch`) is a new branch. Every step in the dashboard
+has buttons that copy a ready request for the assistant with the step's
+reference (`project/branch#step`). A project can start from several datasets
+(`merge_datasets`, recipe `multi_dataset`), and subprojects may add datasets.
+
 Interactive work runs on compute nodes: `start_session` opens JupyterLab
 (optionally with a GPU, for scvi-tools model work) or cellxgene on a dataset,
-and `./schub-lab` on the laptop tunnels to it. Seurat `.rds` objects are
+and `./schub-lab` on the laptop tunnels to it. A project can add its own
+software for notebook work (`add_project_packages`: pip packages layered on the
+shared environment with uv, conda-forge/bioconda tools with micromamba), which
+appears as the Jupyter kernel "sc-hub: <project>". The avatar menu of the
+dashboard opens a cluster overview: Lustre quota, home usage, per-user job
+limits and what is in use, your jobs with CPU/RAM/GPU, partition load, logins. Seurat `.rds` objects are
 converted with `import_seurat`; Seurat is for compatibility, not the default.
 
 Starter assets fetched by bootstrap: 10x PBMC 3k, Kang 2018 (IFN-beta

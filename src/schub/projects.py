@@ -3,12 +3,15 @@
     projects/<project>[/<subproject>...]/
       project.yaml          question, status, datasets
       pipelines/<b>.yaml    a branch: steps, or `from: <other>` + overrides
+      pipelines/.history/<b>/r<N>.yaml   earlier revisions of that branch
       ideas/<slug>.md       YAML front matter (status, hypothesis, ...) + notes
       logbook.md            dated entries, newest last
       runs/<run_id>         links to the runs submitted from this project
 
-A branch is a variant of a pipeline. Because step outputs are cached by
-content, branches that share a prefix recompute only where they differ.
+A branch is a variant of a pipeline. Fixing a branch saves a new revision of it
+(r1, r2, ...; the history and the reason are kept); an alternative from some
+step on is a new branch (a fork). Because step outputs are cached by content,
+branches and revisions that share a prefix recompute only where they differ.
 """
 
 from __future__ import annotations
@@ -38,6 +41,9 @@ class ProjectError(ValueError):
 
 
 class ProjectMeta(Frozen):
+    # Unknown keys are ignored: a project written by another sc-hub version must still open.
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
     name: str
     question: str = ""
     status: Literal["active", "paused", "done"] = "active"
@@ -57,6 +63,10 @@ class BranchSpec(Frozen):
     gene_ids: GeneIds | None = None
     idea: str | None = None
     description: str = ""
+    revision: int = Field(1, ge=1)
+    saved: str = ""
+    reason: str = ""  # why this revision (or fork) was made
+    forked_from: str | None = None  # "<branch>@r<N>#<step>" for forks
 
     @model_validator(mode="after")
     def _steps_or_parent(self) -> "BranchSpec":
@@ -141,6 +151,15 @@ def _read_front_matter(text: str, where: str) -> tuple[dict[str, Any], str]:
     return _load_yaml(head, where), body
 
 
+def _archived_revisions(history: Path) -> list[int]:
+    found = []
+    for path in history.glob("r*.yaml") if history.is_dir() else []:
+        match = re.match(r"r(\d+)", path.name)
+        if match:
+            found.append(int(match.group(1)))
+    return found
+
+
 def _quote(text: str) -> str:
     """Logbook text as a quoted block, so it can never forge a new entry heading."""
     return "\n".join(f"> {line}" if line else ">" for line in text.strip().splitlines())
@@ -213,12 +232,47 @@ class ProjectStore:
         folder = self.require(project) / "pipelines"
         return sorted(p.stem for p in folder.glob("*.yaml")) if folder.is_dir() else []
 
-    def save_branch(self, project: str, name: str, spec: BranchSpec) -> Path:
+    def save_branch(self, project: str, name: str, spec: BranchSpec, reason: str = "") -> BranchSpec:
+        """Save a branch; an existing one is kept in the history and the new one gets
+        the next revision number. A branch created under a name that was used before
+        starts a fresh history (the old one is moved aside, never overwritten)."""
         path = self.require(project) / "pipelines" / f"{_check_name(name, 'branch name')}.yaml"
         path.parent.mkdir(parents=True, exist_ok=True)
-        data = spec.model_dump(mode="json", by_alias=True, exclude_defaults=True)
+        history = self.history_dir(project, name)
+        if not path.is_file() and history.is_dir():
+            history.rename(history.with_name(f"{name}.old-{datetime.now(timezone.utc):%Y%m%d%H%M%S}"))
+        archived = _archived_revisions(history)
+        revision = max(archived, default=0) + 1
+        if path.is_file():
+            try:
+                current = self.load_branch(project, name).revision
+            except ProjectError:  # a broken file is archived as it is, then replaced
+                current = revision
+            revision = max(revision, current + 1)
+            history.mkdir(parents=True, exist_ok=True)
+            target = history / f"r{current}.yaml"
+            if target.exists():
+                target = history / f"r{current}-{datetime.now(timezone.utc):%Y%m%d%H%M%S%f}.yaml"
+            with target.open("x") as handle:
+                handle.write(path.read_text())
+        saved = spec.model_copy(update={"revision": revision, "saved": _now(), "reason": reason or spec.reason})
+        data = saved.model_dump(mode="json", by_alias=True, exclude_defaults=True)
         path.write_text(yaml.safe_dump(data, sort_keys=False))
-        return path
+        return saved
+
+    def history_dir(self, project: str, name: str) -> Path:
+        return self.require(project) / "pipelines" / ".history" / _check_name(name, "branch name")
+
+    def revisions(self, project: str, name: str) -> list[BranchSpec]:
+        """Every revision of a branch, oldest first (the last one is the current branch)."""
+        found = []
+        folder = self.history_dir(project, name)
+        for path in sorted(folder.glob("r*.yaml")) if folder.is_dir() else []:
+            try:
+                found.append(_validated(BranchSpec, _load_yaml(path.read_text(), str(path)), str(path)))
+            except ProjectError:
+                continue
+        return sorted(found, key=lambda s: (s.revision, s.saved)) + [self.load_branch(project, name)]
 
     def load_branch(self, project: str, name: str) -> BranchSpec:
         path = self.require(project) / "pipelines" / f"{_check_name(name, 'branch name')}.yaml"

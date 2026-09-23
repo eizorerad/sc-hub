@@ -13,6 +13,7 @@ from . import (
     integrate_scvi,
     kb_count,
     memento_de,
+    merge_datasets,
     normalize_embed,
     pseudobulk_de,
     qc_filter,
@@ -25,6 +26,7 @@ REGISTRY: Mapping[str, BrickSpec] = MappingProxyType(
         for spec in (
             kb_count.SPEC,
             cellranger_count.SPEC,
+            merge_datasets.SPEC,
             qc_filter.SPEC,
             normalize_embed.SPEC,
             integrate_scvi.SPEC,

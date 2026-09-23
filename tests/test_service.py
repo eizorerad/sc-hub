@@ -84,7 +84,7 @@ def test_ids_are_validated(hub):
 def test_bricks_cluster_and_inspect(hub, shared_pbmc):
     names = [b["name"] for b in hub.bricks()]
     assert names == [
-        "kb_count", "cellranger_count", "qc_filter", "normalize_embed", "integrate_scvi",
+        "kb_count", "cellranger_count", "merge_datasets", "qc_filter", "normalize_embed", "integrate_scvi",
         "integrate_scanvi", "annotate_celltypist", "pseudobulk_de", "memento_de", "export_cellxgene",
     ]
     assert "params_schema" in hub.brick("pseudobulk_de")
@@ -138,7 +138,8 @@ def test_save_branch_validates_before_writing(hub, shared_pbmc, settings):
         hub.save_branch("pbmc", "main", bad)
     with pytest.raises(HubError, match="not saved"):
         hub.save_branch("pbmc", "main", bad, overwrite=True)
-    assert hub.projects.load_branch("pbmc", "main") == good
+    kept = hub.projects.load_branch("pbmc", "main")
+    assert kept.steps == good.steps and kept.dataset == good.dataset and kept.revision == 1
     with pytest.raises(HubError, match="not saved"):
         hub.save_branch("pbmc", "broken", bad)
     assert not hub.projects.branch_exists("pbmc", "broken")
