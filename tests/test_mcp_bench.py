@@ -135,7 +135,7 @@ def test_datasets_show_the_twins_already_built(server, bench: Settings, write_h5
 
 def test_skills_and_stop(server, bench: Settings, cluster: FakeCluster) -> None:
     names = [s["name"] for s in ok(call(server, "skills"))["skills"]]
-    assert {"resume", "rigor", "mbzuai_slurm", "perturbseq", "twins", "fetching_data"} <= set(names)
+    assert {"resume", "rigor", "mbzuai_slurm", "perturbseq", "twins", "fetching_data", "dataset_sources"} <= set(names)
     assert "d8cba17576d1a8afc0f7d71b79cad0f7" in ok(call(server, "skills", {"name": "perturbseq"}))["text"]
     assert "hand-over" in ok(call(server, "skills", {"name": "resume"}))["text"]
     assert call(server, "skills", {"name": "../x"}).is_error
