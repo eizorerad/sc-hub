@@ -88,6 +88,11 @@ def submit_result(outcome: RunManifest | QueuedSubmission) -> SubmitResult:
                         run=outcome)
 
 
+class QueueView(Frozen):
+    waiting: tuple[QueuedSubmission, ...] = ()
+    failed: tuple[QueueFailure, ...] = ()
+
+
 class PumpResult(Frozen):
     submitted: tuple[RunManifest, ...] = ()
     failed: tuple[QueueFailure, ...] = ()

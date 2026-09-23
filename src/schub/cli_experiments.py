@@ -6,6 +6,7 @@ import argparse
 import json
 from typing import Any, Callable
 
+from .queue import QueueView
 from .service import Hub
 
 
@@ -38,7 +39,7 @@ def add_experiment_parsers(sub: Any) -> None:
 def experiment_handlers(hub: Hub, args: argparse.Namespace) -> dict[str, Callable[[], Any]]:
     return {
         "pump": lambda: hub.pump(),
-        "queue": lambda: {"waiting": hub.queued(), "failed": hub.queue_failures()},
+        "queue": lambda: QueueView(waiting=tuple(hub.queued()), failed=tuple(hub.queue_failures())),
         "queue-cancel": lambda: hub.cancel_queued(args.plan_id),
         "sweep": lambda: hub.sweep_branch(args.project, args.branch, args.step, args.param, json.loads(args.values),
                                           args.name, args.reason),

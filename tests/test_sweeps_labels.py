@@ -91,6 +91,12 @@ def test_cli_and_mcp_expose_sweeps_queue_and_labels(hub, settings, monkeypatch, 
     assert cli.main(["branch-label", "ifn", "main", "--tag", "baseline", "--pin"]) == 0
     assert _json.loads(capsys.readouterr().out) == {"tags": ["baseline"], "pinned": True, "archived": False}
     assert cli.main(["queue"]) == 0 and _json.loads(capsys.readouterr().out) == {"waiting": [], "failed": []}
+    hub.submit(hub.plan_branch("ifn", "res-0-5").plan_id)
+    hub.submit(hub.plan_branch("ifn", "res-1-0").plan_id)
+    hub.save_branch("ifn", "strict", BranchSpec(from_branch="main", overrides={"qc_filter": {"min_genes": 5}}))
+    hub.submit(hub.plan_branch("ifn", "strict").plan_id)  # above the cap of 2: waits
+    assert cli.main(["queue"]) == 0
+    assert [w["branch"] for w in _json.loads(capsys.readouterr().out)["waiting"]] == ["strict"]  # JSON, not repr
     names = {t.name for t in build_server(hub)._tool_manager.list_tools()}
     assert {"sweep_branch", "submit_sweep", "queue_status", "cancel_queued", "label_branch"} <= names
 
