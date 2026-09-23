@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 
 from schub.bench.journal import Journal
-from schub.bench.models import Actor, CellEntry, CheckResult, JobRef, OutputItem
+from schub.bench.models import Actor, CellEntry, CheckResult, Download, JobRef, OutputItem
 from schub.config import Settings
 from schub.dashboard import build_dashboard
 from schub.projects import ProjectStore
@@ -26,7 +26,11 @@ def bench_project(settings: Settings) -> Journal:
         ("plot QC", "ok", {"outputs": (OutputItem(kind="display", image="cells/c0002/fig-001.png"),),
                            "check_results": (CheckResult(name="table_columns", status="fail", message="lacks pvalue"),)}),
         ("train", "error", {"outputs": (OutputItem(kind="error", ename="KeyError", text="KeyError: 'gene'"),),
-                            "jobs": (JobRef(job_id="812", state="COMPLETED", exit_code=0),)}),
+                            "jobs": (JobRef(job_id="812", state="COMPLETED", exit_code=0),),
+                            "downloads": (Download(url="https://github.com/lab/model.git", path="work/repos/model",
+                                                   size=0, sha256="", commit="0123456789abcdef0123"),
+                                          Download(url="https://zenodo.org/f.h5ad", path="data/f.h5ad", size=5,
+                                                   sha256="fedcba9876543210"))}),
     ):
         cid = journal.allocate("c")
         journal.write_cell(CellEntry(ref=f"ifn#{cid}", project="ifn", cid=cid, why=text, expect="something",
@@ -54,6 +58,8 @@ def test_the_journal_tab_shows_the_work(settings: Settings, cluster: FakeCluster
     assert "<script>alert(1)</script>" not in page and "&lt;script&gt;alert(1)&lt;/script&gt;" in page
     assert "check table_columns" in page and "lacks pvalue" in page and "job 812 completed" in page
     assert "Leo: please check the donor column" in page  # the student sees notes meant for them
+    assert "cloned <code>https://github.com/lab/model.git</code> <span class='muted small'>commit 0123456789ab" in page
+    assert "downloaded <code>https://zenodo.org/f.h5ad</code> <span class='muted small'>sha256 fedcba987654" in page
     assert "its cells turn out to be doublets" in page  # the decisions table behind the menu
     assert "codex-mcp-client" in page
     assert (settings.view_dir / "jfig" / "ifn" / "c0002" / "fig-001.png").read_bytes() == PNG

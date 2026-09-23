@@ -52,12 +52,18 @@ def _badges(entry: dict[str, Any]) -> str:
     return f'<div class="badges">{"".join(badges)}</div>' if badges else ""
 
 
+def _download_row(d: dict[str, Any]) -> str:
+    if d.get("commit"):
+        return (f"<li>cloned <code>{esc(d['url'])}</code> <span class='muted small'>commit "
+                f"{esc(d['commit'][:12])}</span></li>")
+    return f"<li>downloaded <code>{esc(d['url'])}</code> <span class='muted small'>sha256 {esc(d['sha256'][:12])}</span></li>"
+
+
 def _folded(entry: dict[str, Any]) -> str:
     parts = [f'<details class="fold"><summary>code</summary><pre class="code">{esc(entry["code"])}</pre></details>']
     if entry["files"] or entry["downloads"]:
         rows = [f"<li>{esc(f['change'])} <code>{esc(f['path'])}</code></li>" for f in entry["files"]]
-        rows += [f"<li>downloaded <code>{esc(d['url'])}</code> <span class='muted small'>sha256 "
-                 f"{esc(d['sha256'][:12])}</span></li>" for d in entry["downloads"]]
+        rows += [_download_row(d) for d in entry["downloads"]]
         label = f"{len(entry['files'])} file(s)" + (f", {len(entry['downloads'])} download(s)" if entry["downloads"] else "")
         parts.append(f'<details class="fold"><summary>{esc(label)}</summary><ul>{"".join(rows)}</ul></details>')
     failed = [c for c in entry["checks"] if c["status"] != "pass"]

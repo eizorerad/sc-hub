@@ -2,6 +2,8 @@
 
     bench.fetch(url, dest=None, sha256=None, md5=None)   a resumable, recorded download
     bench.twin(path, stratify=None, keep=(), fraction=0.05)   a small stratified copy to try code on
+    bench.clone(url, ref=None)                   a paper's repository at a recorded commit (work/repos/<name>)
+    bench.repo_env(repo, python, torch, cuda, requirements)   its own uv environment; returns its python
     bench.run_brick(name, input, output, params)   a checked sc-hub brick
     bench.project_dir(), bench.work_dir(), bench.data_dir()
     %%slurm --gpus 1 --time 6h ...              the cell as a Slurm job (see skills('slurm_jobs'))
@@ -57,6 +59,19 @@ def twin(source: str | os.PathLike, stratify: str | None = None, keep: tuple[str
     return _twin(source, stratify, keep, fraction, min_per_group, max_keep, max_cells, seed)
 
 
+def clone(url: str, ref: str | None = None, dest: str | os.PathLike | None = None) -> Path:
+    from .repos import clone as _clone
+
+    return _clone(url, ref, dest)
+
+
+def repo_env(repo: str | os.PathLike, python: str = "3.11", torch: str | None = None, cuda: str = "cu128",
+             requirements: str | None = None, install_repo: bool = False, extra: tuple[str, ...] | list[str] = ()) -> Path:
+    from .repos import environment
+
+    return environment(repo, python, torch, cuda, requirements, install_repo, extra)
+
+
 def run_brick(name: str, input: str | os.PathLike, output: str | os.PathLike | None = None,
               params: dict | None = None, results_dir: str | os.PathLike | None = None) -> dict:
     from .bricks_lib import run_brick as _run
@@ -64,5 +79,5 @@ def run_brick(name: str, input: str | os.PathLike, output: str | os.PathLike | N
     return _run(name, input, output, params or {}, results_dir)
 
 
-__all__ = ["FetchError", "current_cell", "current_checks", "data_dir", "fetch", "project_dir", "run_brick",
-           "set_cell", "twin", "work_dir"]
+__all__ = ["FetchError", "clone", "current_cell", "current_checks", "data_dir", "fetch", "project_dir", "repo_env",
+           "run_brick", "set_cell", "twin", "work_dir"]

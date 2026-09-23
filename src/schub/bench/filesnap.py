@@ -15,7 +15,7 @@ from pathlib import Path
 from .models import FileChange
 
 SKIP_DIRS = frozenset({"journal", "jobs", ".ipynb_checkpoints", "__pycache__", "scratch", ".git", "envs", "tmp",
-                       ".cache", "node_modules", ".venv"})
+                       ".cache", "node_modules", ".venv", "repos"})  # a clone is recorded by its commit
 
 
 @dataclass(frozen=True)

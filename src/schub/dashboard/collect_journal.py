@@ -61,7 +61,8 @@ def cell_data(entry: CellEntry, figure_prefix: str = "jfig") -> dict[str, Any]:
         "outputs": [{"kind": o.kind, "text": _cut(o.text, OUTPUT_CHARS), "image": _figure_path(figure_prefix, o.image),
                      "ename": o.ename, "evalue": o.evalue} for o in entry.outputs],
         "files": [{"path": f.path, "change": f.change, "size": f.size} for f in entry.files],
-        "downloads": [{"url": d.url, "sha256": d.sha256, "size": d.size, "status": d.status} for d in entry.downloads],
+        "downloads": [{"url": d.url, "sha256": d.sha256, "size": d.size, "status": d.status, "commit": d.commit}
+                      for d in entry.downloads],
         "jobs": [{"job_id": j.job_id, "state": j.state, "exit_code": j.exit_code} for j in entry.jobs],
         "checks": [{"name": c.name, "status": c.status, "message": c.message} for c in entry.check_results],
         "bricks": list(entry.bricks), "by": entry.actor.client or entry.actor.kind, "engine": entry.actor.engine,

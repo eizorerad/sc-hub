@@ -104,6 +104,7 @@ class Download(Frozen):
     sha256: str
     status: Literal["ok", "failed"] = "ok"
     message: str = ""
+    commit: str = ""  # a cloned repository: the commit checked out (bench.clone)
 
 
 class JobRef(Frozen):
