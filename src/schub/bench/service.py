@@ -211,7 +211,11 @@ class BenchService:
         return self._where()
 
     def stop_workbench(self) -> str:
-        return self.workbench.stop().summary()
+        cancelled = self.workbench.stop()
+        if not cancelled:
+            return self.workbench.state().summary()
+        return (f"Stopped the workbench (job {', '.join(cancelled)}): its kernel variables are gone, files remain. "
+                "The next cell starts a new one.")
 
     def stop(self, target: str) -> str:
         """A cell ref (interrupt it) or "workbench" (free its slot now)."""

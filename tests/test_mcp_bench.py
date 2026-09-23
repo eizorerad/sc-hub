@@ -143,7 +143,7 @@ def test_skills_and_stop(server, bench: Settings, cluster: FakeCluster) -> None:
     ref = ok(call(server, "run", {"project": "p", "code": "import time; time.sleep(5)", "why": "w", "expect": "e"}))["ref"]
     assert "interrupt" in call(server, "stop", {"target": ref}).content[0].text
     job = next(j for j, n in cluster.names.items() if n == "schub-bench-workbench")
-    call(server, "stop", {"target": "workbench"})
+    assert f"Stopped the workbench (job {job})" in call(server, "stop", {"target": "workbench"}).content[0].text
     assert cluster.jobs[job] == "CANCELLED"
     assert call(server, "stop", {"target": "everything"}).is_error
 

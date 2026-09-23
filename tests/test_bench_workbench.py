@@ -83,8 +83,8 @@ def test_successor_waits_on_the_current_job_and_is_never_doubled(settings: Setti
 def test_stop_cancels_the_workbench(settings: Settings, cluster: FakeCluster) -> None:
     wb = bench(settings, cluster)
     job = wb.ensure().job_id
-    wb.stop()
-    assert cluster.jobs[job] == "CANCELLED"
+    assert wb.stop() == (job,)
+    assert cluster.jobs[job] == "CANCELLED" and wb.stop() == ()
 
 
 def test_watchdog_falls_back_when_gpu_refuses_and_excludes_itself(settings: Settings) -> None:

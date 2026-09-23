@@ -113,12 +113,12 @@ class Workbench:
             return None
         return self.submit_workbench(after=own_job_id)
 
-    def stop(self) -> WorkbenchState:
-        """Free the slot now: the runner gets SIGTERM, marks a running cell retired and exits."""
-        jobs = self.jobs(WORKBENCH)
-        if jobs:
-            self.slurm.cancel([j.job_id for j in jobs])
-        return self.state()
+    def stop(self) -> tuple[str, ...]:
+        """Free the slot now: the runner gets SIGTERM, marks a running cell retired and exits. The jobs cancelled."""
+        cancelled = tuple(j.job_id for j in self.jobs(WORKBENCH))
+        if cancelled:
+            self.slurm.cancel(list(cancelled))
+        return cancelled
 
     # ---- the watchdog ------------------------------------------------------------------
 
