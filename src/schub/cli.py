@@ -167,7 +167,7 @@ def _dispatch(hub: Hub, args: argparse.Namespace) -> Any:
         **tool_handlers(hub, args),
         **experiment_handlers(hub, args),
         **(bench_handlers(hub, args) if args.command.startswith("bench-") else {}),
-        **(goal_handlers(hub, args) if args.command.startswith(("goal-", "engine-")) else {}),
+        **(goal_handlers(hub, args) if args.command.startswith(("goal-", "engine-", "eval-")) else {}),
     }
     return table[args.command]()
 

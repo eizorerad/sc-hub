@@ -1,0 +1,151 @@
+# Breadth evaluation of the bench: each request runs in a fresh project, once per
+# engine (schub eval-run), and is scored from the project's journal, its goal events
+# and the tool-call log (schub eval-score).
+#
+# source: acceptance = the plan's two acceptance requests; vcc-style = the kind of
+# work VCC2026 does; course-style = stand-ins for CB703/803 assignments, to be
+# replaced by the real assignments.
+#
+# expect (all optional):
+#   downloads: n          at least n recorded downloads (bench.fetch / bench.clone)
+#   slurm_jobs: n         at least n %%slurm jobs
+#   checks: [names]       checks that must have passed at least once
+#   notes: [kinds]        note kinds that must exist (finding, verdict, registration, ...)
+#   files: [globs]        project files that must exist (work/*.csv)
+#   max_turns: n          the lab agent's turn budget for this request (default 6)
+
+requests:
+  - id: k562-table-qc
+    source: acceptance
+    prompt: >-
+      Build a table of the perturbations in the Replogle 2022 K562 essential-gene Perturb-seq screen
+      (one row per targeted gene: guides, cells, median UMIs and genes per cell, knockdown of the target
+      versus control cells), download the data for our tests, and do QC. Develop on a small twin, run
+      the full QC as a Slurm job, and let the checks verify the results.
+    expect: {downloads: 1, slurm_jobs: 1, checks: [perturbation], notes: [finding], files: ["work/*.csv"]}
+
+  - id: paper-gears
+    source: acceptance
+    prompt: >-
+      Reproduce the main result of GEARS (Roohani, Huang and Leskovec, Nature Biotechnology 2023) on
+      Norman 2019: the error on the top-20 differentially expressed genes for held-out two-gene
+      perturbations, GEARS versus the no-perturbation baseline. A reduced run is fine, with at most
+      45 GPU-minutes in total.
+    expect: {downloads: 1, slurm_jobs: 1, notes: [registration, verdict], files: ["work/compare/*.json"]}
+    max_turns: 8
+
+  - id: kang-pseudobulk-de
+    source: course-style
+    prompt: >-
+      With Kang 2018 from the shared library, test differential expression between stimulated and
+      control CD14 monocytes as a pseudobulk analysis with donors as replicates. Report the top genes
+      and how many pass FDR 5%.
+    expect: {checks: [de_design], notes: [finding], files: ["work/*.csv"]}
+
+  - id: pbmc3k-annotation
+    source: course-style
+    prompt: >-
+      PBMC 3k from the shared library: standard QC, normalization, clustering and a marker-based
+      annotation of the clusters, with a UMAP coloured by cell type.
+    expect: {notes: [finding], files: ["work/*"]}
+
+  - id: pbmc3k-hvg-sensitivity
+    source: course-style
+    prompt: >-
+      How sensitive is the PBMC 3k clustering to the number of highly variable genes (1000, 2000,
+      4000)? Compare the clusterings with the adjusted Rand index.
+    expect: {notes: [finding]}
+
+  - id: pbmc3k-celltypist
+    source: course-style
+    prompt: >-
+      Annotate PBMC 3k with CellTypist (Immune_All_Low) and compare its labels with a marker-based
+      annotation of the Leiden clusters. Where do they disagree?
+    expect: {notes: [finding]}
+
+  - id: kang-mito-threshold
+    source: course-style
+    prompt: >-
+      For Kang 2018, choose a mitochondrial-fraction threshold per donor with the median absolute
+      deviation rule and show how many cells each donor loses compared with a fixed 10% cut.
+    expect: {notes: [finding], files: ["work/*.csv"]}
+
+  - id: kang-doublets
+    source: course-style
+    prompt: >-
+      Estimate the doublet rate per donor and condition in Kang 2018 with Scrublet, and compare it with
+      the demultiplexing doublet labels if the data carry them.
+    expect: {notes: [finding]}
+
+  - id: kang-scvi-integration
+    source: course-style
+    prompt: >-
+      Integrate control and stimulated Kang 2018 cells with scVI on the GPU and show whether cell types
+      mix across conditions after integration (a UMAP and one quantitative score).
+    expect: {slurm_jobs: 1, notes: [finding]}
+
+  - id: pbmc1k-fastq-counts
+    source: course-style
+    prompt: >-
+      Turn the PBMC 1k v3 FASTQ files in the shared library into a gene-by-cell count matrix and compare
+      the number of cells and the median UMIs per cell with what 10x reports for this dataset.
+    expect: {slurm_jobs: 1, notes: [finding]}
+
+  - id: norman-combo-table
+    source: vcc-style
+    prompt: >-
+      Norman 2019 CRISPRa screen (scPerturb): make a table of single and two-gene perturbations with their
+      cell counts and say which combinations have enough cells for a held-out evaluation.
+    expect: {downloads: 1, notes: [finding], files: ["work/*.csv"]}
+
+  - id: k562-mean-baseline
+    source: vcc-style
+    prompt: >-
+      On the K562 essential screen, build the mean-of-perturbations baseline for held-out perturbations
+      and report its Pearson correlation of expression changes on the top-20 DE genes of each held-out
+      perturbation.
+    expect: {downloads: 1, notes: [finding]}
+
+  - id: k562-energy-distance
+    source: vcc-style
+    prompt: >-
+      On the K562 essential screen, test each perturbation against control cells with the energy
+      distance in PCA space and permutation p-values (as scPerturb did). How many perturbations are
+      distinguishable from control at FDR 5%?
+    expect: {downloads: 1, slurm_jobs: 1, notes: [finding]}
+
+  - id: k562-complexes
+    source: vcc-style
+    prompt: >-
+      On the K562 essential screen, compute a pseudobulk expression change per perturbation, cluster the
+      perturbations, and check whether known complexes (Mediator, ribosome, proteasome) cluster together.
+    expect: {downloads: 1, notes: [finding]}
+
+  - id: rpe1-vs-k562
+    source: vcc-style
+    prompt: >-
+      Compare the knockdown of shared targets between the Replogle RPE1 and K562 essential screens. Are
+      the weakly knocked-down targets the same in both cell lines?
+    expect: {downloads: 2, notes: [finding]}
+
+  - id: k562-cell-cycle
+    source: vcc-style
+    prompt: >-
+      Score the cell-cycle phase of K562 control cells and of cells whose target is a cell-cycle gene,
+      and test whether the phase fractions shift.
+    expect: {downloads: 1, notes: [finding]}
+
+  - id: scgpt-zero-shot
+    source: acceptance-like
+    prompt: >-
+      Evaluate the released scGPT whole-human weights zero-shot on PBMC 3k: embed the cells and measure
+      how well the embedding separates the annotated cell types, against PCA as the baseline.
+    expect: {downloads: 1, slurm_jobs: 1, notes: [finding, verdict]}
+    max_turns: 8
+
+  - id: geo-small-qc
+    source: course-style
+    prompt: >-
+      Download the 10x PBMC 1k v3 filtered feature-barcode matrix from 10x Genomics, do QC, and say how it
+      compares with the PBMC 3k dataset in the shared library.
+    expect: {downloads: 1, notes: [finding]}
