@@ -127,8 +127,9 @@ def test_a_usage_limit_hands_the_turn_to_the_other_engine(lab: Settings, cluster
     assert result == "ok"
     claude, codex = engine_calls()
     assert (claude["engine"], codex["engine"]) == ("claude", "codex")
-    assert "This is a new session" in codex["argv"][-1]  # codex starts from the journal, not claude's chat
+    assert "This is a new session" not in codex["argv"][-1]  # claude was refused: nothing to hand over yet
     assert not Cooldown(lab.bench_dir / "engine-cooldown.json").ready("claude")
+    assert Goal(lab, "p").turns() == 1 and "claude" not in Goal(lab, "p").sessions()  # a refused turn is free
     notes = incidents(lab)
     assert any("claude hit its usage limit" in n and "other engine takes over" in n for n in notes)
     monkeypatch.setenv("FAKE_CLAUDE", "ok")

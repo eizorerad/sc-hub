@@ -47,6 +47,7 @@ from .workbench import PASS_THROUGH
 
 ADAPTERS: dict[str, Engine] = {"claude": Claude(), "codex": Codex()}
 TERMINAL = ("complete", "blocked")
+WORKED = ("ok", "timed_out", "failed")  # outcomes of a turn in which the engine did (or may have done) work
 ACTIVE = ("PENDING", "RUNNING", "CONFIGURING", "COMPLETING", "SUSPENDED", "REQUEUED")
 SYSTEM = Actor(kind="system", client="sc-hub lab agent")
 
@@ -158,10 +159,8 @@ class Slice:
         run_dir.mkdir(parents=True, exist_ok=True)
         prompt = self.prompt(config, handover, missed)
         (run_dir / "prompt.md").write_text(prompt)
-        turns = goal.count_turn(engine, self.job)
-        self._log_usage(engine)
-        goal.event("turn_started", job=self.job, engine=engine, turn=turns, resume=resume, handover=handover,
-                   login=credential_fingerprint(engine))
+        goal.event("turn_started", job=self.job, engine=engine, turn=goal.turns() + 1, resume=resume,
+                   handover=handover, login=credential_fingerprint(engine))
         turn = Turn(prompt=prompt, cwd=run_dir, run_dir=run_dir, timeout_s=config.slice_minutes * 60,
                     session_id=resume, new_session_id=new_id, model=policy.model(engine), effort=policy.effort(engine),
                     mcp=self.mcp_server(engine, policy.model(engine), policy.effort(engine), resume or new_id or ""))
@@ -172,7 +171,10 @@ class Slice:
         if outcome.status == "session_missing" and not rotated:
             goal.save_sessions({**sessions, engine: None})
             return self.turn(engine, config, policy, rotated=True)
-        if outcome.session_id and outcome.status != "session_missing":
+        if outcome.status in WORKED:  # a turn refused for a usage limit did nothing: not counted, not kept
+            goal.count_turn(engine, self.job)
+            self._log_usage(engine)
+        if outcome.session_id and outcome.status in WORKED:
             goal.save_sessions({**sessions, engine: {"session_id": outcome.session_id,
                                                      "since": saved.get("since") or self.job}, "last": engine})
         if outcome.status == "failed":

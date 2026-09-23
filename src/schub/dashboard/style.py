@@ -233,6 +233,8 @@ ol.timeline{list-style:none;padding:0;margin:14px 0;border-left:2px solid var(--
 """
 
 JOURNAL_CSS = """
+.jfoot .engine{margin-left:6px;padding:0 6px;border:1px solid var(--line);border-radius:6px;font-size:11px}
+.filters{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px}.filters button.active{border-color:var(--accent);color:var(--accent)}
 .jbar{display:flex;align-items:center;gap:8px;margin-bottom:10px}.jbar>.hint{margin-left:auto}.journal-tree{display:flex;flex-wrap:wrap;gap:4px}
 .journal-tree button{padding:5px 12px;border-radius:999px;border:1px solid var(--line);background:var(--card);color:var(--text)}
 .journal-tree button.active{background:var(--text);color:var(--card);border-color:var(--text)}

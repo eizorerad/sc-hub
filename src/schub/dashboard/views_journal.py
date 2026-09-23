@@ -72,18 +72,33 @@ def _folded(entry: dict[str, Any]) -> str:
     return "".join(parts)
 
 
+def _foot(entry: dict[str, Any]) -> str:
+    engine = f' <span class="engine" title="the lab agent\'s engine">{esc(entry["engine"])}</span>' if entry["engine"] else ""
+    return f'<div class="jfoot muted small"><code>{esc(entry["ref"])}</code> · {esc(entry["by"])}{engine}</div>'
+
+
+def _engine_filter(card: JournalCard) -> str:
+    engines = sorted({e["engine"] for e in card.entries if e.get("engine")})
+    if not engines:
+        return ""
+    buttons = "".join(f'<button type="button" data-engine-filter="{esc(e)}">{esc(e)}</button>' for e in engines)
+    return (f'<p class="pop-label">Lab agent\'s entries</p><div class="filters">'
+            f'<button type="button" data-engine-filter="">all</button>{buttons}</div>')
+
+
 def _cell_card(entry: dict[str, Any]) -> str:
     state = STATUS_CSS.get(entry["status"], "PENDING")
     took = f" · {entry['duration_s']:.0f} s" if entry.get("duration_s") else ""
     actions = menu(f'<button type="button" data-copy="{esc(entry["ref"])}">Copy reference</button>', "Cell actions")
     message = f'<p class="note small">{esc(entry["message"])}</p>' if entry["message"] else ""
     return (
-        f'<article class="jcard" data-status="{esc(entry["status"])}" data-by="{esc(entry["by"])}">'
+        f'<article class="jcard" data-status="{esc(entry["status"])}" data-by="{esc(entry["by"])}"'
+        f' data-engine="{esc(entry["engine"])}">'
         f'<div class="jhead">{pill(state, entry["status"])}<b class="why">{esc(entry["why"])}</b>'
         f'<span class="muted small right">{esc(_time(entry["created"]))}{esc(took)}</span>{actions}</div>'
         f'<div class="muted small expect">expected: {esc(entry["expect"])}</div>{_badges(entry)}{message}'
         f'{_output(entry)}{_folded(entry)}'
-        f'<div class="jfoot muted small"><code>{esc(entry["ref"])}</code> · {esc(entry["by"])}</div></article>'
+        f'{_foot(entry)}</article>'
     )
 
 
@@ -95,11 +110,12 @@ def _note_card(entry: dict[str, Any]) -> str:
                f'{esc(", ".join(entry["unresolved_numbers"]))}</p>' if entry["unresolved_numbers"] else "")
     audience = '<span class="tag">for you</span>' if entry["audience"] == "human" else ""
     return (
-        f'<article class="jcard note-card" data-kind="{esc(entry["kind"])}" data-by="{esc(entry["by"])}">'
+        f'<article class="jcard note-card" data-kind="{esc(entry["kind"])}" data-by="{esc(entry["by"])}"'
+        f' data-engine="{esc(entry["engine"])}">'
         f'<div class="jhead"><span class="tag kind">{esc(label)}</span>{audience}'
         f'<span class="muted small right">{esc(_time(entry["created"]))}</span></div>'
         f'<p class="note-text">{esc(entry["text"])}</p>{because}{reverses}{numbers}'
-        f'<div class="jfoot muted small"><code>{esc(entry["ref"])}</code> · {esc(entry["by"])}</div></article>'
+        f'{_foot(entry)}</article>'
     )
 
 
@@ -124,10 +140,11 @@ def _project(card: JournalCard) -> str:
     handoff = (f'<details class="fold handoff"><summary>Hand-over</summary><pre class="out">{esc(card.handoff)}</pre>'
                f'</details>' if card.handoff.strip() else "")
     nxt = f'<span class="muted">next: {esc(card.next_action)}</span>' if card.next_action else ""
-    more = menu(f'<p class="pop-label">Decisions</p>{_decisions(card)}<p class="pop-label">What went wrong</p>'
+    more = menu(f'{_engine_filter(card)}<p class="pop-label">Decisions</p>{_decisions(card)}'
+                f'<p class="pop-label">What went wrong</p>'
                 f'{_mistakes(card)}<button type="button" data-jnb="{esc(card.project)}" '
                 f'data-src="{esc(card.notebook)}.js">Download as a notebook</button>',
-                "Decisions, mistakes, notebook")
+                "Decisions, mistakes, notebook", end=False)  # the ⋯ sits left, after the title: open rightwards
     return (
         f'<section class="journal" data-journal="{esc(card.project)}" hidden>'
         f'<div class="jtitle"><h2>{esc(card.project)}</h2>{more}</div>'
@@ -185,6 +202,13 @@ JOURNAL_SCRIPT = r"""
     if (link) { location.hash = 'journal/' + link.dataset.journalLink; return; }
     const nb = e.target.closest('[data-jnb]');
     if (nb) { download(nb); return; }
+    const only = e.target.closest('[data-engine-filter]');
+    if (only) {
+      const section = only.closest('.journal'), value = only.dataset.engineFilter;
+      $$('.jcard', section).forEach(c => { c.hidden = Boolean(value) && c.dataset.engine !== value; });
+      $$('[data-engine-filter]', section).forEach(b => b.classList.toggle('active', b === only));
+      return;
+    }
     const copy = e.target.closest('[data-copy]');
     if (copy) {
       const text = copy.dataset.copy;

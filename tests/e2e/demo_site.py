@@ -93,6 +93,7 @@ def _bench_project(hub: Hub) -> None:
         hub.projects.create(name, question=question)
         journal = Journal(hub.settings.projects_dir / name, name)
         codex, claude = Actor(client="codex-mcp-client"), Actor(client="claude-code")
+        lab = Actor(kind="lab_agent", client="claude-code", engine="claude", session_id="s-1")
         cells = (
             ("download K562 essential", "one .h5ad with raw counts", "ok", codex,
              {"outputs": (OutputItem(kind="stream", text="fetched ... (1.9 GB, sha256 5f1e...)\n<b>not bold</b>"),)}),
@@ -100,7 +101,7 @@ def _bench_project(hub: Hub) -> None:
              {"outputs": (OutputItem(kind="display", image="cells/c0002/fig-001.png"),),
               "check_results": (CheckResult(name="perturbation", status="pass", message="knockdown in 41 of 50"),),
               "data_scope": "twin"}),
-            ("full QC as a job", "a job id", "ok", claude,
+            ("full QC as a job", "a job id", "ok", lab,
              {"outputs": (OutputItem(kind="stream", text="Submitted Slurm job 812\n" + "line\n" * 30),),
               "jobs": (JobRef(job_id="812", state="COMPLETED", exit_code=0),), "data_scope": "full"}),
             ("a failing cell", "no error", "error", codex,

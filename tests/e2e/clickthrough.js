@@ -182,6 +182,17 @@ async function main() {
     assert(text.includes('genome-wide fits in 90 GB') && text.includes('a failing cell'), text.slice(0, 200));
   });
   await check('the notebook downloads', () => download('.journal:not([hidden]) .jtitle details[open] [data-jnb]'));
+  await check('the engine filter shows only the lab agent\'s entries, then all', async () => {
+    const cards = () => page.$$eval('.journal:not([hidden]) .jcard', cs => cs.filter(c => !c.hidden).length);
+    const all = await cards();
+    if (!(await vis('.journal:not([hidden]) .jtitle details[open] .pop'))) await page.click('.journal:not([hidden]) .jtitle summary.dots');
+    await page.click('.journal:not([hidden]) [data-engine-filter="claude"]');
+    const only = await cards();
+    const badge = await page.textContent('.journal:not([hidden]) .jcard:not([hidden]) .jfoot .engine');
+    assert(only === 1 && badge.trim() === 'claude', `${only} cards, badge ${badge}`);
+    await page.click('.journal:not([hidden]) [data-engine-filter=""]');
+    assert((await cards()) === all, 'filter did not reset');
+  });
   await check('notes for the student and untraced numbers are shown', async () => {
     const text = await page.textContent('.journal:not([hidden])');
     assert(text.includes('please confirm the control label') && text.includes('numbers not found in the cited cells: 2,000'), 'missing');
