@@ -36,8 +36,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install pytest
-        run: python -m pip install pytest
+      - name: Install pytest (for the setup-python Python and for the one `py -3` finds, which start.ps1 uses)
+        run: |
+          python -m pip install pytest
+          py -3 -m pip install pytest
       - name: The setup helper's portable tests, through onboard\start.cmd and start.ps1
         shell: cmd
         run: onboard\start.cmd check
