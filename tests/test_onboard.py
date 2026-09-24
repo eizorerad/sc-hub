@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import threading
 import time
@@ -114,13 +115,13 @@ def test_the_whole_onboarding_from_the_page(helper) -> None:
     failed = [x for x in state["steps"] if x["status"] == "failed"]
     assert not failed, failed
     assert state["progress"] == 100 and [x["status"] for x in state["steps"]][-1] == "skipped"
-    vscode = next(x for x in state["steps"] if x["id"] == "vscode")  # no VS Code here: ready, then skipped
-    assert vscode["status"] == "skipped" and "job 207131 on gpu-03" in vscode["detail"]
+    vscode = next(x for x in state["steps"] if x["id"] == "vscode")  # no VS Code here: nothing set up
+    assert vscode["status"] == "skipped" and "no VS Code" in vscode["detail"]
     # this computer: the alias first in ~/.ssh/config, the old settings kept, a key, the assistants' configs
     config = (paths.ssh_config).read_text()
     assert config.startswith("# >>> sc-hub >>>\nHost mbzuai-schub\n") and "ServerAliveInterval 30" in config
     assert "User test.user" in config and paths.key.exists()
-    assert "Host mbzuai-schub-ide" in config and "/l/users/test.user/schub/bin/schub ide-proxy" in config
+    assert "Host mbzuai-schub-ide" not in config  # no editor, no shell into the job
     codex = (paths.home / ".codex" / "config.toml").read_text()
     assert "[mcp_servers.schub]" in codex and "/l/users/test.user/schub/bin/schub-mcp" in codex and str(paths.ssh_config) in codex
     assert (paths.workspace / "AGENTS.md").exists() and (paths.workspace / "schub-view").exists()
@@ -150,6 +151,22 @@ def test_a_rerun_skips_what_is_done_and_asks_the_password_for_setup(helper) -> N
     while time.monotonic() < deadline and engine.states["cluster"].status not in ("done", "failed"):
         time.sleep(0.05)
     assert engine.states["cluster"].status == "done", engine.states["cluster"].detail
+
+
+def test_with_vs_code_the_editor_gets_its_host_into_the_workbench_job(helper, tmp_path) -> None:
+    server, paths, cluster = helper
+    bin_dir = tmp_path / "vscode-bin"
+    bin_dir.mkdir()
+    (bin_dir / "code").write_text("#!/bin/sh\n[ \"$1\" = --list-extensions ] && echo ms-vscode-remote.remote-ssh\nexit 0\n")
+    (bin_dir / "code").chmod(0o755)
+    os.environ["PATH"] = f"{bin_dir}:{os.environ['PATH']}"  # (the fixture's monkeypatch restores PATH)
+    to_the_agents(server)
+    form(server, "Sign in to Codex")
+    state = api(server, "/api/state")
+    vscode = next(x for x in state["steps"] if x["id"] == "vscode")
+    assert vscode["status"] == "done" and "job 207131 on gpu-03" in vscode["detail"]
+    config = paths.ssh_config.read_text()
+    assert "Host mbzuai-schub-ide" in config and "/l/users/test.user/schub/bin/schub ide-proxy" in config
 
 
 def test_codex_without_device_codes_and_a_personal_account(helper) -> None:
@@ -305,6 +322,19 @@ def test_stop_ends_the_page_and_the_saved_state_says_finished(helper, capsys) ->
     agent_cli.status(paths, as_json=True)
     report = json.loads(capsys.readouterr().out)
     assert report["page"] == "not running (saved state)" and report["finished"] is True
+
+
+def test_open_shows_the_page_to_the_student_without_printing_its_link(helper, monkeypatch, capsys) -> None:
+    import webbrowser
+
+    from sc_hub_onboard import agent_cli
+
+    server, paths, _ = helper
+    agent_cli.write_page_file(paths, server.port, server.token)
+    opened: list[str] = []
+    monkeypatch.setattr(webbrowser, "open", lambda url: opened.append(url) or True)
+    assert agent_cli.open_page(paths) == 0
+    assert opened == [server.url] and server.token not in capsys.readouterr().out
 
 
 def test_the_sign_in_output_is_read_through_colours_and_links() -> None:

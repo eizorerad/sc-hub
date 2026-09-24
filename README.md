@@ -23,7 +23,7 @@ On your laptop, from a copy of this repository:
 
 ```bash
 sh onboard/start.sh                                             # macOS, Linux
-powershell -ExecutionPolicy Bypass -File onboard\start.ps1      # Windows 10/11
+onboard\start.cmd                                               # Windows 10/11
 ```
 
 > [!TIP]
@@ -63,7 +63,7 @@ flowchart LR
 - **Cells.** The assistant acts through **cells**: code with a required *why* and *expect*, run in a live kernel inside the student's workbench job. Heavy work goes to a `%%slurm` cell, which becomes its own job.
 - **The journal.** Each cell becomes an entry in the project's **journal**: outputs, figures, files, downloads, jobs and **checks** (a failed check marks the entry). The dashboard shows the journal. A new chat starts from its hand-over. A finished study becomes a **report** notebook.
 - **The lab agent.** It can keep working on a goal between chats, in Slurm slices.
-- **The key.** The SSH key opens only sc-hub (`schub-gate`), never a shell.
+- **The key.** On the login node the SSH key runs only sc-hub's own commands (`schub-gate`). VS Code, if installed, gets a shell inside your own workbench job ([details](docs/setup.md#install-student-one-command)).
 
 Details: [docs/how-it-works.md](docs/how-it-works.md). The older brick
 pipelines: [docs/bricks.md](docs/bricks.md).

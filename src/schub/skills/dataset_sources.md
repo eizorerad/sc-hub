@@ -4,8 +4,8 @@ description: Where public single-cell and perturbation data live, with the links
 ---
 # Where the data are
 
-Check `datasets()` first: the shared library already has Kang 2018, PBMC 3k and
-the PBMC 1k FASTQ. Everything below is fetched with `bench.fetch(url, md5=...)`
+Check `datasets()` first: your workspace already has PBMC 3k and Kang 2018 (a
+shared library may add more). Everything below is fetched with `bench.fetch(url, md5=...)`
 (skills("fetching_data")), and the cell's `why` names the paper and the license.
 
 ## Perturbation screens

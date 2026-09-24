@@ -162,7 +162,7 @@ class Setup:
         ctx.values["remote_root"] = root
         ctx.say("setting up your workspace in a Slurm job: its own environment and starter datasets "
                "(the first time 10-20 minutes)")
-        code = cluster.stream(ssh, f"bash '{root}/src/sc-hub/scripts/bootstrap_cluster.sh'", ctx.log)
+        code = cluster.stream(ssh, f"SCHUB_ROOT='{root}' bash '{root}/src/sc-hub/scripts/bootstrap_cluster.sh'", ctx.log)
         if code != 0:
             raise StepFailed("the setup on the cluster failed (see the details)", "Retry; the setup continues where "
                              "it stopped. If it fails again, send the details to the pilot owner.")
@@ -236,6 +236,8 @@ class Setup:
     def vscode(self, ctx: Context) -> str:
         """VS Code (Remote-SSH) into the student's own workbench job, through the gate: set up once, then opening
         VS Code connects to the running job or starts it."""
+        if not ctx.values.get("vscode"):  # nothing to connect: no job started, no shell opened for nobody
+            raise Skip("no VS Code on this computer: install it, then run this step again (retry vscode)")
         ssh, root = self.ssh(ctx), ctx.values["remote_root"]
         done = ssh.run(f"'{root}/bin/schub' ide-setup", stdin=self.paths.key.with_suffix(".pub").read_bytes(),
                        timeout=120)
@@ -260,8 +262,6 @@ class Setup:
         if code and "ms-vscode-remote.remote-ssh" not in _run([code, "--list-extensions"]):
             ctx.log(_run([code, "--install-extension", "ms-vscode-remote.remote-ssh"]).strip()[-200:])
         where = f"job {job} on {node}" if job else "your workbench job"
-        if not ctx.values.get("vscode"):
-            raise Skip(f"ready for VS Code ({where}); install VS Code, then Remote-SSH → {IDE_ALIAS}")
         return f"VS Code opens a shell and files in {where}: Remote-SSH → {IDE_ALIAS}"
 
     # ---- 8. Codex and Claude Code on the cluster, with the student's accounts ---------------------------------

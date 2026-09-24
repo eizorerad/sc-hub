@@ -1,5 +1,5 @@
 """python -m sc_hub_onboard [--home DIR] [--remote-root PATH] [--no-browser]
-python -m sc_hub_onboard status | retry [STEP] | stop | check     (for the assistant: see onboard/AGENT_GUIDE.md)
+python -m sc_hub_onboard status | open | retry [STEP] | stop | check | review-prompt   (see onboard/AGENT_GUIDE.md)
 
 Starts the local page (127.0.0.1) and opens it in the browser; the steps run from the page.
 --home writes everything (ssh config, key, assistants' configs, workspace) under DIR instead of
@@ -43,7 +43,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     paths = Paths(home=args.home.resolve()) if args.home else Paths()
     open_url = (lambda url: None) if args.no_browser else webbrowser.open  # the page shows every link anyway
-    engine = Engine(build(Setup(paths, args.host, args.remote_root, open_url=open_url)), paths.state)
+    # --home (a trial) or --no-browser: the dashboard mirror is not started (it would use the real home)
+    engine = Engine(build(Setup(paths, args.host, args.remote_root, open_url=open_url,
+                                open_dashboard=not (args.no_browser or args.home))), paths.state)
     server = OnboardServer(engine, args.port)
     page = agent_cli.write_page_file(paths, server.port, server.token)  # for `status`, `retry` and `stop`
     engine.start()  # the steps run whether or not the page is open yet; forms wait for the student
