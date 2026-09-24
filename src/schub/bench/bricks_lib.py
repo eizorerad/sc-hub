@@ -22,6 +22,7 @@ from ..library import celltypist_dirs
 from ..provenance import code_id
 from ..service import Hub
 from . import ledger
+from .fsio import read_json, write_json_atomic
 
 
 def _gpu_visible() -> bool:
@@ -45,7 +46,10 @@ def run_brick(name: str, input: str | os.PathLike, output: str | os.PathLike | N
     except ValidationError as exc:
         raise BrickError(f"{name}: {exc.errors()[0]['loc']}: {exc.errors()[0]['msg']}") from exc
     source = Path(input).resolve()
+    earlier = _chain(source)
     state = profile_h5ad(source).state
+    if "qc_filter" in earlier:  # a file cannot say it was QC-filtered; its chain can
+        state = state.with_flags("qc")
     settings = load_settings()
     issues = spec.check(state, p, Hub(settings).plan_context())
     errors = [i.message for i in issues if i.level == "error"]
@@ -66,4 +70,15 @@ def run_brick(name: str, input: str | os.PathLike, output: str | os.PathLike | N
     implementation = load_impl(spec.impl)
     summary = _run_with_retries(lambda: implementation(io, p))
     ledger.record("note", brick=name, version=spec.version, code_id=code_id(spec))
+    if target is not None:
+        write_json_atomic(Path(f"{target}{CHAIN}"), {"bricks": [*earlier, name], "input": str(source)})
     return {"summary": summary, "output": str(target) if target else None, "results_dir": str(results)}
+
+
+CHAIN = ".bricks.json"  # next to an output: the bricks that made it, in order
+
+
+def _chain(path: Path) -> list[str]:
+    data = read_json(Path(f"{path}{CHAIN}")) or {}
+    bricks = data.get("bricks") if isinstance(data, dict) else None
+    return [str(b) for b in bricks] if isinstance(bricks, list) else []

@@ -158,5 +158,9 @@ def test_a_guessed_check_name_gets_the_right_one(bench: Settings, cluster: FakeC
 
     with pytest.raises(BenchError, match="Did you mean 'file'") as info:
         service(bench, cluster).run("demo", "x = 1", "w", "e", wait_s=0,
-                                    checks=[CheckSpec(name="file_exists", params={"path": "work/x"})])
+                                    checks=[CheckSpec(name="fille", params={"path": "work/x"})])
     assert "table_columns" in str(info.value)
+    queued = service(bench, cluster).run("demo", "x = 1", "w", "e", wait_s=0,
+                                         checks=[CheckSpec(name="file_exists", params={"path": "work/x"})])
+    [request] = Inbox(bench.bench_dir).pending()
+    assert queued.status == "queued" and request.checks[0].name == "file"  # the name agents reach for first

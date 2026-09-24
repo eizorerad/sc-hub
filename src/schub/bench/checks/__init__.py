@@ -41,6 +41,14 @@ def registry() -> dict[str, CheckDef]:
     return _registry()
 
 
+ALIASES = {"file_exists": "file", "exists": "file"}  # names agents reach for first (seen in the evaluation)
+
+
+def canonical(specs: Sequence[CheckSpec]) -> tuple[CheckSpec, ...]:
+    """The same checks under their registered names."""
+    return tuple(s.model_copy(update={"name": ALIASES[s.name]}) if s.name in ALIASES else s for s in specs)
+
+
 def run_checks(settings: Settings, project: str, specs: Sequence[CheckSpec]) -> tuple[CheckResult, ...]:
     checks = registry()
     return tuple(_run_one(settings, project, checks, spec) for spec in specs)

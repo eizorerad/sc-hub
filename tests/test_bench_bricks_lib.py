@@ -41,3 +41,28 @@ def test_gpu_bricks_ask_for_a_gpu_job(data: dict[str, Path]) -> None:
 def test_fastq_bricks_are_not_cell_functions(data: dict[str, Path]) -> None:
     with pytest.raises(BrickError, match="FASTQ"):
         run_brick("kb_count", data["counts"], None, {}, None)
+
+
+def test_a_brick_knows_the_bricks_its_input_went_through(data: dict[str, Path], monkeypatch, capsys) -> None:
+    """Found in the evaluation: normalize_embed on qc_filter's output warned 'No qc_filter step before
+    normalization' (each run_brick is a plan of one step). The chain now travels with the output."""
+    import shutil
+
+    from schub.bench import bricks_lib
+
+    def fake(_impl):
+        def run(io, _params):
+            if io.output is not None:
+                shutil.copy(io.input, io.output)
+            return {"done": True}
+        return run
+
+    monkeypatch.setattr(bricks_lib, "load_impl", fake)
+    qc = run_brick("qc_filter", data["counts"], None, {}, None)
+    chain = Path(qc["output"] + ".bricks.json")
+    assert chain.exists() and "qc_filter" in chain.read_text()
+    capsys.readouterr()
+    run_brick("normalize_embed", qc["output"], None, {}, None)
+    assert "No qc_filter step" not in capsys.readouterr().out
+    run_brick("normalize_embed", data["counts"], None, {}, None)
+    assert "No qc_filter step" in capsys.readouterr().out  # a raw file still gets the warning

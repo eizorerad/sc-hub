@@ -98,6 +98,9 @@ class BenchService:
 
     def _request(self, journal: Journal, project: str, code: str, why: str, expect: str,
                  checks: Sequence[CheckSpec], setup: bool, data_scope: str, actor: Actor | None) -> CellRequest:
+        from .checks import canonical
+
+        checks = canonical(checks)
         fields = dict(project=project, code=code, why=why, expect=expect, checks=tuple(checks), setup=setup,
                       data_scope=data_scope, actor=actor or Actor(), created=self.now())
         try:
