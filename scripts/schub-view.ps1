@@ -13,7 +13,7 @@ $Marker = Join-Path $Dest '.schub-view'
 $Incoming = "$Dest.incoming"
 # The download lands next to the view under a name without spaces (cmd writes it; see Update-View).
 $Work = Split-Path -Parent $Dest
-$Archive = '.sc-hub-view.tar'
+$ArchiveName = '.sc-hub-view.tar'  # (PowerShell names ignore case: no other $archive* may exist)
 $HeavySum = ''
 
 # Only ever replace a folder this script created.
@@ -43,16 +43,16 @@ function Update-View {
     if ($LASTEXITCODE -ne 0 -or -not $sum) { Say 'refresh failed'; return }
     $all = $sum -ne $script:HeavySum
     $kind = if ($all) { 'full' } else { 'light' }
-    $archive = Join-Path $Work $Archive
+    $archivePath = Join-Path $Work $ArchiveName
     try {
         if (Test-Path $Incoming) { Remove-Item -Recurse -Force $Incoming }
         New-Item -ItemType Directory -Path $Incoming | Out-Null
         # cmd's redirection keeps the bytes as they are (PowerShell 5 pipes would re-encode binary data).
         Push-Location $Work
-        try { Invoke-Native { cmd /c "ssh -o BatchMode=yes $Alias schub/bin/schub view-pack $kind > $Archive" } }
+        try { Invoke-Native { cmd /c "ssh -o BatchMode=yes $Alias schub/bin/schub view-pack $kind > $ArchiveName" } }
         finally { Pop-Location }
         if ($LASTEXITCODE -ne 0) { Say 'download failed'; return }
-        Invoke-Native { tar -xf $archive -C $Incoming }
+        Invoke-Native { tar -xf $archivePath -C $Incoming }
         if ($LASTEXITCODE -ne 0 -or -not (Test-Path (Join-Path $Incoming 'index.html'))) { Say 'download failed'; return }
         # Each file or folder replaced as a whole, the page last: an open page reloading in between
         # still finds the project files it points to.
@@ -75,7 +75,7 @@ function Update-View {
         # A file briefly locked (antivirus, indexer, Explorer): keep the loop alive.
         Say "update failed ($($_.Exception.Message))"
     } finally {
-        Remove-Item -Force $archive -ErrorAction SilentlyContinue
+        Remove-Item -Force $archivePath -ErrorAction SilentlyContinue
     }
 }
 
