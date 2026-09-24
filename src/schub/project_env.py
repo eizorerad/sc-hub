@@ -104,7 +104,8 @@ def build_script(settings: Settings, project: str, pip: Sequence[str], conda: Se
     if uv is None:
         raise EnvError("uv is not available (shared library bin/ or your sc-hub bin/)")
     if conda and mamba is None:
-        raise EnvError("micromamba is not in the shared library; conda packages cannot be installed")
+        raise EnvError("micromamba is not available (a shared library's bin/ or your sc-hub bin/); conda "
+                       "packages cannot be installed")
     root = env_root(settings, project)
     q = shlex.quote
     record = json.dumps({"pip": list(pip), "conda": list(conda), "built": stamp, "shared_env": str(settings.python)})

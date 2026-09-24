@@ -14,7 +14,7 @@ from typing import Callable
 from .sshkit import Ssh, SshError
 
 REPO = Path(__file__).resolve().parents[2]
-INCLUDE = ("pyproject.toml", "README.md", "src", "scripts", "templates")
+INCLUDE = ("pyproject.toml", "README.md", "LICENSE", "NOTICE", "src", "scripts", "templates")
 SKIP_PARTS = {"__pycache__", ".DS_Store", ".pytest_cache"}
 UPLOAD = """set -e
 R="${SCHUB_ROOT:-%(root)s}"

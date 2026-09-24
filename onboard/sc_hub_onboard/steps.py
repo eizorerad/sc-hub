@@ -157,7 +157,8 @@ class Setup:
         if not re.fullmatch(r"/[\w./-]+", root):  # it goes into later commands between single quotes
             raise StepFailed(f"unexpected sc-hub folder on the cluster: {root[:80]}", "Use a plain --remote-root path.")
         ctx.values["remote_root"] = root
-        ctx.say("setting up your workspace in a Slurm job (a few minutes)")
+        ctx.say("setting up your workspace in a Slurm job: its own environment and starter datasets "
+               "(the first time 10-20 minutes)")
         code = cluster.stream(ssh, f"bash '{root}/src/sc-hub/scripts/bootstrap_cluster.sh'", ctx.log)
         if code != 0:
             raise StepFailed("the setup on the cluster failed (see the details)", "Retry; the setup continues where "

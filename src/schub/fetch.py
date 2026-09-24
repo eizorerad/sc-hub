@@ -44,7 +44,7 @@ def sha256_file(path: Path) -> str:
 def _download(url: str, dest: Path, sha256: str) -> Path:
     """Download to a temporary name, verify the checksum, then move into place."""
     # Some CDNs (10x) reject urllib's default User-Agent with 403.
-    request = urllib.request.Request(url, headers={"User-Agent": "sc-hub/0.1 (+https://mbzuai.ac.ae)"})
+    request = urllib.request.Request(url, headers={"User-Agent": "sc-hub/0.1 (+https://github.com/eizorerad/sc-hub)"})
     partial = dest.with_name(dest.name + ".partial")
     try:
         with urllib.request.urlopen(request, timeout=TIMEOUT_S) as response, partial.open("wb") as out:

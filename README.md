@@ -110,7 +110,9 @@ something only where it has to:
    (`~/.ssh/mbzuai_schub_ed25519`, alias `mbzuai-schub`); it is never stored and
    never reaches the assistant. On Windows 10, whose OpenSSH does not take a
    password from a program, a console window opens and you type it there.
-3. **sc-hub on the cluster**, in `/l/users/LOGIN/schub`, set up in a Slurm job.
+3. **sc-hub on the cluster**, in `/l/users/LOGIN/schub`, set up in a Slurm job:
+   your own environment and the starter datasets (about 6 GB, 10-20 minutes the
+   first time).
 4. **A first run**: a kernel cell and a small Slurm job with a check, in the
    project `hello`.
 5. **Your assistants**: Codex (also in the ChatGPT desktop app), Claude Code and
@@ -141,23 +143,24 @@ your cluster password is asked once or twice, never stored.
 macOS / Linux:
 
 ```bash
-ssh LOGIN@login-student-lab.mbzu.ae cat /l/users/leonid.klarov/sc-hub-library/install/install-sc-hub.sh | bash -s -- LOGIN
+ssh LOGIN@login-student-lab.mbzu.ae cat LIBRARY/install/install-sc-hub.sh | bash -s -- LOGIN
 ```
 
 Windows 10/11 (PowerShell, built-in OpenSSH client):
 
 ```powershell
-ssh LOGIN@login-student-lab.mbzu.ae cat /l/users/leonid.klarov/sc-hub-library/install/install-sc-hub.ps1 | Out-String | iex
+ssh LOGIN@login-student-lab.mbzu.ae cat LIBRARY/install/install-sc-hub.ps1 | Out-String | iex
 ```
 
-The installer lives in the pilot owner's shared library on the cluster, so only
+`LIBRARY` is the cluster folder where the pilot owner published the installer
+(`SCHUB_LIBRARY_ROOT=... bash scripts/release.sh`); they give you the path. Only
 people with a cluster account can download it. It:
 
 1. creates a dedicated SSH key (no passphrase, so the assistants can connect on
    their own) and the alias `mbzuai-schub`, and installs the key on the login
    node; at the end it limits the key to sc-hub (see below);
 2. copies sc-hub to `/l/users/LOGIN/schub` and sets up the workspace there in a
-   Slurm job (shared library environment, or a private one as a fallback);
+   Slurm job (its own environment, or a shared library's if one is set);
 3. connects sc-hub to every assistant it finds: **Codex** (also Codex inside the
    ChatGPT desktop app), **Claude Code** and **Claude Desktop**;
 4. creates `~/sc-hub-workspace` with instructions for the assistant (`AGENTS.md`,
@@ -211,7 +214,8 @@ exist as a CLI on the cluster:
 |---|---|
 | Publish or update the shared library (env, datasets, models) | `bash scripts/publish_library.sh` on the cluster |
 | ...inside an allocation you already hold | `SCHUB_SRUN_ARGS="--jobid=<id> --overlap" SCHUB_GPU_CHECK=0 bash scripts/publish_library.sh` |
-| Build and publish the installers | `bash scripts/release.sh` on your laptop (`--gist` also updates a secret gist) |
+| Build and publish the installers | `SCHUB_LIBRARY_ROOT=<cluster folder> bash scripts/release.sh` on your laptop (`--gist` also updates a secret gist) |
+| Use a shared library in your own workspace | `SCHUB_LIBRARY=<library> bash scripts/bootstrap_cluster.sh` on the cluster (students build their own by default) |
 | Install Cell Ranger (10x license; link from the 10x downloads page) | `bash scripts/install_cellranger.sh '<link>' human` on the cluster |
 | Choose the lab agents' engines (owner only) | `schub engine-policy set mixed --primary claude`, `... grant <project> codex`, `schub engine-probe` |
 | Give a project a lab agent | `schub goal-start <project> --goal goal.md`; `schub goal-status` / `goal-stop` |
@@ -261,12 +265,20 @@ The logic lives in the `schub` package, not in the MCP layer, so the CLI and
 the MCP tools enforce the same rules. Anything no brick covers is ordinary code
 in a cell, with the same journal and checks.
 
-## Shared library and the fallback
+## Own environment, or a shared library
 
-The pilot owner publishes a read-only library (`scripts/publish_library.sh`):
+By default every student's workspace is self-contained: `bootstrap_cluster.sh`
+builds a private environment and downloads the starter datasets and models into
+`$SCHUB_ROOT/library-local` (about 6 GB). Tools that only a library provides
+(micromamba for conda packages, cellxgene, R + Seurat, kallisto indices, Cell
+Ranger) are then missing, and the tools that need them say so. Sharing datasets
+between students is for later.
+
+Optionally, someone can publish a read-only library (`scripts/publish_library.sh`)
+and point a workspace at it with `SCHUB_LIBRARY`:
 
 ```
-/l/users/<owner>/sc-hub-library/
+<library>/                          (default /l/users/$USER/sc-hub-library for its publisher)
   envs/<version>/  envs/current     Python env (students pin the resolved version)
   hub/<version>/                    sc-hub source snapshot
   datasets/<name>/                  data.h5ad + dataset.yaml, or FASTQ + fastq.yaml (license, sha256)
@@ -278,11 +290,10 @@ The pilot owner publishes a read-only library (`scripts/publish_library.sh`):
   tools/cellranger/<version>/       optional, installed by the owner
 ```
 
-`bootstrap_cluster.sh` uses it when the student can read it: no private
-environment (saves ~6 GB each) and no duplicate datasets. If the library is
-missing or unreadable, bootstrap builds a private environment and downloads
-everything into `$SCHUB_ROOT/library-local`. If the library lacks one asset, only
-that asset is downloaded there. At any time `fetch_asset` (MCP) queues a
+With `SCHUB_LIBRARY` set and readable, `bootstrap_cluster.sh` uses it: no private
+environment (saves ~6 GB each) and no duplicate datasets. If it is missing or
+unreadable, bootstrap builds a private environment as above. If the library lacks
+one asset, only that asset is downloaded into `library-local`. At any time `fetch_asset` (MCP) queues a
 download job. Datasets with a recorded checksum get the same cache keys whether
 they come from the library or a fallback copy.
 
@@ -433,3 +444,11 @@ Results and screenshots go to `tests/e2e/out/`.
   page's Windows paths (the password window, the launcher) are tested against a fake ssh only.
 - The setup page's sign-ins on the cluster were checked up to the browser (installers, links, codes, the
   tunnel, a wrong code) in a throwaway home; a full sign-in needs a student account.
+
+## License
+
+Apache-2.0: see [LICENSE](LICENSE) and [NOTICE](NOTICE). The optional analysis
+extras pull in `igraph` (GPL-2.0+) and `leidenalg` (GPL-3.0), which are not part
+of this package; check their terms before redistributing an environment that
+bundles them. `scripts/install_cellranger.sh` does not ship Cell Ranger: each
+user downloads it after accepting 10x Genomics' license.

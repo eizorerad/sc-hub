@@ -269,7 +269,7 @@ def test_the_page_is_only_for_this_computer_and_this_link(helper) -> None:
 
 
 def test_logins_and_the_config_block() -> None:
-    assert check_login(" Leonid.Klarov ") == "leonid.klarov"
+    assert check_login(" Test.User ") == "test.user"
     for bad in ("", "a", "root; rm -rf", "leo@x", "../x"):
         with pytest.raises(Exception):
             check_login(bad)

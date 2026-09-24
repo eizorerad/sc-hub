@@ -9,7 +9,7 @@ is a student's sc-hub workspace. Layout:
 | `projects/<p>[/<sub>]/` | `project.yaml`, `journal/` (cells, notes, hand-over, checkpoint: the record of the work), `work/` (the kernel's working folder), and from the brick era `pipelines/`, `ideas/`, `logbook.md`, `runs/` |
 | `bench/` | The workbench: `inbox/` cell requests, `claimed/<job>/`, `workbench.json` (state and heartbeat), `watchdog.json`, `logs/`, `STOP` (the off switch) |
 | `data/<name>/` | The student's own datasets: `data.h5ad` + `dataset.yaml`, FASTQ reads + `fastq.yaml` (`schub register-fastq`), imported Seurat objects, or loose `.h5ad` files |
-| `library-local/` | Datasets and models downloaded because the shared library lacked them or was unreadable |
+| `library-local/` | Your own datasets and models: the starter set, and anything a shared library (if one is set) lacks |
 | `runs/<run_id>/` | `manifest.json`, `plan.json`, `NN_<brick>` links to step folders |
 | `cache/steps/<key>/` | Content-addressed step outputs, logs, results; shared by all branches |
 | `plans/` | Validated plans |
@@ -20,10 +20,10 @@ is a student's sc-hub workspace. Layout:
 | `queue/` | Plans waiting for a free slot (sc-hub submits them when a pipeline ends); `failed/` those that could not be submitted |
 | `trash/` | Move things here instead of deleting |
 
-The shared library (`$SCHUB_LIBRARY`, read-only) provides the environment,
-datasets (count matrices and FASTQ), models, kallisto indices and tools
-(cellxgene, R + Seurat, optionally Cell Ranger). Nothing is ever written there
-by students.
+If `$SCHUB_LIBRARY` is set, that shared library (read-only) provides the
+environment, datasets (count matrices and FASTQ), models, kallisto indices and
+tools (cellxgene, R + Seurat, optionally Cell Ranger); nothing is ever written
+there by students. Without it, everything lives in this folder.
 
 ## Rules for agents working here
 
