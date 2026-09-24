@@ -34,7 +34,8 @@ def main(argv: list[str] | None = None) -> int:
         print("sc-hub onboarding needs Python 3.9 or newer", file=sys.stderr)
         return 2
     paths = Paths(home=args.home.resolve()) if args.home else Paths()
-    engine = Engine(build(Setup(paths, args.host, args.remote_root)), paths.state)
+    open_url = (lambda url: None) if args.no_browser else webbrowser.open  # the page shows every link anyway
+    engine = Engine(build(Setup(paths, args.host, args.remote_root, open_url=open_url)), paths.state)
     server = OnboardServer(engine, args.port)
     print(f"sc-hub setup: open {server.url}", flush=True)
     if not args.no_browser:

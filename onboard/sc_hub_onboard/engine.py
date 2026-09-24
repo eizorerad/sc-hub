@@ -8,7 +8,9 @@ page and waits; nothing is ever asked in the assistant's chat.
 
 from __future__ import annotations
 
+import itertools
 import json
+import os
 import threading
 import time
 import traceback
@@ -75,6 +77,17 @@ class Context:
         """Show `form` on the page and wait for the student's answer (secrets are kept only in memory)."""
         return self.engine.wait_for_answer(self.state, form)
 
+    def show(self, form: dict[str, Any]) -> None:
+        """Show `form` (e.g. a link and a code) while the step keeps working; its buttons are `choices` only."""
+        self.engine.show(self.state, form)
+
+    def poll(self) -> dict[str, Any] | None:
+        """The student's answer to a shown form, if one came (a choice, or {"cancel": True})."""
+        return self.engine.take_answer()
+
+    def clear(self) -> None:
+        self.engine.set(self.state, status="running", ask=None)
+
 
 class Engine:
     def __init__(self, steps: list[Step], state_path: Path, values: dict[str, Any] | None = None) -> None:
@@ -85,7 +98,8 @@ class Engine:
         self.finished = False
         self._answer: dict[str, Any] | None = None
         self._answered = threading.Event()
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()  # the step thread and the page's requests both change the states
+        self._form_ids = itertools.count(1)
         self._thread: threading.Thread | None = None
         self._load()
 
@@ -106,7 +120,9 @@ class Engine:
         with self._lock:
             data = {"values": {k: v for k, v in self.values.items() if k not in SECRET_FIELDS and _plain(v)},
                     "steps": {sid: {**asdict(s), "ask": None} for sid, s in self.states.items()}}
-            self.state_path.parent.mkdir(parents=True, exist_ok=True)
+            self.state_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            if os.name != "nt":
+                os.chmod(self.state_path.parent, 0o700)  # the login and the steps' logs: this account only
             temp = self.state_path.with_name(self.state_path.name + ".tmp")
             temp.write_text(json.dumps(data, indent=1))
             temp.replace(self.state_path)
@@ -130,50 +146,77 @@ class Engine:
         self.finished = True
         self.save()
 
-    def _run_one(self, step: Step, state: StepState) -> bool:
-        state.status, state.hint, state.started = "running", "", time.time()
+    def set(self, state: StepState, **fields: Any) -> None:
+        """Change a step's state; every change of status or form goes through here, under the lock."""
+        with self._lock:
+            for name, value in fields.items():
+                setattr(state, name, value)
         self.save()
+
+    def _run_one(self, step: Step, state: StepState) -> bool:
+        self.set(state, status="running", hint="", started=time.time())
+        end: dict[str, Any]
         try:
             detail = step.run(Context(self, state))
-            state.status, state.detail = "done", detail or state.detail
+            end = {"status": "done", "detail": detail or state.detail}
         except Skip as exc:
-            state.status, state.detail = "skipped", str(exc)
+            end = {"status": "skipped", "detail": str(exc)}
         except StepFailed as exc:
-            state.status, state.detail, state.hint = "failed", str(exc), exc.hint
+            end = {"status": "failed", "detail": str(exc), "hint": exc.hint}
         except Exception as exc:  # noqa: BLE001 - shown on the page; the student can retry or report it
-            state.status, state.detail = "failed", f"{type(exc).__name__}: {exc}"
-            state.hint = "Retry; if it fails again, send the log below to the pilot owner."
-            state.log = state.log + traceback.format_exc().splitlines()[-6:]
-        state.ask, state.finished = None, time.time()
-        self.save()
+            end = {"status": "failed", "detail": f"{type(exc).__name__}: {exc}",
+                   "hint": "Retry; if it fails again, send the log below to the pilot owner.",
+                   "log": state.log + traceback.format_exc().splitlines()[-6:]}
+        self.set(state, **end, ask=None, finished=time.time())
         return state.status in ("done", "skipped")
 
     def retry(self, step_id: str | None = None) -> None:
-        for state in self.states.values():
-            if state.status == "failed" or state.id == step_id:
-                state.status, state.hint = "waiting", ""
+        with self._lock:
+            for state in self.states.values():
+                if state.status == "failed" or state.id == step_id:
+                    state.status, state.hint = "waiting", ""
         self.start()
 
     # ---- asking the student ----------------------------------------------------------------------
 
     def wait_for_answer(self, state: StepState, form: dict[str, Any]) -> dict[str, Any]:
         self._answered.clear()
-        state.status, state.ask = "asking", form
-        self.save()
+        self.set(state, status="asking", ask={**form, "id": str(next(self._form_ids))})
         self._answered.wait()
         answer, self._answer = self._answer or {}, None
-        state.status, state.ask = "running", None
-        self.save()
+        self.set(state, status="running", ask=None)
         if answer.get("cancel"):
             raise StepFailed("stopped on the page", "Press Retry to try this step again.")
         return answer
 
+    def show(self, state: StepState, form: dict[str, Any]) -> None:
+        self._answered.clear()
+        self._answer = None
+        self.set(state, status="asking", ask={**form, "wait": True, "id": str(next(self._form_ids))})
+
+    def take_answer(self) -> dict[str, Any] | None:
+        if not self._answered.is_set():
+            return None
+        self._answered.clear()
+        answer, self._answer = self._answer or {}, None
+        return answer
+
     def answer(self, values: dict[str, Any]) -> bool:
-        if not any(s.status == "asking" for s in self.states.values()):
-            return False
-        self._answer = values
-        self._answered.set()
+        """Take an answer to the form on the page now (by its id), if it answers what that form asks."""
+        with self._lock:
+            state = next((s for s in self.states.values() if s.status == "asking" and s.ask
+                          and s.ask.get("id") == values.get("form_id")), None)
+            if state is None or not _answers(state.ask, values):
+                return False
+            self._answer = {k: v for k, v in values.items() if k != "form_id"}
+            state.status, state.ask = "running", None  # the form goes away at once, not at the step's next look
+            self._answered.set()
+        self.save()
         return True
+
+    def _states(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return [asdict(self.states[s.id]) for s in self.steps]
 
     # ---- what the page shows -------------------------------------------------------------------------
 
@@ -183,8 +226,20 @@ class Engine:
         running = next((s for s in self.steps if self.states[s.id].status in ("running", "asking")), None)
         partial = running.weight * 0.3 if running else 0.0
         return {"progress": round(100 * (done + partial) / total), "finished": self.finished,
-                "steps": [asdict(self.states[s.id]) for s in self.steps],
+                "steps": self._states(),
                 "summary": self.values.get("summary", {})}
+
+
+def _answers(form: dict[str, Any], values: dict[str, Any]) -> bool:
+    """A form's own buttons only: Stop (unless it has none), one of its choices, or its required fields filled
+    (a waiting form has no fields to send)."""
+    if values.get("cancel"):
+        return form.get("cancel") is not False
+    if "choice" in values:
+        return values["choice"] in {c.get("name") for c in form.get("choices", [])}
+    if form.get("wait"):
+        return False
+    return all(values.get(f["name"]) not in (None, "", False) for f in form.get("fields", []) if f.get("required"))
 
 
 def _plain(value: Any) -> bool:

@@ -41,6 +41,7 @@ const call = (path, body) => fetch(path, {method: body === undefined ? "GET" : "
   "Content-Type": "application/json"}, body: body === undefined ? undefined : JSON.stringify(body)}).then(r => r.json());
 const ICON = {waiting: "○", running: '<span class="spin"></span>', asking: "?", done: "✓", skipped: "–", failed: "✗"};
 let shownAsk = "", openLogs = new Set();
+const WORKING = "working";  // an answer was sent: the next state clears this note or shows the next form
 
 function renderAsk(step) {
   const form = step && step.ask;
@@ -53,12 +54,16 @@ function renderAsk(step) {
     : `<label for="f-${esc(f.name)}">${esc(f.label)}</label><input id="f-${esc(f.name)}" name="${esc(f.name)}" type="${f.type === "password" ? "password" : "text"}"
         value="${esc(f.value || "")}" placeholder="${esc(f.placeholder || "")}" autocomplete="${f.type === "password" ? "current-password" : "off"}">`).join("");
   const text = (form.text || []).map(p => `<p>${esc(p)}</p>`).join("");
-  const links = (form.links || []).map(l => `<p><a href="${esc(l.url)}" target="_blank" rel="noopener noreferrer">${esc(l.label)}</a>
+  const links = (form.links || []).filter(l => /^https:\/\//.test(l.url)).map(l => `<p><a href="${esc(l.url)}" target="_blank" rel="noopener noreferrer">${esc(l.label)}</a>
     <button type="button" data-copy="${esc(l.url)}">Copy link</button></p>`).join("");
-  const code = form.code ? `<p>Code: <span class="code">${esc(form.code)}</span></p>` : "";
+  const code = form.code ? `<p>Code: <span class="code">${esc(form.code)}</span>
+    <button type="button" data-copy="${esc(form.code)}">Copy code</button></p>` : "";
+  const waiting = form.wait ? `<p><span class="spin"></span> ${esc(form.wait_text || "Waiting for you to finish in the browser…")}</p>` : "";
+  const buttons = [form.wait ? "" : `<button class="primary" type="submit">${esc(form.submit || "Continue")}</button>`,
+    ...(form.choices || []).map(c => `<button type="button" data-choice="${esc(c.name)}">${esc(c.label)}</button>`),
+    form.cancel === false ? "" : '<button type="button" id="cancel">Stop here</button>'].join("");
   $("#ask").innerHTML = `<form class="card ask" id="form"><h2>${esc(form.title || step.title)}</h2>${text}${links}${code}${fields}
-    <p class="err" id="err"></p><div class="row"><button class="primary" type="submit">${esc(form.submit || "Continue")}</button>
-    ${form.cancel === false ? "" : '<button type="button" id="cancel">Stop here</button>'}</div></form>`;
+    <p class="err" id="err"></p>${waiting}<div class="row">${buttons}</div></form>`;
   const first = $("#form input:not([type=checkbox])"); if (first) first.focus();
   $("#form").addEventListener("submit", async e => {
     e.preventDefault();
@@ -67,10 +72,13 @@ function renderAsk(step) {
     const missing = (form.fields || []).filter(f => f.required && !answer[f.name]);
     if (missing.length) { $("#err").textContent = `Fill in: ${missing.map(f => f.label).join(", ")}`; return; }
     for (const input of $("#form").querySelectorAll("input[type=password]")) input.value = "";
-    shownAsk = ""; $("#ask").innerHTML = '<p class="card">Working on it…</p>';
-    await call("/api/answer", answer);
+    shownAsk = WORKING; $("#ask").innerHTML = '<p class="card">Working on it…</p>';
+    await call("/api/answer", {...answer, form_id: form.id});
   });
-  const cancel = $("#cancel"); if (cancel) cancel.onclick = () => { shownAsk = ""; call("/api/answer", {cancel: true}); };
+  const cancel = $("#cancel"); if (cancel) cancel.onclick = () => { shownAsk = WORKING; call("/api/answer", {cancel: true, form_id: form.id}); };
+  for (const button of $("#form").querySelectorAll("[data-choice]")) button.onclick = () => {
+    shownAsk = WORKING; $("#ask").innerHTML = '<p class="card">Working on it…</p>'; call("/api/answer", {choice: button.dataset.choice, form_id: form.id});
+  };
 }
 
 function render(state) {

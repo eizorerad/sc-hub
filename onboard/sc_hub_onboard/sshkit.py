@@ -23,7 +23,10 @@ ALIAS = "mbzuai-schub"
 IDE_ALIAS = "mbzuai-schub-ide"
 BEGIN, END = "# >>> sc-hub >>>", "# <<< sc-hub <<<"
 LOGIN = re.compile(r"^[a-z][a-z0-9._-]{1,63}$")
-ASKPASS_MIN = (8, 4)  # OpenSSH that honours SSH_ASKPASS_REQUIRE=force
+ASKPASS_MIN = (8, 4)  # OpenSSH that honours SSH_ASKPASS_REQUIRE=force; older ones may still use askpass (tried)
+# A password login gets no console on Windows: an ssh that ignores askpass then fails at once instead of
+# asking in the helper's own window, where nobody looks.
+NO_CONSOLE = {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)} if os.name == "nt" else {}
 # Rewrites the sc-hub key's line in authorized_keys to "$OPTS <key>" (the same program as the shell
 # installer's KEY_LINE_REMOTE): commented lines are left alone, a copy goes to .schub-backup first.
 KEY_LINE_REMOTE = (
@@ -37,6 +40,10 @@ KEY_LINE_REMOTE = (
 
 class SshError(RuntimeError):
     pass
+
+
+class AskpassUnsupported(SshError):
+    """This ssh did not take the password from the page (an older OpenSSH, e.g. Windows 10's 8.1)."""
 
 
 @dataclass(frozen=True)
@@ -99,11 +106,12 @@ class Ssh:
             args += ["-F", str(self.paths.ssh_config), "-o", f"UserKnownHostsFile={self.paths.ssh_dir / 'known_hosts'}"]
         return args
 
-    def prepared(self, command: str, password: str | None = None, tty: bool = False
+    def prepared(self, command: str, password: str | None = None, tty: bool = False, extra: Sequence[str] = ()
                  ) -> tuple[list[str], dict[str, str], Path | None]:
         """(argv, environment, askpass program to delete afterwards) for `command` on the login node: with the
-        key, or with the password (askpass) when one is given or set for this run."""
-        args = self.base() + (["-t"] if tty else ["-T"]) + ["-o", "ConnectTimeout=20"]
+        key, or with the password (askpass) when one is given or set for this run. `extra`: more ssh options
+        (a port forward)."""
+        args = self.base() + (["-t"] if tty else ["-T"]) + ["-o", "ConnectTimeout=20", *extra]
         env = dict(os.environ)
         askpass = None
         password = password if password is not None else self.password
@@ -122,8 +130,13 @@ class Ssh:
         """`command` on the login node: with the key (batch), or with the password (askpass)."""
         args, env, askpass = self.prepared(command, password, tty)
         try:
-            return subprocess.run(args, input=stdin, capture_output=True, timeout=timeout, env=env,
-                                  stdin=None if stdin is not None else subprocess.DEVNULL)
+            done = subprocess.run(args, input=stdin, capture_output=True, timeout=timeout, env=env,
+                                  stdin=None if stdin is not None else subprocess.DEVNULL,
+                                  **(NO_CONSOLE if askpass is not None else {}))
+            if askpass is not None and done.returncode == 255 and not (askpass.parent / "called").exists() and \
+                    any(word in done.stderr for word in (b"ermission denied", b"passphrase", b"askpass", b"tty")):
+                raise AskpassUnsupported("this computer's ssh does not take the password from this page")
+            return done
         except subprocess.TimeoutExpired as exc:
             raise SshError(f"the cluster did not answer within {timeout} s") from exc
         except OSError as exc:
@@ -134,6 +147,24 @@ class Ssh:
 
     def key_works(self) -> bool:
         return self.run("true", timeout=60).returncode == 0
+
+    def install_key_console(self, timeout: int = 600) -> None:
+        """For an ssh that ignores askpass (Windows 10): ssh asks for the password itself, in a console window of
+        its own; the public key goes in the command, so the window needs nothing but the password."""
+        public = self.paths.key.with_suffix(".pub").read_text().strip()
+        if not re.fullmatch(r"ssh-ed25519 [A-Za-z0-9+/=]+( [\w.@+-]*)*", public):
+            raise SshError("unexpected characters in the public key")
+        command = f"R=''; OPTS=''; printf '%s\\n' '{public}' | {{ {KEY_LINE_REMOTE}; }}"
+        args = self.base() + ["-T", "-o", "ConnectTimeout=20", "-o", "PubkeyAuthentication=no",
+                              "-o", "PreferredAuthentications=password,keyboard-interactive", ALIAS, command]
+        console = {"creationflags": getattr(subprocess, "CREATE_NEW_CONSOLE", 0)} if os.name == "nt" else \
+            {"stdin": subprocess.DEVNULL}  # (elsewhere only in tests: the fake ssh "types" the password)
+        try:
+            subprocess.run(args, timeout=timeout, **console)  # type: ignore[call-overload]
+        except subprocess.TimeoutExpired as exc:
+            raise SshError("the password window was open for too long; Retry") from exc
+        except OSError as exc:
+            raise SshError(f"ssh could not start: {exc}") from exc
 
     def install_key(self, password: str, remote_root: str = "", options: str = "") -> None:
         """Write the key's line into authorized_keys (with `options`, e.g. the sc-hub gate), logging in with the
@@ -159,7 +190,9 @@ def _askpass_script() -> Path:
     folder = Path(tempfile.mkdtemp(prefix="schub-askpass-"))
     os.chmod(folder, 0o700)
     script = folder / "askpass.py"
-    script.write_text("import os, sys\nsys.stdout.write(os.environ.get('SCHUB_ONBOARD_SECRET', '') + '\\n')\n")
+    script.write_text("import os, sys\n"  # "called": this ssh does use askpass (older ones may not)
+                      "open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'called'), 'w').close()\n"
+                      "sys.stdout.write(os.environ.get('SCHUB_ONBOARD_SECRET', '') + '\\n')\n")
     if os.name == "nt":
         program = folder / "askpass.cmd"
         program.write_text(f'@"{sys.executable}" "{script}"\r\n')
@@ -186,13 +219,15 @@ def create_key(paths: Paths, login: str) -> bool:
 
 
 def alias_block(paths: Paths, login: str, host: str = HOST, ide_proxy: str = "") -> str:
-    lines = [BEGIN, f"Host {ALIAS}", f"    HostName {host}", f"    User {login}", f'    IdentityFile "{paths.key}"',
+    key = paths.key.as_posix()  # forward slashes: Windows' ssh reads them, and no backslash is taken as an escape
+    lines = [BEGIN, f"Host {ALIAS}", f"    HostName {host}", f"    User {login}", f'    IdentityFile "{key}"',
              "    IdentitiesOnly yes", "    StrictHostKeyChecking accept-new", "    ServerAliveInterval 60",
              "    ServerAliveCountMax 3"]
     if ide_proxy:  # VS Code: through the login node (forwarding only) into the workbench job's own sshd
-        lines += [f"Host {IDE_ALIAS}", f"    User {login}", f'    IdentityFile "{paths.key}"', "    IdentitiesOnly yes",
+        lines += [f"Host {IDE_ALIAS}", f"    User {login}", f'    IdentityFile "{key}"', "    IdentitiesOnly yes",
                   f"    ProxyCommand {ide_proxy}", "    StrictHostKeyChecking accept-new",
-                  f'    UserKnownHostsFile "{paths.ssh_dir / "schub_ide_known_hosts"}"', "    ServerAliveInterval 30"]
+                  f'    UserKnownHostsFile "{(paths.ssh_dir / "schub_ide_known_hosts").as_posix()}"',
+                  "    ServerAliveInterval 30"]
     lines += ["Host *", END]  # settings that were at the top of the file keep applying to every host
     return "\n".join(lines) + "\n"
 

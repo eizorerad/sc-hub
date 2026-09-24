@@ -9,7 +9,10 @@ the journal. The thread id comes from the `thread.started` event.
 from __future__ import annotations
 
 import json
+import os
 import re
+import socket
+from pathlib import Path
 
 from .base import Engine, Outcome, Turn, classify
 
@@ -26,6 +29,21 @@ def _toml(value: object) -> str:
 
 class Codex(Engine):
     name = "codex"
+
+    def environment(self, env: dict[str, str] | None) -> dict[str, str] | None:
+        """Codex's SQLite files in a folder per host: the home folder is on NFS, shared by every node, and SQLite
+        on NFS from several hosts at once corrupts or locks up (the pilot owner's wrapper does the same)."""
+        env = dict(os.environ if env is None else env)
+        if not env.get("CODEX_SQLITE_HOME"):
+            parent = Path(env.get("HOME") or Path.home()) / ".codex-sqlite"
+            folder = parent / socket.gethostname().split(".")[0]
+            try:  # private: Codex keeps its session logs there
+                parent.mkdir(mode=0o700, exist_ok=True)
+                folder.mkdir(mode=0o700, exist_ok=True)
+                env["CODEX_SQLITE_HOME"] = str(folder)
+            except OSError:
+                pass  # Codex then uses its default
+        return env
 
     def argv(self, binary: str, turn: Turn) -> list[str]:
         head = [binary, "exec", "resume", turn.session_id] if turn.session_id else [binary, "exec"]

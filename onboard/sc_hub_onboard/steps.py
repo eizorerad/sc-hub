@@ -5,15 +5,18 @@ from __future__ import annotations
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
+import webbrowser
 from pathlib import Path
+from typing import Any, Callable
 
-from . import assistants, cluster
+from . import assistants, cluster, cluster_agents
 from .engine import Context, Skip, Step, StepFailed
-from .sshkit import ALIAS, ASKPASS_MIN, HOST, IDE_ALIAS, Paths, Ssh, SshError, alias_block, check_login, create_key, \
-    quote_cmd, ssh_version, write_block
+from .sshkit import ALIAS, HOST, IDE_ALIAS, AskpassUnsupported, Paths, Ssh, SshError, alias_block, check_login, \
+    create_key, quote_cmd, ssh_version, write_block
 
 GATE_OPTIONS = 'restrict,port-forwarding,command="{root}/bin/schub-gate"'
 HELLO = "hello"
@@ -23,8 +26,9 @@ class Setup:
     """What the steps share: where to write on this computer, and the cluster account."""
 
     def __init__(self, paths: Paths, host: str = HOST, remote_root: str = "", repo: Path = cluster.REPO,
-                 open_dashboard: bool = True) -> None:
+                 open_dashboard: bool = True, open_url: Callable[[str], Any] = webbrowser.open) -> None:
         self.paths, self.host, self.repo, self.open_dashboard = paths, host, repo, open_dashboard
+        self.open_url = open_url  # the sign-in pages, in the student's default browser
         self.remote_root_wanted = remote_root  # "" = the default /l/users/<login>/schub
 
     def ssh(self, ctx: Context) -> Ssh:
@@ -40,6 +44,16 @@ class Setup:
                 "fields": [{"name": "password", "label": "Password", "type": "password", "required": True}]})
             ctx.values["password"] = str(answer.pop("password", ""))  # "password" is never saved to disk
         ssh.password = ctx.values.get("password")
+        if ssh.password is not None:
+            try:
+                if ssh.run("true", timeout=60).returncode != 0:
+                    ctx.values.pop("password", None)
+                    raise StepFailed("the cluster refused the password", "Retry and type it again.")
+            except AskpassUnsupported:
+                raise StepFailed("this computer's ssh cannot take your password from this page, and the sc-hub key "
+                                 "only opens sc-hub now", "Update OpenSSH (Windows: Settings → System → Optional "
+                                 "features → OpenSSH Client, or: winget install Microsoft.OpenSSH.Preview), then "
+                                 "Retry.") from None
         return ssh
 
     # ---- 1. this computer ---------------------------------------------------------------------
@@ -113,10 +127,20 @@ class Setup:
         raise StepFailed(error or "the sign-in did not work", "Check the login and the password, then Retry.")
 
     def _install(self, ctx: Context, ssh: Ssh, password: str) -> None:
-        if tuple(ctx.values.get("ssh_version", (0, 0))) < ASKPASS_MIN:
-            raise SshError("this computer's OpenSSH is too old to take the password from this page; update it "
-                           "(Windows: Settings → Optional features → OpenSSH Client) and run this again")
-        ssh.install_key(password)
+        try:
+            ssh.install_key(password)
+        except AskpassUnsupported:
+            if not console_available():
+                raise SshError("this computer's OpenSSH is too old to take the password from this page; update "
+                               "OpenSSH, then run this again") from None
+            ctx.show({"title": "Type your password in the new window", "cancel": False, "text": [
+                "This computer's ssh asks for the password itself: a black window opened. Type your cluster password "
+                "there (it does not show while you type) and press Enter. The window closes by itself."],
+                "wait_text": "Waiting for the password window…"})
+            try:
+                ssh.install_key_console()
+            finally:
+                ctx.clear()
         if not ssh.key_works():
             raise SshError("the key was installed but the cluster does not accept it yet")
 
@@ -130,6 +154,8 @@ class Setup:
                              "In ~/.bashrc on the cluster, put this line before any echo: [[ $- == *i* ]] || return")
         ctx.say("copying sc-hub to the cluster")
         root = cluster.upload(ssh, self.remote_root_wanted or "/l/users/$USER/schub")
+        if not re.fullmatch(r"/[\w./-]+", root):  # it goes into later commands between single quotes
+            raise StepFailed(f"unexpected sc-hub folder on the cluster: {root[:80]}", "Use a plain --remote-root path.")
         ctx.values["remote_root"] = root
         ctx.say("setting up your workspace in a Slurm job (a few minutes)")
         code = cluster.stream(ssh, f"bash '{root}/src/sc-hub/scripts/bootstrap_cluster.sh'", ctx.log)
@@ -234,7 +260,49 @@ class Setup:
             raise Skip(f"ready for VS Code ({where}); install VS Code, then Remote-SSH → {IDE_ALIAS}")
         return f"VS Code opens a shell and files in {where}: Remote-SSH → {IDE_ALIAS}"
 
-    # ---- 8. the key only opens sc-hub -------------------------------------------------------------------------
+    # ---- 8. Codex and Claude Code on the cluster, with the student's accounts ---------------------------------
+
+    def cluster_agents(self, ctx: Context) -> str:
+        ssh = self.ssh(ctx)
+        ctx.say("installing Codex and Claude Code on the cluster (the first time: a few minutes)")
+        code = cluster.stream(ssh, cluster_agents.INSTALL, lambda line: ctx.log(cluster_agents.clean(line)), timeout=1800)
+        if code != 0:
+            raise StepFailed("could not install the agents on the cluster (see the details)",
+                             "Retry; if it fails again, send the details to the pilot owner.")
+        skipped: set[str] = set()
+        again = list(cluster_agents.LABELS)
+        for _ in range(3):
+            state = cluster_agents.status(ssh)
+            for name in again:
+                if not state[name].get("signed_in") and name not in skipped:
+                    ctx.say(f"signing in {cluster_agents.LABELS[name]} on the cluster")
+                    if not cluster_agents.sign_in(name, ctx, ssh, self.open_url):
+                        skipped.add(name)
+            state = cluster_agents.status(ssh)
+            lines = [cluster_agents.account(n, state[n]) for n in cluster_agents.LABELS if n not in skipped]
+            signed = [n for n in cluster_agents.LABELS if state[n].get("signed_in")]
+            if not signed:
+                raise Skip("no agent signed in on the cluster; Retry this step to sign in")
+            odd = [cluster_agents.LABELS[n] for n in signed if cluster_agents.not_student(state[n])]
+            answer = ctx.ask({"title": "Are these your student accounts?", "cancel": False, "text": [
+                "The agents on the cluster work with these accounts:", *lines,
+                *([f"{' and '.join(odd)}: this is not an {cluster_agents.STUDENT_DOMAIN} address. If it is a "
+                   "personal account, sign in again with the student one."] if odd else [])],
+                "fields": [{"name": "ok", "type": "checkbox", "required": True,
+                            "label": "Yes, these are the accounts the agents should use"}],
+                "submit": "Continue", "choices": [{"name": n, "label": f"Sign in {cluster_agents.LABELS[n]} again"}
+                                                  for n in signed]})
+            choice = str(answer.get("choice", ""))
+            if choice not in cluster_agents.LABELS:
+                if answer.get("ok") is not True:  # (the engine only lets a ticked box or a choice through)
+                    continue
+                ctx.values["cluster_agents"] = {n: state[n].get("email", "") for n in signed}
+                return " · ".join(lines)
+            cluster_agents.sign_out(ssh, choice)
+            again = [choice]
+        raise StepFailed("the accounts were not confirmed", "Retry this step to sign in again.")
+
+    # ---- 9. the key only opens sc-hub -------------------------------------------------------------------------
 
     def limit_key(self, ctx: Context) -> str:
         ssh, root = self.ssh(ctx), ctx.values["remote_root"]
@@ -255,26 +323,39 @@ class Setup:
         ctx.values["limited"] = True
         return "the key opens sc-hub only (MCP server, dashboard, sessions); your password login is unchanged"
 
-    # ---- 8. the dashboard -------------------------------------------------------------------------------------
+    # ---- 10. the dashboard ------------------------------------------------------------------------------------
 
     def dashboard(self, ctx: Context) -> str:
         folder = Path(ctx.values["workspace"])
         view = folder / ("schub-view.cmd" if os.name == "nt" else "schub-view")
-        if not view.exists() or not self.open_dashboard:
-            raise Skip("start it yourself: ./schub-view in the workspace")
+        start = view.exists() and self.open_dashboard
+        ctx.values["summary"] = {"lines": [  # the page's last card, whether the mirror starts here or not
+            f"Your workspace: {folder}. Open it in Codex or Claude Code (or restart Claude Desktop) and ask, for "
+            "example: \"What datasets are in sc-hub? Create a project for my question.\"",
+            ("The dashboard mirror runs in the background and opens in your browser" if start else
+             f"Start the dashboard mirror with {view.name} in the workspace") +
+            f"; its Journal shows the project '{HELLO}' with the first run.",
+            *([f"VS Code: Remote-SSH → {IDE_ALIAS} opens your projects inside your workbench job "
+               f"({ctx.values['vscode_link']})."] if ctx.values.get("vscode_link") else []),
+            *([f"The lab agent on the cluster uses {_agents_line(ctx.values['cluster_agents'])}."]
+              if ctx.values.get("cluster_agents") else []),
+        ]}
+        if not start:
+            raise Skip(f"start it yourself: {view.name} in the workspace")
         env = {**os.environ, "SCHUB_ALIAS": "mbzuai-schub"}
         kwargs = {"creationflags": subprocess.CREATE_NEW_CONSOLE} if os.name == "nt" else {"start_new_session": True}
         subprocess.Popen([str(view)], cwd=folder, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                          **kwargs)  # type: ignore[arg-type]
-        ctx.values["summary"] = {"lines": [
-            f"Your workspace: {folder}. Open it in Codex or Claude Code (or restart Claude Desktop) and ask, for "
-            "example: \"What datasets are in sc-hub? Create a project for my question.\"",
-            "The dashboard mirror runs in the background and opens in your browser; its Journal shows the "
-            f"project '{HELLO}' with the first run.",
-            *([f"VS Code: Remote-SSH → {IDE_ALIAS} opens your projects inside your workbench job "
-               f"({ctx.values['vscode_link']})."] if ctx.values.get("vscode_link") else []),
-        ]}
         return "the dashboard mirror is running"
+
+
+def _agents_line(signed: dict[str, str]) -> str:
+    return " and ".join(f"{cluster_agents.LABELS.get(name, name)} ({email or 'signed in'})" for name, email in signed.items())
+
+
+def console_available() -> bool:
+    """Windows can give ssh a console window of its own for the password."""
+    return os.name == "nt"
 
 
 def _run(args: list[str]) -> str:
@@ -315,6 +396,7 @@ def build(setup: Setup) -> list[Step]:
         Step("hello", "A first run: a cell and a Slurm job", setup.hello, 3.0),
         Step("assistants", "Connect your assistants", setup.connect_assistants, 0.5),
         Step("vscode", "VS Code in your workbench job", setup.vscode, 1.0),
+        Step("agents", "Codex and Claude Code on the cluster", setup.cluster_agents, 1.5),
         Step("limit", "Limit the key to sc-hub", setup.limit_key, 0.3),
         Step("dashboard", "Open the dashboard", setup.dashboard, 0.3),
     ]

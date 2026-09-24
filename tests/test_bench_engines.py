@@ -270,3 +270,16 @@ def test_an_engine_that_answers_the_probe_is_no_longer_paused(settings: Settings
     assert not cooldown.ready("codex")
     probe(settings, engines=("codex",))  # the cap was raised: codex answers OK again
     assert cooldown.ready("codex")
+
+
+def test_codex_keeps_its_sqlite_files_per_host(tmp_path: Path) -> None:
+    import socket
+
+    env = Codex().environment({"HOME": str(tmp_path), "PATH": "/usr/bin"})
+    assert env["CODEX_SQLITE_HOME"] == str(tmp_path / ".codex-sqlite" / socket.gethostname().split(".")[0])
+    assert Path(env["CODEX_SQLITE_HOME"]).is_dir() and env["PATH"] == "/usr/bin"
+    assert Path(env["CODEX_SQLITE_HOME"]).stat().st_mode & 0o077 == 0
+    assert Codex().environment({"HOME": str(tmp_path), "CODEX_SQLITE_HOME": "/set/by/owner"})["CODEX_SQLITE_HOME"] == \
+        "/set/by/owner"
+    assert Claude().environment(None) is None  # only Codex has the NFS problem
+

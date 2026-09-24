@@ -67,8 +67,13 @@ class Engine:
     def parse(self, stdout: str, stderr: str, returncode: int) -> Outcome:
         raise NotImplementedError
 
+    def environment(self, env: dict[str, str] | None) -> dict[str, str] | None:
+        """The CLI's environment (None: this process's own)."""
+        return env
+
     def run(self, turn: Turn, binary: str | None = None, env: dict[str, str] | None = None) -> Outcome:
         binary = binary or str(find_binary(self.name))
+        env = self.environment(env)
         turn.run_dir.mkdir(parents=True, exist_ok=True)
         out_path, err_path = turn.run_dir / "stdout.txt", turn.run_dir / "stderr.txt"
         with out_path.open("w") as out, err_path.open("w") as err:

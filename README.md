@@ -87,7 +87,53 @@ The workbench stops itself when idle (its slot on ws-ia is one of two); the next
 cell starts it again. Background jobs (the watchdog, lab-agent slices) run
 CPU-only on the gpu partition's own budget, with ws-ia as the fallback.
 
+## Set up (student): the setup page
+
+The recommended way. From a copy of sc-hub on your laptop, run one command (or
+paste the sc-hub link into Codex or Claude Code and ask it to set you up: the
+repository's `AGENTS.md` tells it to start this page and hand it to you):
+
+```bash
+sh onboard/start.sh                                             # macOS, Linux
+powershell -ExecutionPolicy Bypass -File onboard\start.ps1      # Windows 10/11
+```
+
+A page opens on this computer only (`127.0.0.1`, with a one-time token in the
+link). It shows a progress bar and one line per step, and asks you for
+something only where it has to:
+
+1. **Your browser for the sign-ins.** The agents on the cluster sign in with
+   your MBZUAI student ChatGPT and Claude accounts: make the browser where those
+   are signed in your default one (or copy the links into it).
+2. **Sign in to the cluster, once.** Your login and password. The password goes
+   straight to `ssh` on this computer to install a dedicated key
+   (`~/.ssh/mbzuai_schub_ed25519`, alias `mbzuai-schub`); it is never stored and
+   never reaches the assistant. On Windows 10, whose OpenSSH does not take a
+   password from a program, a console window opens and you type it there.
+3. **sc-hub on the cluster**, in `/l/users/LOGIN/schub`, set up in a Slurm job.
+4. **A first run**: a kernel cell and a small Slurm job with a check, in the
+   project `hello`.
+5. **Your assistants**: Codex (also in the ChatGPT desktop app), Claude Code and
+   Claude Desktop get the sc-hub MCP server; `~/sc-hub-workspace` is created.
+6. **VS Code in your workbench job**: the host `mbzuai-schub-ide` gives VS Code
+   (Remote-SSH) a shell and files inside your own workbench job, which it starts
+   if needed; set up once, it works for every later job.
+7. **Codex and Claude Code on the cluster**, for the lab agent. Both are
+   installed with their official installers and signed in from your browser:
+   Codex shows a one-time code (if your workspace turned device codes off, it
+   signs in the usual way through a short-lived tunnel to `localhost:1455`),
+   Claude shows a code to paste back into the page. The page then shows which
+   account each one uses, so you can check it is the student one.
+8. **The key only opens sc-hub** (see below); your password login is unchanged.
+9. **The dashboard mirror** starts and opens in your browser.
+
+A step that fails says what to do and has a Retry button; running the page again
+skips what is done. `--home DIR` writes everything under `DIR` instead of your
+home (for trials), `--no-browser` opens nothing by itself.
+
 ## Install (student): one command
+
+The older installer, without the page (no VS Code or cluster agents setup).
 
 Run it on your laptop in a terminal. Replace `LOGIN` with your cluster login;
 your cluster password is asked once or twice, never stored.
@@ -383,4 +429,7 @@ Results and screenshots go to `tests/e2e/out/`.
 - Sessions listen on the compute node behind a random token (compute nodes take
   no ssh logins, so the tunnel ends at node:port through the login node).
 - Cell Ranger is only available after the owner installs it (10x license).
-- The Windows installer, `schub-view.cmd` and `schub-lab.cmd` have not been run on Windows yet.
+- The Windows installer, `schub-view.cmd` and `schub-lab.cmd` have not been run on Windows yet; the setup
+  page's Windows paths (the password window, the launcher) are tested against a fake ssh only.
+- The setup page's sign-ins on the cluster were checked up to the browser (installers, links, codes, the
+  tunnel, a wrong code) in a throwaway home; a full sign-in needs a student account.

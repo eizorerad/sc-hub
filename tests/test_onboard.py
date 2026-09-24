@@ -16,6 +16,7 @@ ONBOARD = Path(__file__).resolve().parents[1] / "onboard"
 FAKES = Path(__file__).resolve().parent / "onboard_fakes"
 sys.path.insert(0, str(ONBOARD))
 
+from sc_hub_onboard.cluster_agents import CLAUDE_URL, DEVICE, clean  # noqa: E402
 from sc_hub_onboard.engine import Engine  # noqa: E402
 from sc_hub_onboard.server import OnboardServer  # noqa: E402
 from sc_hub_onboard.sshkit import Paths, check_login, strip_block, write_block  # noqa: E402
@@ -32,8 +33,10 @@ def helper(tmp_path: Path, monkeypatch):
     (home / ".ssh").mkdir()
     (home / ".ssh" / "config").write_text("Host *\n    ServerAliveInterval 30\n")
     paths = Paths(home=home)
-    engine = Engine(build(Setup(paths, open_dashboard=False)), paths.state)
+    opened: list[str] = []  # the sign-in pages the helper opened in the browser
+    engine = Engine(build(Setup(paths, open_dashboard=False, open_url=opened.append)), paths.state)
     server = OnboardServer(engine)
+    server.opened = opened
     threading.Thread(target=server.serve_forever, daemon=True).start()
     yield server, paths, tmp_path / "cluster"
     server.shutdown()
@@ -59,21 +62,54 @@ def until(server: OnboardServer, predicate, timeout: float = 30.0) -> dict:
     raise AssertionError(f"timed out; last state: {json.dumps(state)[:600]}")
 
 
+def reply(server: OnboardServer, values: dict) -> dict:
+    """Answer the form on the page now, as the page does (with that form's id)."""
+    return api(server, "/api/answer", {**values, "form_id": asking(api(server, "/api/state"))["ask"]["id"]})
+
+
 def asking(state: dict) -> dict | None:
     return next((s for s in state["steps"] if s["status"] == "asking"), None)
 
 
+def form(server: OnboardServer, title: str, timeout: float = 60) -> dict:
+    """The form the page shows once it has `title` in it (a step waiting for the student)."""
+    state = until(server, lambda s: bool(asking(s) and title in json.dumps(asking(s)["ask"])) or
+                  any(x["status"] == "failed" for x in s["steps"]), timeout)
+    assert asking(state), [x for x in state["steps"] if x["status"] == "failed"]
+    return asking(state)["ask"]
+
+
+def to_the_agents(server: OnboardServer, typo_first: bool = True) -> None:
+    api(server, "/api/start", {})
+    assert "student ChatGPT and Claude accounts" in json.dumps(form(server, "browser for the sign-ins"))
+    reply(server, {"ok": True})
+    form(server, "Sign in to the MBZUAI cluster")
+    if typo_first:
+        reply(server, {"login": "Test.User", "password": "wrong"})
+        ask = form(server, "refused the login")
+        assert ask["fields"][0]["value"] == "test.user"  # the login is kept, the password is not
+    reply(server, {"login": "test.user", "password": "right horse battery"})
+
+
 def test_the_whole_onboarding_from_the_page(helper) -> None:
     server, paths, cluster = helper
-    api(server, "/api/start", {})
-    state = until(server, lambda s: asking(s) and asking(s)["id"] == "browser")
-    assert "student ChatGPT and Claude accounts" in json.dumps(asking(state)["ask"])
-    api(server, "/api/answer", {"ok": True})
-    until(server, lambda s: asking(s) and asking(s)["id"] == "sign-in")
-    api(server, "/api/answer", {"login": "Test.User", "password": "wrong"})
-    state = until(server, lambda s: asking(s) and "refused the login" in json.dumps(asking(s)["ask"]))
-    assert asking(state)["ask"]["fields"][0]["value"] == "test.user"  # the login is kept, the password is not
-    api(server, "/api/answer", {"login": "test.user", "password": "right horse battery"})
+    to_the_agents(server)
+    # Codex on the cluster: the device page opens in the browser, the page shows the code and waits
+    ask = form(server, "Sign in to Codex")
+    assert ask["wait"] and ask["code"] == "FAKE-C0DE1" and ask["links"][0]["url"] == "https://auth.openai.com/codex/device"
+    assert server.opened == ["https://auth.openai.com/codex/device"]
+    (cluster / "codex_approved").write_text("test.user@mbzuai.ac.ae")  # the student approves in the browser
+    # Claude Code: a wrong code first, then the right one
+    ask = form(server, "Sign in to Claude Code")
+    assert ask["links"][0]["url"] == "https://claude.com/cai/oauth/authorize?code=true&state=fake"
+    reply(server, {"code": "nope"})
+    ask = form(server, "That code did not work")
+    assert "nope" not in json.dumps(ask)  # a code is never shown back
+    reply(server, {"code": " good-code#fake "})
+    ask = form(server, "Are these your student accounts?")
+    assert "Codex: test.user@mbzuai.ac.ae" in ask["text"] and "Claude Code: test.user@mbzuai.ac.ae" in ask["text"]
+    assert not any("not an @mbzuai" in line for line in ask["text"])
+    reply(server, {"ok": True})
     state = until(server, lambda s: s["finished"] or any(x["status"] == "failed" for x in s["steps"]), timeout=60)
     failed = [x for x in state["steps"] if x["status"] == "failed"]
     assert not failed, failed
@@ -102,16 +138,120 @@ def test_a_rerun_skips_what_is_done_and_asks_the_password_for_setup(helper) -> N
     server, paths, cluster = helper
     test_the_whole_onboarding_from_the_page(helper)
     engine = Engine(build(Setup(paths, open_dashboard=False)), paths.state)
-    assert [engine.states[s.id].status for s in engine.steps] == ["done"] * 6 + ["skipped", "done", "skipped"]
+    assert [engine.states[s.id].status for s in engine.steps] == ["done"] * 6 + ["skipped", "done", "done", "skipped"]
     engine.retry("cluster")  # e.g. an update of the cluster side: the key only opens sc-hub now
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline and engine.states["cluster"].status != "asking":
         time.sleep(0.05)
     assert "password" in json.dumps(engine.states["cluster"].ask)
-    engine.answer({"password": "right horse battery"})
+    engine.answer({"password": "right horse battery", "form_id": engine.states["cluster"].ask["id"]})
     while time.monotonic() < deadline and engine.states["cluster"].status not in ("done", "failed"):
         time.sleep(0.05)
     assert engine.states["cluster"].status == "done", engine.states["cluster"].detail
+
+
+def test_codex_without_device_codes_and_a_personal_account(helper) -> None:
+    server, _, cluster = helper
+    to_the_agents(server)
+    form(server, "Sign in to Codex")
+    reply(server, {"choice": "browser"})  # device codes are off in this workspace
+    ask = form(server, "a tunnel carries that to Codex on the cluster")
+    assert ask["links"][0]["url"].startswith("https://auth.openai.com/oauth/authorize?") and "code" not in ask
+    (cluster / "codex_approved").write_text("me@gmail.com")  # oops: the personal account
+    form(server, "Sign in to Claude Code")
+    reply(server, {"choice": "skip"})
+    ask = form(server, "Are these your student accounts?")
+    assert "Codex: me@gmail.com" in ask["text"] and not any("Claude Code" in line for line in ask["text"])
+    assert any("not an @mbzuai.ac.ae address" in line for line in ask["text"])
+    assert [c["name"] for c in ask["choices"]] == ["codex"]
+    reply(server, {"choice": "codex"})  # sign out and in again, with the student account
+    form(server, "Sign in to Codex")
+    (cluster / "codex_approved").write_text("test.user@mbzuai.ac.ae")
+    ask = form(server, "Are these your student accounts?")
+    assert "Codex: test.user@mbzuai.ac.ae" in ask["text"]
+    reply(server, {"ok": True})
+    state = until(server, lambda s: s["finished"] or any(x["status"] == "failed" for x in s["steps"]), timeout=60)
+    agents = next(x for x in state["steps"] if x["id"] == "agents")
+    assert agents["status"] == "done" and agents["detail"] == "Codex: test.user@mbzuai.ac.ae", agents
+    assert "The lab agent on the cluster uses Codex (test.user@mbzuai.ac.ae)." in state["summary"]["lines"]
+
+
+def test_an_ssh_without_askpass_gets_a_password_window(helper, monkeypatch) -> None:
+    """Windows 10's OpenSSH 8.1: the page's password does not reach ssh, so ssh asks in a console window."""
+    from sc_hub_onboard import steps
+
+    server, paths, cluster = helper
+    monkeypatch.setenv("FAKE_NO_ASKPASS", "1")
+    monkeypatch.setenv("FAKE_CONSOLE_PASSWORD", "right horse battery")  # what the student types in that window
+    monkeypatch.setattr(steps, "console_available", lambda: True)
+    to_the_agents(server, typo_first=False)
+    form(server, "Sign in to Codex")  # the key works: the run went on through the cluster steps
+    state = api(server, "/api/state")
+    sign_in = next(x for x in state["steps"] if x["id"] == "sign-in")
+    assert sign_in["status"] == "done" and "key installed" in sign_in["detail"]
+    calls = [json.loads(line) for line in (cluster / "calls.jsonl").read_text().splitlines()]
+    assert any("printf '%s\\n' 'ssh-ed25519 " in c["command"] for c in calls)
+    assert json.loads((cluster / "authorized.json").read_text())["key"] == paths.key.with_suffix(".pub").read_text().strip()
+
+
+def test_a_rerun_needing_the_password_says_to_update_an_old_ssh(helper, monkeypatch) -> None:
+    server, paths, _ = helper
+    test_the_whole_onboarding_from_the_page(helper)
+    monkeypatch.setenv("FAKE_NO_ASKPASS", "1")
+    engine = Engine(build(Setup(paths, open_dashboard=False, open_url=lambda url: None)), paths.state)
+    engine.retry("cluster")
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline and engine.states["cluster"].status != "asking":
+        time.sleep(0.05)
+    engine.answer({"password": "right horse battery", "form_id": engine.states["cluster"].ask["id"]})
+    while time.monotonic() < deadline and engine.states["cluster"].status not in ("done", "failed"):
+        time.sleep(0.05)
+    assert engine.states["cluster"].status == "failed" and "Update OpenSSH" in engine.states["cluster"].hint
+
+
+def test_only_an_answer_to_the_form_on_the_page_counts(helper) -> None:
+    server, _, cluster = helper
+    to_the_agents(server)
+    codex = form(server, "Sign in to Codex")
+    for wrong in ({}, {"choice": "delete-everything"}, {"ok": True}, {"choice": "skip", "form_id": "0"}):
+        with pytest.raises(urllib.error.HTTPError) as caught:  # a waiting form takes only its own buttons
+            api(server, "/api/answer", {"form_id": codex["id"], **wrong})
+        assert caught.value.code == 409
+    (cluster / "codex_approved").write_text("test.user@mbzuai.ac.ae")
+    claude = form(server, "Sign in to Claude Code")
+    with pytest.raises(urllib.error.HTTPError):  # the old form's button, clicked late
+        api(server, "/api/answer", {"choice": "skip", "form_id": codex["id"]})
+    with pytest.raises(urllib.error.HTTPError):  # a required field left empty
+        api(server, "/api/answer", {"code": "", "form_id": claude["id"]})
+    reply(server, {"code": "good-code#fake"})
+    confirm = form(server, "Are these your student accounts?")
+    with pytest.raises(urllib.error.HTTPError):  # the box is not ticked: no confirmation
+        api(server, "/api/answer", {"ok": False, "form_id": confirm["id"]})
+    reply(server, {"ok": True})
+    state = until(server, lambda s: s["finished"] or any(x["status"] == "failed" for x in s["steps"]), timeout=60)
+    assert state["finished"]
+
+
+def test_the_sign_in_output_is_read_through_colours_and_links() -> None:
+    codex = ("Welcome to Codex [v\x1b[90m0.155.1\x1b[0m]\n1. Open this link in your browser\n   "
+             "\x1b[94mhttps://auth.openai.com/codex/device\x1b[0m\n\n2. Enter this one-time code \x1b[90m(expires in "
+             "15 minutes)\x1b[0m\n   \x1b[94mAB12-CD34E\x1b[0m\n")
+    match = DEVICE.search(clean(codex))
+    assert match and match["url"] == "https://auth.openai.com/codex/device" and match["code"] == "AB12-CD34E"
+    url = "https://claude.com/cai/oauth/authorize?code=true&client_id=x&redirect_uri=https%3A%2F%2Fplatform.claude.com"
+    osc8 = f"If the browser didn't open, visit: \x1b]8;;{url}\x07{url}\x1b]8;;\x07\r\nPaste code here if prompted > "
+    assert CLAUDE_URL.search(clean(osc8))[0] == url
+
+
+def test_error_messages_carry_no_sign_in_links_or_codes() -> None:
+    from sc_hub_onboard.cluster_agents import Remote
+
+    job = Remote.__new__(Remote)
+    job._chunks = ["open https://auth.openai.com/codex/device?x=1 code AB12-CD34E\n",
+                   "visit: https://claude.com/cai/oauth/authorize?state=secret\nLogin failed: 400 for abc#def\n"]
+    tail = job.tail(hide=["abc#def", "abc", "def"])
+    assert "https://auth.openai.com…" in tail and "state=secret" not in tail and "AB12-CD34E" not in tail
+    assert "abc" not in tail and "Login failed: 400" in tail
 
 
 def test_the_page_is_only_for_this_computer_and_this_link(helper) -> None:
