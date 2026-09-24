@@ -142,46 +142,49 @@ async function main() {
   // ---------------------------------------------------------------- journal
   section = 'Journal';
   await go('journal', true);
+  await page.waitForSelector('#jpage .jp');
   await shot('00-journal');
-  const shownJournal = () => page.$eval('.journal:not([hidden])', s => s.dataset.journal);
-  await check('the first project is shown, its cards newest first', async () => {
-    const first = await shownJournal();
-    const whys = await page.$$eval(`.journal[data-journal="${first}"] .jcard .why`, ws => ws.map(w => w.textContent));
-    assert(whys[0] === 'a failing cell' && whys[whys.length - 1] === 'download K562 essential', whys.join(' | '));
-    return first;
+  const shownProject = () => page.$eval('#jpage .jp', a => a.dataset.project);
+  const visibleRows = sel => page.$$eval(sel, rs => rs.filter(r => r.getClientRects().length).length);
+  await check('the navigator groups 65 projects by where they stand', async () => {
+    const groups = await page.$$eval('.jgroup', gs => gs.map(g => `${g.dataset.group}:${g.querySelector('summary .count').textContent}`));
+    assert(groups.join(' ') === 'blocked:3 working:7 done:34 idle:4 eval:14', groups.join(' '));
+    const shownDone = await visibleRows('.jgroup[data-group="done"] > .jnode');
+    assert(shownDone === 12, `${shownDone} done projects shown before "Show all"`);
+    await page.click('.jgroup[data-group="done"] .jmore');
+    assert((await visibleRows('.jgroup[data-group="done"] > .jnode')) === 34, 'Show all did not show all');
+    const closed = await page.$$eval('.jgroup:not([open])', gs => gs.map(g => g.dataset.group).join(','));
+    assert(closed === 'idle,eval', `closed groups ${closed}`);
+    return `${groups.join(', ')}; page ${await shownProject()}`;
   });
-  await check('the project picker switches project and hash', async () => {
-    await page.click('[data-journal-link="k562-qc"]');
-    await page.waitForTimeout(150);
-    assert((await hash()) === '#journal/k562-qc', await hash());
-    assert((await shownJournal()) === 'k562-qc', await shownJournal());
+  await check('search finds projects by name and by the question of a variant', async () => {
+    await page.fill('#jnav-q', 'hct116');
+    const hits = await page.$$eval('.jitem', is => is.filter(i => i.getClientRects().length).map(i => i.dataset.path));
+    assert(hits.length > 0 && hits.every(h => h.includes('hct116')), hits.join(' '));
+    assert(await vis('.jgroup[data-group="eval"] .jitem[data-path^="hct116"]'), 'a closed group did not open for a hit');
+    await page.fill('#jnav-q', 'stricter qc');
+    const strict = await page.$$eval('.jitem', is => is.filter(i => i.getClientRects().length).map(i => i.dataset.path));
+    assert(strict.join(' ') === 'k562-qc k562-qc/strict', strict.join(' '));
+    await page.fill('#jnav-q', 'no such thing');
+    assert(await vis('.jnone'), 'no "No project matches"');
+    await page.fill('#jnav-q', '');
+    return `${hits.length} for hct116`;
   });
-  await check('a figure is shown', async () => {
-    const ok = await page.$eval('.journal:not([hidden]) img.jfig', i => i.complete && i.naturalWidth > 0);
-    assert(ok, 'image did not load');
+  await check('a variant opens from the tree, with a path back to its project', async () => {
+    await page.click('.jitem[data-path="k562-qc/strict/min50"]');
+    await page.waitForFunction(() => document.querySelector('#jpage .jp')?.dataset.project === 'k562-qc/strict/min50');
+    assert((await hash()) === '#journal/k562-qc/strict/min50', await hash());
+    await page.click('#jpage .jp-crumbs a:has-text("k562-qc")');
+    await page.waitForFunction(() => document.querySelector('#jpage .jp')?.dataset.project === 'k562-qc');
+    const variants = await page.$$eval('#jpage .jp-section .jrow', rs => rs.map(r => r.querySelector('.jrow-name').textContent));
+    assert(variants.join(',') === 'strict,lenient' || variants.join(',') === 'lenient,strict', variants.join(','));
   });
-  await check('code folds open', async () => {
-    await page.click('.journal:not([hidden]) .jcard details.fold > summary >> nth=0');
-    assert(await vis('.journal:not([hidden]) .jcard details.fold[open] pre.code'), 'code hidden');
+  await check('the page starts with the outcome and its links', async () => {
+    const text = await page.textContent('#jpage .jp-outcome');
+    assert(text.includes('knockdown in 41 of 50 targets') && text.includes('Protocol notebook'), text.slice(0, 160));
   });
-  await check('long output folds', async () => {
-    const more = page.locator('.journal:not([hidden]) details.more-out').first();
-    await more.locator('summary').click();
-    assert(await more.evaluate(d => d.open), 'did not open');
-  });
-  await check('⋯ on a cell copies its reference', async () => {
-    await page.click('.journal:not([hidden]) .jcard .jhead summary.dots >> nth=0');
-    await page.click('.journal:not([hidden]) .jcard details[open] [data-copy]');
-    assert((await copied()).startsWith('k562-qc#c0'), await copied());
-  });
-  await check('⋯ of the project shows decisions and mistakes', async () => {
-    await page.click('.journal:not([hidden]) .jtitle summary.dots');
-    const text = await page.textContent('.journal:not([hidden]) .jtitle details[open] .pop');
-    assert(text.includes('genome-wide fits in 90 GB') && text.includes('a failing cell'), text.slice(0, 200));
-  });
-  await check('the notebook downloads', () => download('.journal:not([hidden]) .jtitle details[open] [data-jnb]'));
   await check('the report opens without code and its notebook downloads', async () => {
-    const href = await page.getAttribute('.journal:not([hidden]) .jreport a', 'href');
+    const href = await page.getAttribute('#jpage .jp-links a', 'href');
     assert(href && href.endsWith('/report.html'), `link ${href}`);
     const report = await page.context().newPage();
     await report.goto(new URL(href, page.url()).href);
@@ -189,22 +192,60 @@ async function main() {
     await report.close();
     assert(text.includes('good enough to model') && text.includes('Notes on this report'), text.slice(0, 120));
     assert(!text.includes("print('x')"), 'the report page shows code');
-    return download('.journal:not([hidden]) .jreport [data-jnb]');
+    return download('#jpage .jp-links [data-jnb^="report:"]');
   });
-  await check('the engine filter shows only the lab agent\'s entries, then all', async () => {
-    const cards = () => page.$$eval('.journal:not([hidden]) .jcard', cs => cs.filter(c => !c.hidden).length);
-    const all = await cards();
-    if (!(await vis('.journal:not([hidden]) .jtitle details[open] .pop'))) await page.click('.journal:not([hidden]) .jtitle summary.dots');
-    await page.click('.journal:not([hidden]) [data-engine-filter="claude"]');
-    const only = await cards();
-    const badge = await page.textContent('.journal:not([hidden]) .jcard:not([hidden]) .jfoot .engine');
-    assert(only === 1 && badge.trim() === 'claude', `${only} cards, badge ${badge}`);
-    await page.click('.journal:not([hidden]) [data-engine-filter=""]');
-    assert((await cards()) === all, 'filter did not reset');
+  await check('the protocol notebook downloads', () => download('#jpage .jp-links [data-jnb="k562-qc"]'));
+  await check('steps are one line each, oldest first; a step opens with its output and figure', async () => {
+    const cids = await page.$$eval('#jpage .jsteps .jcid', cs => cs.map(c => c.textContent));
+    assert(cids.join(',') === 'c0001,c0002,c0003,c0004', cids.join(','));
+    const tall = await page.$$eval('#jpage .jsteps > details > summary', ss => Math.max(...ss.map(s => s.getBoundingClientRect().height)));
+    assert(tall < 48, `a closed step is ${Math.round(tall)} px tall`);
+    await page.click('#jpage .jsteps details.jstep >> nth=1 >> summary');
+    await page.waitForTimeout(150);
+    const ok = await page.$eval('#jpage .jsteps details.jstep[open] img.jfig', i => i.complete && i.naturalWidth > 0);
+    assert(ok, 'figure did not load');
+    await page.click('#jpage .jsteps details.jstep[open] details.fold > summary');
+    assert(await vis('#jpage .jsteps details.jstep[open] details.fold[open] pre.code'), 'code hidden');
   });
-  await check('notes for the student and untraced numbers are shown', async () => {
-    const text = await page.textContent('.journal:not([hidden])');
-    assert(text.includes('please confirm the control label') && text.includes('numbers not found in the cited cells: 2,000'), 'missing');
+  await check('a step copies its reference', async () => {
+    await page.click('#jpage .jsteps details.jstep[open] [data-copy]');
+    assert((await copied()).startsWith('k562-qc#c0'), await copied());
+  });
+  await check('filters: failed, with figures, one engine, then all; the order flips', async () => {
+    const rows = () => visibleRows('#jpage .jsteps > details');
+    await page.click('#jpage [data-step-filter="failed"]');
+    assert((await rows()) === 1, `failed shows ${await rows()}`);
+    await page.click('#jpage [data-step-filter="fig"]');
+    assert((await rows()) === 1, `figures show ${await rows()}`);
+    await page.click('#jpage [data-step-filter="engine:claude"]');
+    const badge = await page.$$eval('#jpage .jsteps > details', ds => ds.filter(d => d.getClientRects().length).map(d => d.dataset.engine));
+    assert(badge.join(',') === 'claude', badge.join(','));
+    await page.click('#jpage [data-step-filter=""]');
+    assert((await rows()) === 4, 'filter did not reset');
+    await page.click('#jpage [data-step-order]');
+    const first = await page.$eval('#jpage .jsteps', s => { const r = [...s.children].map(c => [c.getBoundingClientRect().top, c.querySelector('.jcid').textContent]); r.sort((a, b) => a[0] - b[0]); return r[0][1]; });
+    await page.click('#jpage [data-step-order]');
+    assert(first === 'c0004', `newest first starts with ${first}`);
+  });
+  await check('findings and decisions are one line; a finding shows its untraced numbers', async () => {
+    const kinds = await page.$$eval('#jpage .jp-notes .jkind', ks => ks.map(k => k.textContent));
+    assert(kinds.includes('finding') && kinds.includes('decision') && kinds.includes('note'), kinds.join(','));
+    await page.click('#jpage .jp-notes details[data-kind="finding"] > summary');
+    const text = await page.textContent('#jpage .jp-notes details[open]');
+    assert(text.includes('numbers not found in the cited cells: 2,000'), text.slice(0, 160));
+    assert((await page.textContent('#jpage .jp-notes')).includes('please confirm the control label'), 'note for the student missing');
+  });
+  await check('a filter stays with its project', async () => {
+    await page.click('#jpage [data-step-filter="failed"]');
+    await page.click('.jitem[data-path="pbmc-exp-00"]');
+    await page.waitForFunction(() => document.querySelector('#jpage .jp')?.dataset.project === 'pbmc-exp-00');
+    const shown = await visibleRows('#jpage .jsteps > details');
+    const active = await page.$eval('#jpage [data-step-filter][aria-pressed="true"]', b => b.dataset.stepFilter);
+    assert(shown === 1 && active === '', `${shown} rows, filter '${active}'`);
+    await page.click('.jitem[data-path="k562-qc"]');
+    await page.waitForFunction(() => document.querySelector('#jpage .jp')?.dataset.project === 'k562-qc');
+    assert((await visibleRows('#jpage .jsteps > details')) === 1, 'k562-qc lost its filter');
+    await page.click('#jpage [data-step-filter=""]');
   });
   await check('journal hints fit', () => hintsFit('.view[data-view="journal"]'));
 
@@ -299,17 +340,27 @@ async function main() {
     await clocked.clock.runFor(61000);
     await clocked.waitForLoadState('load');
     await clocked.clock.runFor(1000);
+    await clocked.waitForSelector('#jpage .jp');
     const after = await clocked.evaluate(() => ({ m: window.__marker, h: location.hash,
-      shown: document.querySelector('.journal:not([hidden])')?.dataset.journal }));
+      shown: document.querySelector('#jpage .jp')?.dataset.project }));
     assert(after.m === undefined, 'did not reload');
     assert(after.h === '#journal/k562-qc' && after.shown === 'k562-qc', JSON.stringify(after));
   });
-  await check('an open ⋯ menu holds the reload', async () => {
-    await clocked.click('.journal:not([hidden]) .jtitle summary.dots');
+  await check('an opened navigator group survives the reload', async () => {
+    await clocked.click('.jgroup[data-group="idle"] > summary');
+    await clocked.evaluate(() => { window.__marker = 3; });
+    await clocked.clock.runFor(61000);
+    await clocked.waitForLoadState('load');
+    await clocked.clock.runFor(1000);
+    await clocked.waitForSelector('#jpage .jp');
+    assert((await clocked.evaluate(() => window.__marker)) === undefined, 'did not reload');
+    assert(await clocked.$eval('.jgroup[data-group="idle"]', g => g.open), 'the group closed again');
+  });
+  await check('an opened step holds the reload; the open project list does not', async () => {
+    await clocked.click('#jpage .jsteps details.jstep >> nth=0 >> summary');
     await clocked.evaluate(() => { window.__marker = 2; });
     await clocked.clock.runFor(61000);
-    assert((await clocked.evaluate(() => window.__marker)) === 2, 'reloaded while the menu was open');
-    await clocked.keyboard.press('Escape');
+    assert((await clocked.evaluate(() => window.__marker)) === 2, 'reloaded while a step was open');
   });
   await clocked.close();
 
@@ -327,12 +378,18 @@ async function main() {
       assert(w <= 376, `page is ${w}px wide`);
     });
   }
-  await check('project ⋯ menu fits the screen', async () => {
+  await check('the project list opens from its button and closes on a pick', async () => {
     await mp.goto(`${BASE}#journal/k562-qc`);
-    await mp.waitForTimeout(200);
-    await mp.tap('.journal:not([hidden]) .jtitle summary.dots');
-    const r = await mp.$eval('.journal:not([hidden]) .jtitle details[open] .pop', p => { const b = p.getBoundingClientRect(); return [b.left, b.right]; });
-    assert(r[0] >= 0 && r[1] <= 375, `menu at ${r.map(Math.round)}`);
+    await mp.waitForSelector('#jpage .jp');
+    assert(!(await mp.isVisible('.jnav')), 'the list takes the screen before it is asked for');
+    await mp.tap('.jnav-toggle');
+    assert(await mp.isVisible('.jnav'), 'the list did not open');
+    await mp.screenshot({ path: path.join(OUT, 'phone-journal-list.png') });
+    await mp.tap('.jitem[data-path="cell-jepa"]');
+    await mp.waitForFunction(() => document.querySelector('#jpage .jp')?.dataset.project === 'cell-jepa');
+    assert(!(await mp.isVisible('.jnav')), 'the list stayed open');
+    const w = await mp.evaluate(() => document.documentElement.scrollWidth);
+    assert(w <= 376, `page is ${w}px wide`);
   });
   await check('tips fit the screen', () => mp.evaluate(() => {
     const out = [];

@@ -182,22 +182,43 @@ ol.timeline{list-style:none;padding:0;margin:14px 0;border-left:2px solid var(--
 """
 
 JOURNAL_CSS = """
-.jfoot .engine{margin-left:6px;padding:0 6px;border:1px solid var(--line);border-radius:6px;font-size:11px}
-.filters{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px}.filters button.active{border-color:var(--accent);color:var(--accent)}
-.jbar{display:flex;align-items:center;gap:8px;margin-bottom:10px}.jbar>.hint{margin-left:auto}.journal-tree{display:flex;flex-wrap:wrap;gap:4px}
-.journal-tree button{padding:5px 12px;border-radius:999px;border:1px solid var(--line);background:var(--card);color:var(--text)}
-.journal-tree button.active{background:var(--text);color:var(--card);border-color:var(--text)}
-.jtitle{display:flex;align-items:center;gap:8px}.jtitle h2{margin:6px 0}.question{margin:0 0 6px;color:var(--muted)}
-.jstate{display:flex;gap:10px;align-items:center;margin:4px 0 12px;font-size:13px}
-.jreport{margin:0 0 8px}
-.jcards{display:flex;flex-direction:column;gap:10px}
-.jcard{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 14px;box-shadow:var(--shadow)}
-.jhead{display:flex;align-items:center;gap:8px}.jhead .why{font-weight:500}.expect{margin:2px 0 6px}
+.jlayout{display:grid;grid-template-columns:250px minmax(0,1fr);gap:28px;align-items:start}
+.jnav{position:sticky;top:12px;max-height:calc(100vh - 84px);overflow:auto;padding-right:6px;font-size:13px}
+.jnav-head{display:flex;align-items:center;gap:6px;margin:2px 0 10px}.jnav-head input{flex:1;min-width:0}
+.jgroup{margin:0 0 10px}.jgroup>summary{cursor:pointer;list-style:none;color:var(--muted);font-size:11.5px;text-transform:uppercase;letter-spacing:.05em;font-weight:500;padding:3px 8px}
+.jgroup>summary::-webkit-details-marker,.jkids>summary::-webkit-details-marker,.jrow-d>summary::-webkit-details-marker{display:none}
+.jgroup .count,.jp-label .count{margin-left:6px;font-weight:400}
+.jgroup:not(.all) .jnode.extra,.jp-section:not(.all) .jrow-d.extra{display:none}.jnav.searching .jnode.extra{display:block}
+.jitem{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:8px;color:var(--text)}
+.jitem:hover{background:var(--soft);text-decoration:none}.jitem.active{background:var(--soft);font-weight:500}
+.jname{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.jwhen{flex:none;color:var(--muted);font-size:11px}
+.jst{flex:none;width:14px;text-align:center;font-size:12px;color:var(--muted)}.jst.ok{color:var(--ok)}.jst.bad{color:var(--bad)}.jst.run{color:var(--run)}
+.jkids{margin-left:15px;padding-left:4px;border-left:1px solid var(--line)}.jkids>summary{cursor:pointer;list-style:none;color:var(--muted);font-size:11.5px;padding:2px 8px}
+.jnav-toggle{display:none}.jmain{min-width:0}.jbench{margin:0 0 8px}
+.jp-crumbs a{color:var(--muted)}.jp-q{font-size:19px;font-weight:500;line-height:1.35;margin:4px 0 8px}
+.jp-state{display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center;font-size:13px;margin:0 0 16px}
+.jp-outcome{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 16px;margin:0 0 22px}
+.jp-outcome-text{margin:4px 0 10px;white-space:pre-wrap;line-height:1.55}
+.jp-links{display:flex;flex-wrap:wrap;gap:6px 16px;align-items:center;font-size:13px}
+.jp-label{display:flex;flex-wrap:wrap;align-items:center;gap:6px;color:var(--muted);font-size:11.5px;text-transform:uppercase;letter-spacing:.05em;font-weight:500;margin:0 0 6px}
+.jp-label .filters{margin-left:auto;text-transform:none;letter-spacing:0;font-weight:400}.jp-section{margin:0 0 22px}
+.jrows{display:flex;flex-direction:column;border-top:1px solid var(--line)}
+.jrow,.jrow-d>summary{display:flex;align-items:center;gap:8px;padding:7px 6px;border-bottom:1px solid var(--line);font-size:13px;color:var(--text);cursor:pointer;list-style:none}
+.jrow:hover,.jrow-d>summary:hover{background:var(--soft);text-decoration:none}.jrow-d[open]>summary{background:var(--soft)}
+.jrow-text{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.jrow-d[open]>summary .jrow-text{white-space:normal}
+.jrow-name{flex:none;max-width:35%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
+.jkind{flex:none;width:76px;color:var(--muted);font-size:12px}.jcid{flex:none;color:var(--muted);font-size:11.5px}
+.jmarks{display:flex;gap:4px;flex:none}.jmark{font-size:11px;padding:0 5px;border:1px solid var(--line);border-radius:6px;color:var(--muted)}
+.jmark.ok{color:var(--ok)}.jmark.bad{color:var(--bad)}.jmark.run{color:var(--run)}.jwhen-abs{flex:none;color:var(--muted);font-size:11.5px}
+.jrow-body{padding:8px 6px 14px 28px;border-bottom:1px solid var(--line)}.jrow-d>summary::after{content:'›';flex:none;color:var(--muted);transition:transform .15s}.jrow-d[open]>summary::after{transform:rotate(90deg)}.note-text{white-space:pre-wrap;margin:4px 0}
 .badges{display:flex;flex-wrap:wrap;gap:4px;margin:4px 0}
-pre.out,pre.code{background:var(--soft);border-radius:8px;padding:8px 10px;margin:6px 0;white-space:pre-wrap;word-break:break-word;font:12px ui-monospace,SFMono-Regular,Menlo,monospace;max-height:420px;overflow:auto}
+pre.out,pre.code{background:var(--soft);border-radius:8px;padding:8px 10px;margin:6px 0;white-space:pre;overflow:auto;font:12px ui-monospace,SFMono-Regular,Menlo,monospace;max-height:420px}
 pre.out.err{color:var(--bad,#b3261e)}
-img.jfig{max-width:100%;max-height:360px;border:1px solid var(--line);border-radius:8px;margin:6px 0;display:block;background:#fff}
-details.fold>summary{cursor:pointer;color:var(--muted);font-size:12px;margin-top:4px}
-details.more-out>summary{list-style:none;cursor:pointer}.jfoot{margin-top:6px}
-.note-card .note-text{margin:6px 0;white-space:pre-wrap}.tag.kind{font-weight:500}
+img.jfig{max-width:100%;max-height:380px;border:1px solid var(--line);border-radius:8px;margin:6px 0;display:block;background:#fff}
+details.fold>summary{cursor:pointer;color:var(--muted);font-size:12px;margin-top:4px}.jfoot{margin-top:6px}
+.jfoot .engine{margin-left:6px;padding:0 6px;border:1px solid var(--line);border-radius:6px;font-size:11px}
+.filters{display:flex;flex-wrap:wrap;gap:4px}.filters button{font-size:12px;padding:2px 9px}.filters button.active{border-color:var(--accent);color:var(--accent)}
+@media (max-width:820px){.jlayout{grid-template-columns:minmax(0,1fr);gap:10px}.jnav{display:none;position:static;max-height:none}
+.jlayout.navopen .jnav{display:block}.jnav-toggle{display:block;width:100%;text-align:left}.jwhen-abs,.jcid{display:none}
+.jkind{width:auto}.jp-label .filters{margin-left:0}.jrow-body{padding-left:8px}}
 """

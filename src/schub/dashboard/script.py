@@ -292,7 +292,7 @@ SCRIPT = r"""
   let typedAt = 0;
   document.addEventListener('input', () => { typedAt = Date.now(); });
   const busy = () => Date.now() - typedAt < 15000 ||
-    $$('.view.active details[open], #node-panel details[open], details.account[open], textarea.manual:not([hidden])')
+    $$('.view.active details[open]:not(.jgroup):not(.jkids), #node-panel details[open], details.account[open], textarea.manual:not([hidden])')
       .some(d => d.getClientRects().length);
   setInterval(() => {
     if (auto() && !document.hidden && !busy()) { keep.set('scroll', String(window.scrollY)); location.reload(); }

@@ -45,16 +45,25 @@ def bench_project(settings: Settings) -> Journal:
 
 
 def build(settings: Settings, cluster: FakeCluster):
+    """The index and every project's page (loaded on a click), as one text."""
     info = build_dashboard(Hub(settings, Slurm(cluster)))
-    return Path(info.path).read_text()
+    return Path(info.path).read_text() + "".join(page_of(settings, p.stem.replace(".", "/"))
+                                                 for p in sorted((settings.view_dir / "jproj").glob("*.js")))
+
+
+def page_of(settings: Settings, project: str) -> str:
+    text = (settings.view_dir / "jproj" / f"{project.replace('/', '.')}.js").read_text()
+    prefix = f"window.SCHUB_JPAGE=window.SCHUB_JPAGE||{{}};window.SCHUB_JPAGE[{json.dumps(project)}]="
+    assert text.startswith(prefix)
+    return json.loads(text[len(prefix):].rstrip().rstrip(";"))
 
 
 def test_the_journal_tab_shows_the_work(settings: Settings, cluster: FakeCluster) -> None:
     bench_project(settings)
     page = build(settings, cluster)
     assert re.findall(r'data-tab="([a-z]+)"', page) == ["journal"]  # no brick-era data: no brick-era tabs
-    section = page[page.index('data-journal="ifn"'):]
-    assert section.index("train") < section.index("plot QC") < section.index("load &lt;b&gt;Kang")  # newest first
+    section = page_of(settings, "ifn")
+    assert section.index("load &lt;b&gt;Kang") < section.index("plot QC") < section.index("train")  # the story's order
     assert "<script>alert(1)</script>" not in page and "&lt;script&gt;alert(1)&lt;/script&gt;" in page
     assert "check table_columns" in page and "lacks pvalue" in page and "job 812 completed" in page
     assert "Leo: please check the donor column" in page  # the student sees notes meant for them
@@ -116,9 +125,11 @@ def test_a_published_report_is_one_line_on_the_journal_page(settings: Settings, 
     cid = journal.allocate("c")
     journal.write_cell(CellEntry(ref=f"ifn#{cid}", project="ifn", cid=cid, why="later", expect="x", code="x",
                                  created=journal.now(), status="ok"))
-    page = build(settings, cluster)
-    section = page[page.index('data-journal="ifn"'):]
-    assert 'Report: <a href="jrep/ifn/01-ifn-answer/report.html"' in section and "1 newer cell since" in section
+    build(settings, cluster)
+    section = page_of(settings, "ifn")
+    assert '<a href="jrep/ifn/01-ifn-answer/report.html" target="_blank"' in section
+    assert "1 newer cell since the report" in section and "Outcome<span class=\"muted\"> from the report" in section
+    assert '<p class="jp-outcome-text">24673 cells.</p>' in section
     assert 'data-jnb="report:ifn:reports/01-ifn-answer"' in section and 'data-name="ifn.01-ifn-answer"' in section
     folder = settings.view_dir / "jrep" / "ifn" / "01-ifn-answer"
     assert (folder / "report.html").read_bytes() == (settings.projects_dir / "ifn" / published.html).read_bytes()
@@ -129,3 +140,89 @@ def test_a_published_report_is_one_line_on_the_journal_page(settings: Settings, 
     stale.write_text("x")
     build(settings, cluster)
     assert not stale.exists() and (folder / "report.js").exists()
+
+
+def test_the_navigator_groups_projects_and_nests_variants(settings: Settings, cluster: FakeCluster) -> None:
+    import shutil
+    from datetime import datetime, timedelta, timezone
+
+    from schub.bench.checkpoint import CheckpointStore
+    from schub.dashboard.views_journal import page_version
+
+    def made(name: str, disposition: str, days_ago: float = 0.0) -> None:
+        when = (datetime.now(timezone.utc) - timedelta(days=days_ago)).isoformat(timespec="milliseconds")
+        ProjectStore(settings).create(name, question=f"Does {name} replicate?")
+        journal = Journal(settings.projects_dir / name, name, now=lambda: when)
+        cid = journal.allocate("c")
+        journal.write_cell(CellEntry(ref=f"{name}#{cid}", project=name, cid=cid, why=f"first look at {name}",
+                                     expect="x", code="x", created=when, status="ok"))
+        if disposition != "active":
+            CheckpointStore(settings.projects_dir / name, now=lambda: when).write(disposition, reason="r")
+
+    made("alpha", "active")
+    made("alpha/strict", "blocked")
+    made("alpha/strict/deep", "complete")
+    made("beta", "complete", days_ago=1)
+    made("gamma", "active", days_ago=10)
+    made("delta", "complete")
+    (settings.bench_dir / "evals").mkdir(parents=True)
+    (settings.bench_dir / "evals" / "runs.jsonl").write_text('{"project": "delta"}\n')
+    build(settings, cluster)
+    index = (settings.view_dir / "index.html").read_text()
+    nav = index[index.index('class="jnav"'):index.index('id="jpage"')]
+    assert re.findall(r'class="jgroup" data-group="([a-z]+)"', nav) == ["blocked", "done", "idle", "eval"]
+    blocked = nav[nav.index('data-group="blocked"'):nav.index('data-group="done"')]
+    assert 'data-path="alpha"' in blocked and '<details class="jkids" open><summary>2 variants' in blocked
+    assert blocked.index('data-path="alpha/strict"') < blocked.index('data-path="alpha/strict/deep"')
+    assert "first look at" not in index  # pages load on a click: the index carries only the navigator
+    alpha = page_of(settings, "alpha")
+    assert '<a class="jrow" href="#journal/alpha/strict">' in alpha and "Variants" in alpha
+    deep = page_of(settings, "alpha/strict/deep")
+    assert '<a href="#journal/alpha">alpha</a> / <a href="#journal/alpha/strict">strict</a> / deep' in deep
+    version = re.search(r'data-path="beta" data-v="([0-9a-f]+)"', index)[1]
+    assert version == page_version(page_of(settings, "beta"))
+    shutil.rmtree(settings.projects_dir / "beta")
+    build(settings, cluster)
+    assert not (settings.view_dir / "jproj" / "beta.js").exists() and (settings.view_dir / "jproj" / "alpha.js").exists()
+
+
+def test_the_outcome_is_plain_text() -> None:
+    from schub.dashboard.collect_journal import _lead
+
+    text = "# Title\n**Question.** Does GEARS (*Nature Biotechnology* 2023) hold? 2*3, `R`\n\n## Next\n- more"
+    assert _lead(text) == "Question. Does GEARS (Nature Biotechnology 2023) hold? 2*3, R\n\nNext\n- more"
+    assert _lead("a\n\n" + "b" * 900).endswith(" …") and len(_lead("x" * 3000, 2000)) < 2010
+    assert _lead("__init__ and #3 donors, p < 0.05*") == "__init__ and #3 donors, p < 0.05*"
+    from schub.dashboard.collect_journal import _group
+    from datetime import datetime, timezone
+    assert _group("active", "2026-09-01T10:00:00", False, datetime(2026, 9, 24, tzinfo=timezone.utc)) == "idle"
+    assert _group("active", "", False, datetime(2026, 9, 24, tzinfo=timezone.utc)) == "working"
+
+
+def test_text_reaches_the_lazy_page_escaped(settings: Settings, cluster: FakeCluster) -> None:
+    from schub.bench.checkpoint import CheckpointStore
+
+    journal = bench_project(settings)
+    bad = "<img src=x onerror=alert(1)>"
+    CheckpointStore(settings.projects_dir / "ifn").write_handoff(f"Where we are {bad}")
+    journal.add_note("finding", f"found {bad}", because=["ifn#c0001"])
+    cid = journal.allocate("c")
+    journal.write_cell(CellEntry(ref=f"ifn#{cid}", project="ifn", cid=cid, why=f"why {bad}", expect=bad, code=bad,
+                                 created=journal.now(), status="ok"))
+    build(settings, cluster)
+    page = page_of(settings, "ifn")
+    assert bad not in page and page.count("&lt;img src=x onerror=alert(1)&gt;") >= 5
+
+
+def test_a_live_variant_lifts_an_evaluation_project(settings: Settings, cluster: FakeCluster) -> None:
+    from schub.bench.checkpoint import CheckpointStore
+
+    for name in ("ev-run", "ev-run/retry"):
+        ProjectStore(settings).create(name, question="q")
+        Journal(settings.projects_dir / name, name).add_note("note", "started")
+    CheckpointStore(settings.projects_dir / "ev-run/retry").write("blocked", reason="needs you")
+    (settings.bench_dir / "evals").mkdir(parents=True)
+    (settings.bench_dir / "evals" / "runs.jsonl").write_text('{"project": "ev-run"}\n')
+    build(settings, cluster)
+    index = (settings.view_dir / "index.html").read_text()
+    assert re.findall(r'class="jgroup" data-group="([a-z]+)"', index) == ["blocked"]

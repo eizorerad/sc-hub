@@ -1,5 +1,6 @@
 """What the Journal tab shows: each project's hand-over, checkpoint and newest
-entries, the workbench's state, and a few alerts worth a glance.
+entries, where it stands (its group in the navigator), its outcome, the workbench's
+state, and a few alerts worth a glance.
 
 The student sees everything, including notes meant only for them (the assistant
 does not). Alerts replace pull-only logs, VCC2026's weakest point: a stopped
@@ -8,6 +9,9 @@ workbench, full job slots, failed checks, lost cells, a quota nearly full.
 
 from __future__ import annotations
 
+import json
+import re
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from ..bench.checkpoint import CheckpointStore
@@ -23,6 +27,14 @@ from ..slurm import QueueJob
 from ..state import Frozen
 
 MAX_ENTRIES = 150
+IDLE_DAYS = 7  # an unfinished project with no entry for this long is "quiet"
+OUTCOME_CHARS = 700  # of a hand-over; a report's summary is short by design and shown whole (up to 2000)
+SUMMARY_CHARS = 2000
+BOLD = re.compile(r"\*\*(\S(?:.*?\S)?)\*\*")
+ITALIC = re.compile(r"(?<![\w*])\*(\S(?:[^*]*?\S)?)\*(?![\w*])")
+CODE = re.compile(r"`([^`\n]+)`")
+HEADING = re.compile(r"^#{2,6} +", re.M)
+GROUPS = ("blocked", "working", "done", "idle", "eval")  # most in need of the student first
 CODE_CHARS = 6000
 OUTPUT_CHARS = 3000
 QUOTA_ALERT = 0.95
@@ -40,6 +52,11 @@ class JournalCard(Frozen):
     notebook: str = ""  # the rendered notebook inside the view folder, without extension (.js, .ipynb)
     figures: tuple[tuple[str, str], ...] = ()  # (source file, path inside the view)
     reports: tuple[dict[str, Any], ...] = ()  # published reports, oldest first, with their paths in the view
+    group: str = "working"  # working, blocked, done, idle (unfinished, quiet for a week) or eval
+    updated: str = ""  # the newest entry or checkpoint change
+    outcome: str = ""  # the latest report's summary, else the start of the hand-over
+    outcome_from: str = ""  # "report" or "handoff"
+    total_entries: int = 0  # entries in the journal (the card holds the newest MAX_ENTRIES)
 
 
 class BenchPanel(Frozen):
@@ -80,8 +97,67 @@ def note_data(entry: NoteEntry) -> dict[str, Any]:
     }
 
 
+def eval_projects(settings: Settings) -> set[str]:
+    """Projects `schub eval-run` created (bench/evals/runs.jsonl)."""
+    try:
+        lines = (settings.bench_dir / "evals" / "runs.jsonl").read_text().splitlines()
+    except OSError:
+        return set()
+    found = set()
+    for line in lines:
+        try:
+            found.add(str(json.loads(line)["project"]))
+        except (ValueError, KeyError, TypeError):
+            continue
+    return found
+
+
+def _updated(entries: list, checkpoint_updated: str) -> str:
+    times = [checkpoint_updated] + [t for e in entries for t in (e.created, getattr(e, "finished", None) or "")]
+    return max(times, default="")
+
+
+def _group(disposition: str, updated: str, evaluated: bool, now: datetime) -> str:
+    if evaluated:
+        return "eval"
+    if disposition == "complete":
+        return "done"
+    if disposition == "blocked":
+        return "blocked"
+    try:
+        when = datetime.fromisoformat(updated)
+    except ValueError:
+        return "working"  # no usable time: never hide a project for being quiet
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    quiet = now - when > timedelta(days=IDLE_DAYS)
+    return "idle" if quiet else "working"
+
+
+def _lead(text: str, limit: int = OUTCOME_CHARS) -> str:
+    """Plain text (markdown emphasis and headings dropped), cut at a paragraph near `limit`."""
+    lines = [line for line in text.strip().splitlines() if not line.startswith("# ")]
+    body = HEADING.sub("", "\n".join(lines))
+    for pattern in (BOLD, ITALIC, CODE):
+        body = pattern.sub(r"\1", body)
+    body = body.strip()
+    if len(body) <= limit:
+        return body
+    cut = body.rfind("\n\n", 0, limit)
+    return body[: cut if cut > limit // 3 else limit].rstrip() + " …"
+
+
+def _outcome(project_dir: Any, reports: tuple[dict[str, Any], ...], handoff: str) -> tuple[str, str]:
+    if reports:
+        spec = read_json(project_dir / reports[-1]["folder"] / "spec.json") or {}
+        if str(spec.get("summary", "")).strip():
+            return _lead(str(spec["summary"]), SUMMARY_CHARS), "report"
+    return (_lead(handoff), "handoff") if handoff.strip() else ("", "")
+
+
 def journal_cards(settings: Settings) -> tuple[JournalCard, ...]:
     store = ProjectStore(settings)
+    evaluated, now = eval_projects(settings), datetime.now(timezone.utc)
     cards = []
     for name in store.names():
         try:
@@ -101,11 +177,17 @@ def journal_cards(settings: Settings) -> tuple[JournalCard, ...]:
         ids = journal.folder / "ids"
         numbers = [int(p.name[1:]) for p in ids.iterdir() if p.name[:1] == "c" and p.name[1:].isdigit()] \
             if ids.is_dir() else []
+        state, handoff = checkpoint.read(), checkpoint.read_handoff()
+        reports = _reports(project_dir, name, numbers)
+        updated = _updated(entries, state.updated)
+        outcome, source = _outcome(project_dir, reports, handoff)
+        notes = journal.notes_dir
+        total = len(numbers) + (sum(1 for p in notes.glob("n*.json")) if notes.is_dir() else 0)
         cards.append(JournalCard(
-            project=name, question=meta.question, disposition=checkpoint.read().disposition,
-            next_action=checkpoint.read().next_action, handoff=checkpoint.read_handoff(), entries=data,
-            cells=len(numbers), failed_checks=failed, notebook=f"jnb/{slug(name)}", figures=figures,
-            reports=_reports(project_dir, name, numbers),
+            project=name, question=meta.question, disposition=state.disposition, next_action=state.next_action,
+            handoff=handoff, entries=data, cells=len(numbers), failed_checks=failed, notebook=f"jnb/{slug(name)}",
+            figures=figures, reports=reports, group=_group(state.disposition, updated, name in evaluated, now),
+            updated=updated, outcome=outcome, outcome_from=source, total_entries=total,
         ))
     return tuple(cards)
 
@@ -141,7 +223,7 @@ def bench_panel(settings: Settings, jobs: tuple[QueueJob, ...], overview: Overvi
     alerts += _slot_alerts(jobs)
     alerts += [f"{c.project}: checks {', '.join(c.failed_checks)} are failing (their latest results)"
                if len(c.failed_checks) > 1 else f"{c.project}: check {c.failed_checks[0]} is failing (its latest result)"
-               for c in cards if c.failed_checks]
+               for c in cards if c.failed_checks and c.group in ("working", "blocked")]  # not finished or evaluation work
     alerts += _quota_alerts(overview)
     if workbench_job is not None:
         where = f" on {workbench_job.node}" if getattr(workbench_job, "node", "") else ""

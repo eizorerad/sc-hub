@@ -1,8 +1,9 @@
 """Build a demo dashboard from synthetic runs, for the browser click-through.
 
 One brick-era project with a finished branch, variants of one parameter (two runs done,
-others running or queued in Slurm), a variant never run, and two bench projects with
-journals. Usage:
+others running or queued in Slurm), a variant never run, two bench projects with
+journals, variants of one of them, and 60 more bench projects in every state (the
+navigator at scale: in progress, needs you, done, quiet for a week, evaluation runs). Usage:
     python tests/e2e/demo_site.py <out dir>   ->   <out dir>/view/index.html
 """
 
@@ -74,6 +75,7 @@ def main(out: Path) -> None:
         hub.submit(hub.plan_branch("ifn", name).plan_id)
     hub.save_branch("ifn", "strict", BranchSpec(from_branch="main", overrides={"qc_filter": {"min_genes": 5}}))
     _bench_project(hub)
+    _many_projects(hub)
     info = build_dashboard(hub, out / "view")
     print(info.path)
 
@@ -138,6 +140,49 @@ def _report(hub: Hub, name: str) -> None:
                       blocks=(Block(text="## Data"), Block(cell="c0001", show="outputs"),
                               Block(figure="c0002", caption="QC on the twin"), Block(note="n0003")))
     BenchService(hub.settings, hub.slurm).report(name, spec, publish=True)
+
+
+
+def _many_projects(hub: Hub) -> None:
+    """Variants of k562-qc, and 60 small projects: 6 in progress, 2 blocked, 34 done, 4 quiet, 14 evaluation runs."""
+    from datetime import datetime, timedelta, timezone
+
+    from schub.bench.checkpoint import CheckpointStore
+    from schub.bench.journal import Journal
+    from schub.bench.models import CellEntry, OutputItem
+
+    def project(name: str, question: str, disposition: str, days_ago: float) -> None:
+        when = (datetime.now(timezone.utc) - timedelta(days=days_ago)).isoformat(timespec="milliseconds")
+        hub.projects.create(name, question=question)
+        journal = Journal(hub.settings.projects_dir / name, name, now=lambda: when)
+        cid = journal.allocate("c")
+        journal.write_cell(CellEntry(ref=f"{name}#{cid}", project=name, cid=cid, why=f"first look at {name}",
+                                     expect="a table", code="print('x')", created=when, status="ok",
+                                     outputs=(OutputItem(kind="stream", text="x\n"),)))
+        store = CheckpointStore(hub.settings.projects_dir / name, now=lambda: when)
+        if disposition == "complete":
+            store.write("complete", reason="done")
+            store.write_handoff(f"# {name}\nThe answer for {name}: the effect holds in 3 of 4 donors.")
+        elif disposition == "blocked":
+            store.write("blocked", reason="needs the student")
+            store.write_handoff("Needs the student: which control label is right?")
+        else:
+            store.write(disposition, next_action="the next QC step",
+                        **({"waiting_jobs": []} if disposition != "waiting" else {}))
+
+    for name, question, disposition in (("k562-qc/strict", "Does a stricter QC keep the knockdowns?", "active"),
+                                        ("k562-qc/lenient", "Does a lenient QC add noise?", "complete"),
+                                        ("k562-qc/strict/min50", "At least 50 cells per guide?", "blocked")):
+        project(name, question, disposition, 0.1)
+    topics = ("pbmc", "kang", "norman", "rpe1", "k562", "hct116", "jurkat", "ifn")
+    for i in range(60):
+        disposition, days = (("active", 0.2), ("blocked", 0.5), ("complete", 1 + i / 10), ("active", 9 + i))[
+            0 if i < 6 else 1 if i < 8 else 2 if i < 42 else 3 if i < 46 else 2]
+        project(f"{topics[i % 8]}-exp-{i:02d}", f"Experiment {i} on {topics[i % 8]}: does the effect replicate?",
+                disposition, days)
+    runs = hub.settings.bench_dir / "evals" / "runs.jsonl"
+    runs.parent.mkdir(parents=True, exist_ok=True)
+    runs.write_text("".join(json.dumps({"project": f"{topics[i % 8]}-exp-{i:02d}"}) + "\n" for i in range(46, 60)))
 
 
 if __name__ == "__main__":

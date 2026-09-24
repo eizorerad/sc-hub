@@ -3,6 +3,7 @@ images), and the laptop mirrors it with `schub-view` (ssh + rsync + a browser)."
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -115,21 +116,39 @@ def _journal_files(settings: Any, view: Path, snapshot: Any) -> None:
                 used.add(target)
             except OSError:
                 continue
-        project_dir = settings.projects_dir / card.project
-        journal = Journal(project_dir, card.project)
-        text = json.dumps(render(card.project, card.question, journal.entries(), journal.folder), indent=1)
-        _write(view / f"{card.notebook}.ipynb", text)
-        _write(view / f"{card.notebook}.js", f"window.SCHUB_JNB=window.SCHUB_JNB||{{}};"
-                                             f"window.SCHUB_JNB[{json.dumps(card.project)}]={text};\n")
-        try:
-            _write(journal.folder / "notebook.ipynb", text)
-        except OSError:
-            pass  # the view copy is what the page links to
+        _protocol_notebook(settings, view, card)
         used |= _report_files(view, card)
     for root in (view / "jfig", view / "jrep"):
         for path in root.rglob("*") if root.is_dir() else []:
             if path.is_file() and path not in used:
                 path.unlink(missing_ok=True)
+
+
+def _protocol_notebook(settings: Any, view: Path, card: Any) -> None:
+    """jnb/<project>.ipynb and .js (and the journal's copy), rebuilt only when the journal changed: rendering
+    reads every figure, which a hundred projects cannot afford every minute."""
+    from ..bench.journal import Journal
+    from ..bench.render_nb import render
+
+    signature = hashlib.sha1(json.dumps([card.entries, card.handoff, card.total_entries, card.question],
+                                        sort_keys=True, default=str).encode()).hexdigest()
+    mark = view / f"{card.notebook}.sig"
+    try:
+        if mark.read_text() == signature and (view / f"{card.notebook}.js").exists():
+            return
+    except OSError:
+        pass
+    project_dir = settings.projects_dir / card.project
+    journal = Journal(project_dir, card.project)
+    text = json.dumps(render(card.project, card.question, journal.entries(), journal.folder), indent=1)
+    _write(view / f"{card.notebook}.ipynb", text)
+    _write(view / f"{card.notebook}.js", f"window.SCHUB_JNB=window.SCHUB_JNB||{{}};"
+                                         f"window.SCHUB_JNB[{json.dumps(card.project)}]={text};\n")
+    try:
+        _write(journal.folder / "notebook.ipynb", text)
+    except OSError:
+        pass  # the view copy is what the page links to
+    _write(mark, signature)
 
 
 def _report_files(view: Path, card: Any) -> set[Path]:
@@ -154,6 +173,29 @@ def _report_files(view: Path, card: Any) -> set[Path]:
     return used
 
 
+def _project_pages(view: Path, pages: dict[str, str]) -> None:
+    """jproj/<project>.js, one per project. jproj/versions.json says what each file holds, so unchanged pages are
+    neither read nor rewritten (the laptop mirror copies less)."""
+    manifest = view / "jproj" / "versions.json"
+    try:
+        known = json.loads(manifest.read_text())
+    except (OSError, ValueError):
+        known = {}
+    versions = {}
+    for relative, text in pages.items():
+        versions[relative] = hashlib.sha1(text.encode()).hexdigest()
+        if known.get(relative) != versions[relative] or not (view / relative).exists():
+            _write(view / relative, text)
+    _write(manifest, json.dumps(versions, sort_keys=True))
+
+
+def _prune_pages(view: Path, pages: dict[str, str]) -> None:
+    wanted = {view / relative for relative in pages}
+    for path in (view / "jproj").glob("*.js") if (view / "jproj").is_dir() else []:
+        if path not in wanted:
+            path.unlink(missing_ok=True)
+
+
 def build_dashboard(hub: Any, out: Path | None = None) -> DashboardInfo:
     view = out or hub.settings.view_dir
     snapshot = collect(hub)
@@ -162,10 +204,13 @@ def build_dashboard(hub: Any, out: Path | None = None) -> DashboardInfo:
     map_keys = {s.key for run in snapshot.runs[:RECENT_CELL_MAPS] for s in run.steps}
     images = _Images(view, full_keys, map_keys)
     site = render_site(snapshot, images)
+    # What the index points to is written first: a mirror copying in between never meets a missing page.
+    _journal_files(hub.settings, view, snapshot)
+    _project_pages(view, site.pages)
     _write(view / "index.html", site.index)
     shutil.rmtree(view / "br", ignore_errors=True)  # graph files of the brick-era Pipelines tab
     images.prune()
-    _journal_files(hub.settings, view, snapshot)
+    _prune_pages(view, site.pages)
     shutil.rmtree(view / "runs", ignore_errors=True)  # per-run pages of the previous layout
     size = sum(p.stat().st_size for p in view.rglob("*") if p.is_file())
     return DashboardInfo(

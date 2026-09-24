@@ -13,7 +13,7 @@ from .views_activity import status_chip
 from .views_cluster import render_cluster
 from .views_library import render_library
 from ..state import Frozen
-from .views_journal import JOURNAL_SCRIPT, render_journal
+from .views_journal import JOURNAL_SCRIPT, page_file, page_script, page_version, project_pages, render_journal
 from .views_runs import ImageUrl, render_runs
 
 # What a researcher needs is the Journal. Runs of brick pipelines, the Library, sessions
@@ -23,6 +23,7 @@ MENU_VIEWS = {"runs": "Runs", "library": "Library"}  # the cluster overview has 
 
 class Site(Frozen):
     index: str  # index.html
+    pages: dict[str, str] = {}  # view path (jproj/<project>.js) -> a project's page, loaded when picked
 
 
 def _initials(user: str) -> str:
@@ -69,7 +70,9 @@ def _titled(key: str, html: str) -> str:
 
 def render_site(snap: Snapshot, image_url: ImageUrl) -> Site:
     tabs = '<a href="#journal" data-tab="journal">Journal</a>'
-    views = {"journal": render_journal(snap.journals, snap.bench)}
+    pages = project_pages(snap.journals)
+    versions = {project: page_version(html) for project, html in pages.items()}
+    views = {"journal": render_journal(snap.journals, snap.bench, versions)}
     views.update({
         "runs": render_runs(snap, image_url),
         "library": render_library(snap),
@@ -84,4 +87,4 @@ def render_site(snap: Snapshot, image_url: ImageUrl) -> Site:
         f"<main>{sections}</main>{code_templates(snap)}"
         f"<script>{JOURNAL_SCRIPT}</script><script>{SCRIPT}</script></body></html>"
     )
-    return Site(index=index)
+    return Site(index=index, pages={page_file(p): page_script(p, html) for p, html in pages.items()})

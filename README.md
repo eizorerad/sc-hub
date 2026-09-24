@@ -274,12 +274,18 @@ branches share their common prefix: `latent-10` (from `main` with
 
 ## Dashboard on a weak laptop
 
-`schub dashboard` (about 3 s on the login node) writes `view/`: one static
-`index.html` plus small images. It opens on the Journal: each project's cells,
-newest first, with why, expected, the result and its checks; code, files and
-logs fold away; decisions, mistakes, the engine filter and the notebook download
-sit behind the project's '⋯'; a published report is one line under the question
-(its page, its notebook, and how many cells came after it). Alerts say when the workbench cannot start, both
+`schub dashboard` (about 5 s on the login node) writes `view/`: a small
+`index.html` plus one file per project page (`jproj/`), loaded when the project is
+picked, so the page stays light with a hundred projects. It opens on the Journal: on
+the left, a navigator with a search box and projects grouped by where they stand
+(needs you, in progress, done, quiet for a week, evaluation runs), variants
+(`project/variant`) as a tree under their project. A project's page starts with the
+question, where it stands and the outcome (the report's summary or the hand-over),
+with links to the report, its notebook and the protocol notebook; then its
+variants, its findings and decisions one line each, and its steps one line each
+(status, why, jobs, checks, figure), which open on a click with the output, figures,
+code and files. Filters show failed steps, steps with figures or one engine's work;
+system events stay hidden unless asked for. Alerts say when the workbench cannot start, both
 job slots are taken, a check failed or a quota is nearly full. Runs of brick
 pipelines, the library and the cluster overview are in the menu; open a run for
 its step timeline, each step's params, code, job, log tail, figures, top DE genes
