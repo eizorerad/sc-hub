@@ -24,6 +24,7 @@ import time
 from typing import Callable
 
 from ..config import Settings, load_settings
+from ..locking import LockTimeout, exclusive
 from ..projects import ProjectError, ProjectStore
 from ..slurm import ACTIVE_STATES, Slurm, SlurmError
 from .clock import Clock, seconds_between, stamp
@@ -37,6 +38,9 @@ HEARTBEAT_S = 10.0
 STALE_AFTER_S = 60.0
 SHUTDOWN_S = 20.0  # Slurm's KillWait is 30 s by default
 WAIT_FOR_OTHER_S = 120.0
+RUNNER_LOCK_STALE_S = 90.0
+MAX_KERNELS = 6  # live project kernels in one workbench; the least recently used idle one goes first
+KERNEL_IDLE_S = 90 * 60  # an idle kernel older than this is shut down even below MAX_KERNELS  # runner.lock untouched this long: its holder died (it is touched every HEARTBEAT_S)
 MAX_FAILURES = 20
 EXIT_OK, EXIT_BUSY, EXIT_CRASHED = 0, 3, 4
 LIVE_STATES = ("running", "retiring")
@@ -134,6 +138,8 @@ class Runner:
         """Is the runner that claimed into claimed/<owner>/ still around?"""
         if owner == self.job_id:
             return True
+        if self._record_alive(owner):
+            return True  # its heartbeat is fresh, whatever Slurm says this minute
         if owner.isdigit():
             try:
                 return self.slurm.states([owner]).get(owner) in ACTIVE_STATES
@@ -155,6 +161,16 @@ class Runner:
         if not self._wait_for_other():
             return EXIT_BUSY
         self.settings.bench_dir.mkdir(parents=True, exist_ok=True)
+        # Two workbench jobs starting in the same minute would split a project's cells over two kernels:
+        # runner.lock (atomic on Lustre, unlike flock) lets only one run.
+        try:
+            with exclusive(self.settings.bench_dir / "runner.lock", wait_s=self.wait_for_other_s,
+                           stale_after_s=RUNNER_LOCK_STALE_S, heartbeat_s=HEARTBEAT_S):
+                return self._run_locked()
+        except LockTimeout:
+            return EXIT_BUSY
+
+    def _run_locked(self) -> int:
         state = "crashed"
         try:
             self._write_state("running")
@@ -195,6 +211,7 @@ class Runner:
             if project in self.workers:
                 self.workers[project].interrupt(cid)
         self._replace_dead_workers()
+        self._evict_kernels()
         if self.monotonic() >= next_beat:
             self._write_state("running")
             return self.monotonic() + HEARTBEAT_S
@@ -213,6 +230,16 @@ class Runner:
         self.workers[project] = worker
         worker.start()
         return worker
+
+    def _evict_kernels(self) -> None:
+        live = [w for w in self.workers.values() if w.kernel is not None and not w.closing]
+        idle = sorted((w for w in live if w.idle()), key=lambda w: w.last_used)
+        excess = max(0, len(live) - MAX_KERNELS)
+        now = time.monotonic()
+        for index, worker in enumerate(idle):
+            if index < excess or now - worker.last_used > KERNEL_IDLE_S:
+                worker.last_used = now  # asked once; the thread decides when its queue is empty
+                worker.evict()
 
     def _replace_dead_workers(self) -> None:
         for project, worker in list(self.workers.items()):
@@ -243,6 +270,8 @@ class Runner:
         if state == "retired" and self._arm_successor and self._recently_active():
             self.successor = self._arm()
         self._stop_workers(reason)
+        if state in ("idle-stopped", "retired") and not self.successor and self.inbox.pending():
+            self.successor = self._arm()  # a cell arrived while this runner was leaving: do not strand it
         self._write_state(state)
 
     def _stop_workers(self, reason: str) -> None:
@@ -279,15 +308,17 @@ class Runner:
             if self.owner_alive(owner):
                 continue
             for item in self.inbox.claimed(owner):
-                self._sweep_one(store, item)
-                handled += 1
+                adopted = self.inbox.adopt(item, self.job_id)  # a rename: two sweepers never handle one claim
+                if adopted is not None:
+                    self._sweep_one(store, adopted, dead=owner)
+                    handled += 1
             try:
                 (self.settings.bench_dir / "claimed" / owner).rmdir()
             except OSError:
                 pass
         return handled
 
-    def _sweep_one(self, store: ProjectStore, item: Claimed) -> None:
+    def _sweep_one(self, store: ProjectStore, item: Claimed, dead: str) -> None:
         try:
             project_dir = store.require(item.request.project)
         except ProjectError as exc:
@@ -302,7 +333,7 @@ class Runner:
             try:
                 journal.write_cell(entry.model_copy(update={
                     "status": "lost", "finished": self.now(),
-                    "message": LOST_BY_DEAD_RUNNER.format(job=item.owner),
+                    "message": LOST_BY_DEAD_RUNNER.format(job=dead),
                 }))
             except JournalError:
                 pass  # it became final meanwhile

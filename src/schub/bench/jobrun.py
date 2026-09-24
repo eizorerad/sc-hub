@@ -34,6 +34,7 @@ EXIT_OK, EXIT_FAILED, EXIT_TAMPERED = 0, 1, 3
 PORTABLE = Path(__file__).with_name("portable")  # stdlib-only helpers (schub_ckpt) for any environment
 STOP_ENV = "SCHUB_STOP_FILE"
 BODIES = ("cell.py", "cell.sh")
+TERMINATED: list[int] = []  # scancel or the time limit reached the body (a child process) with TERM
 
 
 def verify(job_dir: Path) -> str | None:
@@ -79,6 +80,7 @@ def _child(argv: list[str], env: dict[str, str]) -> int:
     process = subprocess.Popen(argv, env=env)
 
     def forward(number: int, _frame: Any) -> None:
+        TERMINATED.append(number)
         with contextlib.suppress(ProcessLookupError):
             process.send_signal(number)
 
@@ -127,10 +129,11 @@ def _importable(folder: Path) -> Iterator[None]:
 
 
 def report(job_dir: Path, meta: dict[str, Any], exit_code: int, files: tuple, events: list[dict], checks: tuple,
-           started: str) -> dict[str, Any]:
+           started: str, ended_by: str = "") -> dict[str, Any]:
     job_id = os.environ.get("SLURM_JOB_ID", meta.get("job_id", "local"))
     result = {
         "job_id": job_id, "status": "ok" if exit_code == 0 else "failed", "exit_code": exit_code,
+        "ended_by": ended_by,  # TIMEOUT or CANCELLED when Slurm's TERM ended the body
         "started": started, "finished": stamp(), "files": [f.model_dump() for f in files],
         "downloads": [e for e in events if e.get("kind") == "download"],
         "checks": [c.model_dump() for c in checks],
@@ -143,7 +146,7 @@ def to_journal(settings, meta: dict[str, Any], job_dir: Path, result: dict[str, 
     project_dir = settings.projects_dir / meta["project"]
     journal = Journal(project_dir, meta["project"])
     cid, job_id = meta["cid"], result["job_id"]
-    state = "COMPLETED" if result["exit_code"] == 0 else "FAILED"
+    state = result.get("ended_by") or ("COMPLETED" if result["exit_code"] == 0 else "FAILED")
     journal.add_addendum(cid, f"job-{job_id}", {"kind": "job", "job": {
         "job_id": job_id, "state": state, "exit_code": result["exit_code"], "finished": result["finished"],
         "log": str(job_dir / f"slurm-{job_id}.log")}})
@@ -187,12 +190,15 @@ def _run(job_dir: Path) -> int:
         return EXIT_TAMPERED
     before = scan(project_dir, settings.bench.snapshot_max_files)
     exit_code = run_body(job_dir, meta, project_dir / "work")
+    ended_by = ("TIMEOUT" if (job_dir / "time-limit-near").exists() else "CANCELLED") if TERMINATED else ""
     events = drain()
     after = scan(project_dir, settings.bench.snapshot_max_files)
     files = diff(before, after, project_dir, settings.bench.snapshot_hash_max_mb * 1024 * 1024)
     specs = [CheckSpec.model_validate(c) for c in meta.get("checks", [])]
+    if meta.get("body_python"):
+        os.environ["SCHUB_CHECK_PYTHON"] = meta["body_python"]  # gpu_visible probes the job's own environment
     checks = run_checks(settings, meta["project"], specs) if exit_code == 0 else ()
-    result = report(job_dir, meta, exit_code, files, events, checks, started)
+    result = report(job_dir, meta, exit_code, files, events, checks, started, ended_by)
     to_journal(settings, meta, job_dir, result)
     return exit_code
 

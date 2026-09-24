@@ -13,7 +13,10 @@ from __future__ import annotations
 import re
 from typing import Iterable
 
-NUMBER = re.compile(r"(?<![\w.])[-+]?\d[\d,]*(?:\.\d+)?(?:[eE][-+]?\d+)?%?")
+# "12,345" is twelve thousand in prose, but "GATA1,120,0.873" is a CSV row: claims read commas as thousands
+# separators (groups of three digits), evidence is read both ways.
+NUMBER = re.compile(r"(?<![\w.])[-+]?(?:\d{1,3}(?:,\d{3})+(?![\d.])|\d+)(?:\.\d+)?(?:[eE][-+]?\d+)?%?")
+PLAIN = re.compile(r"(?<![\w.])[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?%?")
 TOLERANCE = 0.005
 
 
@@ -52,7 +55,8 @@ def _close(claimed: float, measured: float, decimals: int) -> bool:
 
 
 def unresolved(text: str, evidence: Iterable[str]) -> tuple[str, ...]:
-    measured = [v for chunk in evidence for v in (_value(t) for t in NUMBER.findall(chunk)) if v is not None]
+    measured = [v for chunk in evidence for pattern in (NUMBER, PLAIN)
+                for v in (_value(t) for t in pattern.findall(chunk)) if v is not None]
     missing = []
     for token in claimed_numbers(text):
         value, decimals = _value(token), _decimals(token)

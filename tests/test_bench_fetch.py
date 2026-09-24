@@ -44,6 +44,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if self.path == "/data.bin":
             self._range_response(PAYLOAD)
             return
+        if self.path == "/busy.bin":  # a server that is busy once (503), then answers
+            if Handler.requests == 1:
+                self.send_error(503, "Service Unavailable")
+                return
+            self._range_response(PAYLOAD)
+            return
         super().do_GET()
 
     def _chunked(self, drop: bool) -> None:
@@ -223,3 +229,21 @@ def test_projects_share_one_download_of_a_checksummed_file(server: str, project:
     events = ledger.drain()
     assert len(events) == 3 and {e["path"] for e in events} == {str(t) for t in targets}
     assert sum("download cache" in e.get("message", "") for e in events) == 2
+
+
+def test_the_cache_is_read_only_shared_across_names_and_re_fetched_if_edited(server: str, project: Path,
+                                                                             tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("SCHUB_ROOT", str(tmp_path / "root"))
+    first = fetch(f"{server}/data.bin", dest=tmp_path / "a" / "data.bin", sha256=SHA, pause_s=0)
+    second = fetch(f"{server}/data.bin", dest=tmp_path / "b" / "renamed.bin", sha256=SHA, pause_s=0)
+    assert Handler.requests == 1 and second.stat().st_ino == first.stat().st_ino  # one download, any name
+    assert not first.stat().st_mode & 0o222  # editing one project's copy in place would change every copy
+    first.chmod(0o644)
+    first.write_bytes(b"edited")  # someone made it writable and changed it
+    third = fetch(f"{server}/data.bin", dest=tmp_path / "c" / "data.bin", sha256=SHA, pause_s=0)
+    assert Handler.requests == 2 and third.read_bytes() == PAYLOAD
+
+
+def test_a_busy_server_is_retried(server: str, project: Path) -> None:
+    path = fetch(f"{server}/busy.bin", pause_s=0)
+    assert path.read_bytes() == PAYLOAD and Handler.requests == 2

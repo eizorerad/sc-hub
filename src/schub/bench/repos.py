@@ -15,7 +15,6 @@ fine but see no GPU.
 
 from __future__ import annotations
 
-import fcntl
 import os
 import re
 import shutil
@@ -24,6 +23,7 @@ from pathlib import Path
 from typing import Sequence
 
 from ..hashing import stable_hash
+from ..locking import long_held
 from ..project_env import EnvError, check_packages
 from . import ledger
 from .clock import stamp
@@ -86,8 +86,9 @@ def clone(url: str, ref: str | None = None, dest: str | os.PathLike | None = Non
         origin = _git(target, "config", "--get", "remote.origin.url")  # as cloned, before any url rewriting
         if origin != url:
             raise RepoError(f"{target} holds another repository ({origin}); pass dest= for a new folder")
-        if ref is not None:
-            if _git(target, "status", "--porcelain"):
+        if ref is not None and not _at(target, ref):  # replaying a setup cell: nothing to do
+            # files the code wrote (checkpoints/, outputs) are untracked, not local changes to the code
+            if _git(target, "status", "--porcelain", "--untracked-files=no"):
                 raise RepoError(f"{target} has local changes; commit or copy them before checking out {ref}")
             _git(target, "fetch", "--quiet", "--tags", "origin", timeout=CLONE_TIMEOUT_S)
     elif target.exists() and any(target.iterdir()):
@@ -102,6 +103,16 @@ def clone(url: str, ref: str | None = None, dest: str | os.PathLike | None = Non
     ledger.record("download", url=url, path=str(target), size=0, sha256="", commit=commit)
     print(f"{url} at commit {commit[:12]} -> {target}")
     return target
+
+
+def _at(target: Path, ref: str) -> bool:
+    """HEAD is already the commit `ref` names (no fetch needed). Only for a commit id: a branch may have moved."""
+    if not re.fullmatch(r"[0-9a-f]{7,40}", ref):
+        return False
+    try:
+        return _git(target, "rev-parse", "HEAD") == _git(target, "rev-parse", f"{ref}^{{commit}}")
+    except RepoError:
+        return False
 
 
 def _uv() -> Path:
@@ -136,7 +147,9 @@ def _spec(repo: Path, python: str, torch: str | None, cuda: str, requirements: s
     local = install_repo or (req_path is not None and re.search(r"^\s*-e\s", req_path.read_text(), re.M))
     spec = {"python": python, "torch": torch, "cuda": cuda, "extra": sorted(extra),
             "requirements": stable_hash(req_path.read_text()) if req_path else None,
-            "install_repo": str(repo.resolve()) if install_repo else None,
+            # an editable install (install_repo, or '-e .' in the requirements) points at this checkout: two
+            # projects' clones of one repo must not share it
+            "install_repo": str(repo.resolve()) if local else None,
             # the repository's own package: its dependencies change with its packaging files
             "packaging": _packaging_hash(repo) if local else None}
     return spec, req_path
@@ -155,8 +168,7 @@ def environment(repo: str | os.PathLike, python: str = "3.11", torch: str | None
     root = Path(os.environ.get("SCHUB_ROOT", Path.home() / "schub"))
     env = root / "repo-envs" / stable_hash(spec)
     env.parent.mkdir(parents=True, exist_ok=True)
-    with open(env.parent / f"{env.name}.lock", "w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)  # a second cell asking for the same spec waits, then reuses it
+    with long_held(env.parent / f"{env.name}.lock"):  # a second cell asking for the same spec waits, then reuses it
         if (env / "ready").exists():
             print(f"environment already built: {env / 'bin' / 'python'}")
             return env / "bin" / "python"

@@ -10,7 +10,6 @@ gives a new one. twin.json records the rule and the group sizes.
 
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import secrets
@@ -20,6 +19,7 @@ from typing import Sequence
 import numpy as np
 
 from ..hashing import file_fingerprint, stable_hash
+from ..locking import long_held
 from .clock import stamp
 from .fsio import write_json_atomic
 
@@ -66,19 +66,24 @@ def twin(source: str | os.PathLike, stratify: str | None = None, keep: Sequence[
             "max_keep": max_keep, "max_cells": max_cells, "seed": seed}
     folder = twins_home(path) / stable_hash(rule)
     folder.mkdir(parents=True, exist_ok=True)
-    with open(folder.with_name(folder.name + ".lock"), "w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)  # two jobs asking for the same twin: one builds, the other finds it
+    with long_held(folder.with_name(folder.name + ".lock")):  # two jobs asking for the same twin: one builds it
         if (folder / "data.h5ad").exists() and (folder / "twin.json").exists():
             print(f"twin already built: {folder / 'data.h5ad'}")
             return folder / "data.h5ad"
         return _build(path, folder, rule, stratify, keep)
 
 
+def _labels(column) -> np.ndarray:
+    """Group labels as strings; a missing value is its own group "nan" (pandas 3 keeps NaN through astype(str))."""
+    values = column.astype(object)
+    return values.where(values.notna(), "nan").astype(str).to_numpy()
+
+
 def _build(path: Path, folder: Path, rule: dict, stratify: str | None, keep: Sequence[str]) -> Path:
     from .checks.h5ad import read_obs_column
     from .h5rows import subset
 
-    labels = read_obs_column(path, stratify).astype(str).to_numpy() if stratify else None
+    labels = _labels(read_obs_column(path, stratify)) if stratify else None
     n_obs = len(labels) if labels is not None else _count_obs(path)
     rows = select(labels, n_obs, rule["fraction"], rule["min_per_group"], [str(k) for k in keep], rule["max_keep"],
                   rule["max_cells"], np.random.default_rng(rule["seed"]))

@@ -30,7 +30,8 @@ def rows_of(element, rows: np.ndarray):
         matrix = anndata.io.sparse_dataset(element)
         parts = [matrix[rows[i:i + BLOCK]] for i in range(0, len(rows), BLOCK)]
         return sparse.vstack(parts).tocsr() if parts else matrix[rows]
-    return anndata.io.read_elem(element)[rows]  # e.g. a dataframe in obsm: small per row
+    value = anndata.io.read_elem(element)  # e.g. a dataframe in obsm (scvi's covariates): small per row
+    return value.iloc[rows] if hasattr(value, "iloc") else value[rows]
 
 
 @contextmanager
@@ -47,8 +48,21 @@ def frame(handle, key: str):
     return anndata.io.read_elem(handle[key])
 
 
+def _raw(f, rows: np.ndarray):
+    """The rows of .raw (CELLxGENE files keep their counts there), as an AnnData, or None."""
+    import anndata as ad
+
+    if "raw" not in f:
+        return None
+    raw = f["raw"]
+    x = rows_of(raw["X"], rows) if "X" in raw else None
+    var = frame(f, "raw/var") if "var" in raw else None
+    varm = frame(f, "raw/varm") if "varm" in raw else {}
+    return ad.AnnData(X=x, var=var, varm=dict(varm)) if x is not None else None
+
+
 def subset(path: Path, rows: np.ndarray):
-    """An in-memory AnnData of the chosen cells: X, layers and obsm rows, all of obs/var/varm/uns rows' worth.
+    """An in-memory AnnData of the chosen cells: X, layers, obsm and .raw rows, all of obs/var/varm/uns.
     Pairwise obsp/varp are left out (they would need the whole graph); returns (adata, dropped keys)."""
     import anndata as ad
 
@@ -60,5 +74,9 @@ def subset(path: Path, rows: np.ndarray):
         uns = frame(f, "uns") if "uns" in f else {}
         dropped = [k for k in ("obsp", "varp") if k in f and len(f[k])]
         x = rows_of(f["X"], rows) if "X" in f else None
+        raw = _raw(f, rows)
     adata = ad.AnnData(X=x, obs=obs.iloc[rows], var=var, layers=layers, obsm=obsm, varm=dict(varm), uns=dict(uns))
+    if raw is not None:
+        raw.obs_names = adata.obs_names
+        adata.raw = raw
     return adata, dropped

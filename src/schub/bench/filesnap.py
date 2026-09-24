@@ -36,7 +36,8 @@ def scan(root: Path, max_files: int, skip: frozenset[str] = SKIP_DIRS) -> Snapsh
         for entry in sorted(entries, key=lambda e: e.name):
             try:
                 if entry.is_dir(follow_symlinks=False):
-                    if entry.name not in skip:
+                    # a variant (a subproject) keeps its own journal: its files are not this project's
+                    if entry.name not in skip and not os.path.exists(os.path.join(entry.path, "project.yaml")):
                         stack.append(Path(entry.path))
                     continue
                 if not entry.is_file(follow_symlinks=False):

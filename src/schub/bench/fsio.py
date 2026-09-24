@@ -69,6 +69,18 @@ def write_json_atomic(path: Path, payload: dict[str, Any], mode: int = PRIVATE) 
     fsync_dir(path.parent)
 
 
+def write_text_atomic(path: Path, text: str, mode: int = PRIVATE) -> None:
+    """Like write_json_atomic for text: a unique temporary name, so two writers never mix their bytes."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = _write_temp(path.parent, path.name, text.encode(), mode)
+    try:
+        os.replace(temp, path)
+    except OSError:
+        temp.unlink(missing_ok=True)
+        raise
+    fsync_dir(path.parent)
+
+
 def create_json_exclusive(path: Path, payload: dict[str, Any], mode: int = PRIVATE) -> bool:
     """Publish `payload` at `path` unless something is already there. True if it was ours."""
     path.parent.mkdir(parents=True, exist_ok=True)

@@ -18,6 +18,7 @@ from pathlib import Path
 
 from ..bricks import Resources
 from ..config import Settings
+from ..locking import exclusive
 from ..slurm import ACTIVE_STATES, JobSpec, QueueJob, Slurm, SlurmError, render_script
 from ..state import Frozen
 from .clock import Clock, seconds_between, stamp
@@ -93,7 +94,12 @@ class Workbench:
             raise BenchStopped("the bench is stopped (bench/STOP exists); the student removes it to continue")
         if self.jobs(WORKBENCH):
             return self.state()
-        self.submit_workbench()
+        # Parallel run() calls (or several lab agents) check and submit one at a time.
+        self.settings.bench_dir.mkdir(parents=True, exist_ok=True)
+        with exclusive(self.settings.bench_dir / ".ensure.lock", wait_s=60, stale_after_s=120):
+            if self.jobs(WORKBENCH):
+                return self.state()
+            self.submit_workbench()
         self.ensure_watchdog()
         return self.state(started_now=True)
 
@@ -102,7 +108,7 @@ class Workbench:
         spec = self._spec(
             WORKBENCH, bench.partition, Resources(cpus=bench.cpus, mem_gb=bench.mem_gb, time_min=bench.hours * 60),
             ("-m", "schub.bench.runner"), signal=f"B:USR1@{bench.retire_before_end_s}",
-            after_any=(after,) if after else (),
+            after_any=(after,) if after else (), requeue=False,  # a requeued runner would keep its job id
         )
         return self._submit(spec, "workbench")
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import time
 from pathlib import Path
 
 import pytest
@@ -42,7 +44,10 @@ def test_claim_takes_requests_once_in_order(tmp_path: Path) -> None:
 def test_garbage_is_set_aside_with_a_reason(tmp_path: Path) -> None:
     inbox = Inbox(tmp_path / "bench")
     (tmp_path / "bench" / "inbox").mkdir(parents=True)
-    (tmp_path / "bench" / "inbox" / "0--demo--c0009.json").write_text('{"project": "demo"}')
+    garbage = tmp_path / "bench" / "inbox" / "0--demo--c0009.json"
+    garbage.write_text('{"project": "demo"}')
+    assert inbox.claim("900") == [] and garbage.exists()  # maybe still being written: left for a few seconds
+    os.utime(garbage, (time.time() - 60, time.time() - 60))
     assert inbox.claim("900") == []
     rejected = tmp_path / "bench" / "rejected"
     assert (rejected / "0--demo--c0009.json").exists()
@@ -55,6 +60,8 @@ def test_controls_are_delivered_once(tmp_path: Path) -> None:
     assert inbox.control("ifn/sub", "c0003", "interrupt") is False  # already pending
     assert inbox.take_controls() == [("ifn/sub", "c0003", "interrupt")]
     assert inbox.take_controls() == []
+    assert inbox.control("2024--pbmc", "c0001", "interrupt")  # a project name that starts like a timestamp
+    assert inbox.take_controls() == [("2024--pbmc", "c0001", "interrupt")]
     with pytest.raises(ValueError):
         inbox.control("demo", "c0001", "rm -rf")
     with pytest.raises(ValueError):

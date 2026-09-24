@@ -98,6 +98,9 @@ class Inbox:
                 continue
             request = _parse(read_json(target))
             if request is None:
+                if _young(target):  # written in place where link() is missing: finish writing first
+                    os.replace(target, path)
+                    continue
                 self._reject(target, "not a valid cell request")
                 continue
             taken.append(Claimed(request=request, path=target, owner=owner))
@@ -116,6 +119,15 @@ class Inbox:
                 if request is not None:
                     found.append(Claimed(request=request, path=path, owner=name))
         return found
+
+    def adopt(self, item: Claimed, owner: str) -> Claimed | None:
+        """Take over a claim a dead runner left (rename into our own folder); None if someone else did."""
+        target = self._folder("claimed", _check_owner(owner)) / item.path.name
+        try:
+            os.rename(item.path, target)
+        except OSError:
+            return None
+        return Claimed(request=item.request, path=target, owner=owner)
 
     def done(self, item: Claimed) -> None:
         item.path.unlink(missing_ok=True)
@@ -152,7 +164,12 @@ class Inbox:
             raise ValueError(f"action must be one of {CONTROL_ACTIONS}")
         if not re.fullmatch(PROJECT_PATTERN, project) or not re.fullmatch(CID_PATTERN, cid):
             raise ValueError(f"bad cell reference {project}#{cid}")
-        path = self._folder("control") / f"{slug(project)}--{cid}.{action}"
+        folder = self._folder("control")
+        if any(split_name(p.name.rpartition(".")[0]) == (project, cid) and p.name.endswith(f".{action}")
+               for p in folder.iterdir() if not p.name.startswith(".")):
+            return False  # already pending
+        # the same numeric prefix as inbox names, so a project named like '2024--pbmc' parses back whole
+        path = folder / f"{time.time_ns():020d}--{slug(project)}--{cid}.{action}"
         return create_json_exclusive(path, {"action": action})
 
     def take_controls(self) -> list[tuple[str, str, str]]:
@@ -170,6 +187,16 @@ class Inbox:
             if action in CONTROL_ACTIONS and re.fullmatch(CID_PATTERN, cid):
                 found.append((project, cid, action))
         return found
+
+
+YOUNG_S = 10.0
+
+
+def _young(path: Path) -> bool:
+    try:
+        return time.time() - path.stat().st_mtime < YOUNG_S
+    except OSError:
+        return False
 
 
 def _parse(data: dict | None) -> CellRequest | None:

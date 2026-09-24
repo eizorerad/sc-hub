@@ -89,4 +89,19 @@ def trimmed(result: CellResult, max_chars: int) -> CellResult:
         cut = len(item.text) - budget
         text = item.text[: budget * 2 // 3] + f"\n[... {cut} characters; the journal has more ...]\n" + item.text[-budget // 3:]
         outputs.append(item.model_copy(update={"text": text, "truncated": item.truncated + cut}))
-    return result.model_copy(update={"outputs": tuple(outputs)})
+    return result.model_copy(update={"outputs": tuple(_fewer(outputs, max_chars))})
+
+
+def _fewer(outputs: list, max_chars: int) -> list:
+    """Many small outputs (print mixed with warnings) still add up: drop middle ones, never an error."""
+    dropped = 0
+    while sum(len(o.text) for o in outputs) > max_chars and len(outputs) > 3:
+        middle = [i for i, o in enumerate(outputs) if o.kind != "error" and not o.image and 0 < i < len(outputs) - 1]
+        if not middle:
+            break
+        del outputs[middle[len(middle) // 2]]
+        dropped += 1
+    if dropped:
+        marker = OutputItem(kind="stream", name="stderr", text=f"[{dropped} outputs left out here; the journal has them]")
+        outputs.insert(len(outputs) - 1, marker)
+    return outputs

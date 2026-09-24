@@ -15,7 +15,7 @@ from typing import Sequence
 from pydantic import ValidationError
 
 from .clock import Clock, stamp
-from .fsio import fsync_dir, read_json, write_json_atomic
+from .fsio import read_json, write_json_atomic, write_text_atomic
 from .models import Actor, Checkpoint, WaitingJob
 
 MAX_HANDOFF_LINES = 120
@@ -85,8 +85,4 @@ class CheckpointStore:
 
     def write_handoff(self, text: str) -> None:
         lines = check_handoff(text)
-        self.folder.mkdir(parents=True, exist_ok=True)
-        temp = self.handoff_path.with_name(".handoff.md.tmp")
-        temp.write_text("\n".join(lines) + "\n")
-        temp.replace(self.handoff_path)
-        fsync_dir(self.folder)
+        write_text_atomic(self.handoff_path, "\n".join(lines) + "\n", mode=0o644)

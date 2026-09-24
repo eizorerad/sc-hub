@@ -211,3 +211,41 @@ def test_cell_checks_run_after_the_cell(bench: Settings) -> None:
     entry = wait_final(bench, cid)
     stop(bench, thread)
     assert entry.status == "ok" and [(c.name, c.status) for c in entry.check_results] == [("table_columns", "fail")]
+
+
+def test_slurm_not_answering_never_buries_a_live_runner(bench: Settings) -> None:
+    from schub.slurm import SlurmError
+
+    inbox = Inbox(bench.bench_dir)
+    started = submit(bench, "print(1)")
+    [claimed] = inbox.claim("777")
+    request = claimed.request
+    journal_of(bench).write_cell(CellEntry(ref=f"demo#{started}", project="demo", cid=started, why=request.why,
+                                           expect=request.expect, code=request.code, created=request.created,
+                                           status="running", kernel_epoch="777.1"))
+    cluster = FakeCluster()
+    cluster.jobs["777"] = "RUNNING"
+    cluster.slurm_down = cluster.sacct_down = True  # the login node never reaches sacct anyway
+    with pytest.raises(SlurmError, match="did not answer"):
+        Slurm(runner=cluster).states(["777"])
+    assert Runner(bench, job_id="906", slurm=Slurm(runner=cluster)).sweep() == 0
+    assert journal_of(bench).cell(started).status == "running"
+    cluster.slurm_down = False
+    del cluster.jobs["777"]  # now really gone: squeue says "Invalid job id"
+    assert Runner(bench, job_id="906", slurm=Slurm(runner=cluster)).sweep() == 1
+    assert journal_of(bench).cell(started).status == "lost"
+
+
+def test_a_fresh_heartbeat_keeps_the_claims_whatever_slurm_says(bench: Settings) -> None:
+    inbox = Inbox(bench.bench_dir)
+    submit(bench, "print(1)")
+    inbox.claim("777")
+    write_json_atomic(bench.bench_dir / "workbench.json", {"state": "running", "job_id": "777", "heartbeat": stamp()})
+    assert Runner(bench, job_id="906", slurm=Slurm(runner=FakeCluster())).sweep() == 0
+
+
+def test_two_sweepers_never_handle_one_claim(bench: Settings) -> None:
+    inbox = Inbox(bench.bench_dir)
+    submit(bench, "print(1)")
+    [item] = inbox.claim("777")
+    assert inbox.adopt(item, "906") is not None and inbox.adopt(item, "907") is None

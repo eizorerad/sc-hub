@@ -208,11 +208,12 @@ def _register_cells(mcp: MCPServer, hub: Hub, bench: BenchService, call: Calls) 
 def _register_journal(mcp: MCPServer, bench: BenchService, call: Calls) -> None:
     @mcp.tool(annotations=READ)
     def journal(project: str, since: str | None = None, kinds: list[str] | None = None,
-                limit: int = 20) -> JournalView:
+                limit: int = 20, ctx: Context = None) -> JournalView:  # type: ignore[assignment]
         """The project's hand-over, checkpoint and newest journal entries (cells and notes). Read it first in
         a new chat. `since`: the `newest` value of an earlier answer, to get only what is new."""
+        _, profile = _client(ctx)
         return call("journal", {"project": project, "since": since},
-                    lambda: bench.journal_view(project, since, kinds, limit))
+                    lambda: bench.journal_view(project, since, kinds, limit, profile.max_output_chars + 4000))
 
     @mcp.tool(annotations=WRITE)
     def note(project: str, kind: NoteKindArg, text: str, because: list[str] | None = None,
@@ -262,11 +263,14 @@ def _register_reference(mcp: MCPServer, hub: Hub, bench: BenchService, call: Cal
         return call("datasets", {}, lambda: DatasetsAnswer(datasets=tuple(hub.datasets())))
 
     @mcp.tool(annotations=READ)
-    def files(project: str | None = None, path: str = ".", max_chars: int = 20_000) -> FileView:
+    def files(project: str | None = None, path: str = ".", max_chars: int = 20_000,
+              ctx: Context = None) -> FileView:  # type: ignore[assignment]
         """List a folder or read a text file inside a project or the libraries (read-only; cells write).
         An .h5ad answers with its metadata profile."""
+        _, profile = _client(ctx)
+        ceiling = max(8_000, profile.max_output_chars * 4)  # a long log in pieces, not in one answer
         return call("files", {"project": project, "path": path},
-                    lambda: view(hub.settings, project, path, max(100, min(max_chars, 100_000))))
+                    lambda: view(hub.settings, project, path, max(100, min(max_chars, ceiling))))
 
     @mcp.tool(annotations=READ)
     def skills(name: str | None = None) -> SkillsAnswer:

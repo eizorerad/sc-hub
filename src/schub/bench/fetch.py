@@ -10,7 +10,6 @@ page, so the status is always checked too.
 
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import http.client
 import os
@@ -22,6 +21,7 @@ import urllib.request
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from ..locking import long_held
 from . import ledger
 from .fsio import read_json, write_json_atomic
 
@@ -107,6 +107,8 @@ def _attempt(url: str, part: Path) -> int | None:
     except urllib.error.HTTPError as exc:
         if exc.code == 416 and offset and _complete_416(exc, offset):
             return offset
+        if exc.code in (408, 429) or exc.code >= 500:  # busy or failing for a moment: the retry loop waits
+            raise ConnectionError(f"{url}: HTTP {exc.code} {exc.reason}") from exc
         raise FetchError(f"{url}: HTTP {exc.code} {exc.reason}") from exc
     with response:
         status = getattr(response, "status", None)
@@ -154,9 +156,10 @@ def fetch(url: str, dest: str | os.PathLike | None = None, sha256: str | None = 
     target.parent.mkdir(parents=True, exist_ok=True)
     cache = _cache_path(target.name, sha256, md5)
     if cache is not None:
+        cache = _cached_file(cache.parent) or cache  # the same checksum under another name is the same file
+    if cache is not None:
         return _via_cache(url, target, cache, sha256, md5, attempts, pause_s)
-    with open(target.with_name(target.name + ".lock"), "w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)  # jobs fetching the same file take turns; the second finds it done
+    with long_held(target.with_name(target.name + ".lock")):  # jobs on any node take turns; the second finds it
         return _fetch_locked(url, target, sha256, md5, attempts, pause_s)
 
 
@@ -171,19 +174,41 @@ def _cache_path(name: str, sha256: str | None, md5: str | None) -> Path | None:
     return Path(root) / "cache" / "fetch" / key / name
 
 
+def _cached_file(folder: Path) -> Path | None:
+    """The file a checksum's cache folder holds, whatever name it was first fetched under."""
+    try:
+        return next((p for p in sorted(folder.iterdir()) if p.is_file() and not p.name.startswith(".")
+                     and p.name != "record.json" and not p.name.endswith((".part", ".part.json", ".lock"))), None)
+    except OSError:
+        return None
+
+
+def _intact(cache: Path, record: dict) -> bool:
+    """A cached file is kept read-only; one made writable again may have been edited in place, so it is re-hashed."""
+    if not cache.exists() or record.get("size") != cache.stat().st_size:
+        return False
+    if cache.stat().st_mode & 0o222:
+        return digests_of(cache)[0] == record.get("sha256")
+    return True
+
+
 def _via_cache(url: str, target: Path, cache: Path, sha256: str | None, md5: str | None, attempts: int,
                pause_s: float) -> Path:
     """Projects asking for the same checksummed file share one download (the first fetches, the others wait
-    on the lock and link it); every project's journal still records its own copy."""
+    on the lock and link it); every project's journal still records its own copy. The shared file is read-only:
+    editing one project's copy in place would change every other copy (they are hard links)."""
     cache.parent.mkdir(parents=True, exist_ok=True)
     record_path = cache.parent / "record.json"
-    with open(cache.parent / ".lock", "w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+    with long_held(cache.parent / ".lock"):
         record = read_json(record_path) or {}
-        fresh = not (cache.exists() and record.get("size") == cache.stat().st_size)
+        fresh = not _intact(cache, record)
         if fresh:
+            if cache.exists():
+                cache.chmod(0o644)
+                cache.unlink()  # edited in place: fetch it again rather than hand out a changed file
             _fetch_locked(url, cache, sha256, md5, attempts, pause_s, record=False)
             digest = digests_of(cache)[0]
+            cache.chmod(0o444)
             write_json_atomic(record_path, {"url": public(url), "size": cache.stat().st_size, "sha256": digest})
             record = read_json(record_path) or {}
         _link(cache, target)
@@ -248,7 +273,7 @@ def _download(url: str, part: Path, attempts: int, pause_s: float) -> int | None
         try:
             return _attempt(url, part)
         except FetchError:
-            raise  # an HTTP error status: retrying will not help
+            raise  # a client error status (404, 403...): retrying will not help
         except (urllib.error.URLError, TimeoutError, ConnectionError, OSError, http.client.HTTPException) as exc:
             last = exc
             time.sleep(pause_s * attempt)

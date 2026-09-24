@@ -78,6 +78,7 @@ def check_obs(path_of: PathOf, p: ObsParams) -> CheckResult:
 
 def check_min_cells(path_of: PathOf, p: MinCellsParams) -> CheckResult:
     counts = read_obs_column(path_of(p.path), p.groupby).value_counts()
+    counts = counts[counts > 0]  # a category with no cells (left over after subsetting) is not a group
     small = counts[counts < p.min_cells]
     details = {"groups": int(len(counts)), "smallest": int(counts.min()) if len(counts) else 0}
     if len(counts) == 0 or len(small):

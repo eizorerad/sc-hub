@@ -104,6 +104,7 @@ class FakeCluster:
         self.calls: list[list[str]] = []
         self.comments: dict[str, str] = {}
         self.updates: list[dict[str, str]] = []
+        self.slurm_down = False  # squeue/scontrol time out, as when the controller restarts
 
     def _ok(self, args: Sequence[str], out: str = "") -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(list(args), 0, out, "")
@@ -137,6 +138,8 @@ class FakeCluster:
         return self._ok(args, "".join(f"{i}|{self.jobs[i]}\n" for i in ids if i in self.jobs))
 
     def _squeue(self, args: list[str]) -> subprocess.CompletedProcess[str]:
+        if self.slurm_down:
+            return subprocess.CompletedProcess(args, 1, "", "squeue: error: Socket timed out on send/recv operation")
         if "--me" in args and args[args.index("-o") + 1] == "%i|%k":
             rows = [f"{i}|{self.comments.get(i, '')}\n" for i, s in self.jobs.items() if s in self.ACTIVE]
             return self._ok(args, "".join(rows))
@@ -147,7 +150,9 @@ class FakeCluster:
             return self._ok(args, "".join(rows))
         ids = args[args.index("-j") + 1].split(",")
         rows = [f"{i}|{self.jobs[i]}\n" for i in ids if self.jobs.get(i) in self.ACTIVE]
-        return subprocess.CompletedProcess(args, 0 if rows else 1, "".join(rows), "")
+        # the real squeue: a gone job is an error message, but still an answer
+        return subprocess.CompletedProcess(args, 0 if rows else 1, "".join(rows),
+                                           "" if rows else "slurm_load_jobs error: Invalid job id specified")
 
     def _scontrol(self, args: list[str]) -> subprocess.CompletedProcess[str]:
         if args[1] == "update":
@@ -155,6 +160,8 @@ class FakeCluster:
             self.updates.append(fields)
             return self._ok(args)
         job_id = args[-1]
+        if self.slurm_down:
+            return subprocess.CompletedProcess(args, 1, "", "scontrol: error: Socket timed out on send/recv operation")
         if job_id in self.recently_finished:
             return self._ok(args, f"JobId={job_id} JobName=x JobState={self.recently_finished[job_id]} Reason=None\n")
         return subprocess.CompletedProcess(args, 1, "", "slurm_load_jobs error: Invalid job id specified")

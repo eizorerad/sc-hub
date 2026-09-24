@@ -82,6 +82,13 @@ class OutputCollector:
 
     def _append(self, item: _Item) -> None:
         if len(self.items) >= MAX_ITEMS:
+            if item.kind == "error":  # the traceback matters more than the 200th stream chunk before it
+                victim = next((i for i, old in enumerate(self.items) if old.kind != "error"), None)
+                if victim is not None:
+                    del self.items[victim]
+                    self.dropped_items += 1
+                    self.items.append(item)
+                    return
             self.dropped_items += 1
             return
         self.items.append(item)

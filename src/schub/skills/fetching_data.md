@@ -13,8 +13,11 @@ path = bench.fetch("https://.../file.h5ad", md5="<if the source publishes one>")
   url, path, size and sha256 in the cell's journal entry. With `md5=` or `sha256=`
   (Zenodo and figshare publish md5) a mismatch deletes the file.
 - With a checksum, a file is downloaded once per student into `$SCHUB_ROOT/cache/fetch/`
-  and linked into each project that asks for it (projects fetching it at the same time
-  wait for the first download). Delete a folder there to free its space.
+  and linked into each project that asks for it, under any name (projects fetching it at
+  the same time wait for the first download). The linked file is read-only, because every
+  project shares it: to change it (h5py "r+", `backed="r+"`), copy it into `work/` first.
+  Delete a folder there to free its space.
+- A busy server (HTTP 429 or 5xx) is retried; a 404 or 403 is not.
 - Large files (tens of GB): fetch inside a `%%slurm` cell so the kernel stays free.
 - First check the shared library with `datasets()`: Kang 2018, PBMC 3k and PBMC 1k
   FASTQ are already there, with checksums.

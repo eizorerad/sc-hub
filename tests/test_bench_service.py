@@ -144,6 +144,11 @@ def test_wait_also_waits_for_the_cells_slurm_jobs(bench: Settings, cluster: Fake
     assert timed.run("demo", "1", "w", "e", wait_s=0).status == "queued"  # run itself never waits for jobs
     result = timed.wait(ref, wait_s=30)
     assert result.status == "ok" and clock["t"] >= 30 and f"job {job_id} is still PENDING" in result.hint
+    cluster.slurm_down = cluster.sacct_down = True  # a controller hiccup is not "the job ended"
+    clock["t"] = 0.0
+    silent = timed.wait(ref, wait_s=30)
+    assert clock["t"] >= 30 and silent.jobs[0].state == "PENDING"
+    cluster.slurm_down = cluster.sacct_down = False
     clock["t"] = 0.0
     journal.add_addendum("c0001", f"job-{job_id}", {"kind": "job", "job": {
         "job_id": job_id, "state": "COMPLETED", "exit_code": 0, "finished": journal.now(), "log": "x"}})

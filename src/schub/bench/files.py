@@ -14,12 +14,13 @@ from typing import Literal
 
 from ..config import Settings
 from ..h5ad_profile import UnsupportedFile, profile_h5ad
-from ..projects import ProjectError, ProjectStore
+from ..projects import PROJECT_FILE, ProjectError, ProjectStore
 from ..state import Frozen
 
 MAX_LISTED = 200
 DEFAULT_CHARS = 20_000
-HIDDEN = frozenset({"sessions", ".cache", "envs", ".ssh", ".git", "__pycache__", "logs", "bench"})
+HIDDEN_ANYWHERE = frozenset({"sessions", ".ssh", ".git", "__pycache__"})  # tokens, keys, git internals
+HIDDEN_TOP = frozenset({".cache", "envs", "logs", "bench"})  # only at the top of a library or the projects folder
 
 
 class FilesError(ValueError):
@@ -69,15 +70,32 @@ def resolve(settings: Settings, project: str | None, raw: str) -> Path:
     inside = next((r for r in allowed if target == r or target.is_relative_to(r)), None)
     if inside is None:
         raise FilesError(f"'{raw}' is outside the project and the libraries")
-    if HIDDEN.intersection(target.relative_to(inside).parts):
+    if hidden(inside, target.relative_to(inside).parts):
         raise FilesError(f"'{raw}' is not readable through sc-hub")
     return target
+
+
+def hidden(inside: Path, parts: tuple[str, ...]) -> bool:
+    """Tokens and keys anywhere; big tool folders at the top of a root; a project's journal (it holds notes
+    meant only for the student: the journal tool shows the rest)."""
+    if HIDDEN_ANYWHERE.intersection(parts):
+        return True
+    if parts and parts[0] in HIDDEN_TOP and not (inside / PROJECT_FILE).is_file():
+        return True
+    return any(part == "journal" and (inside.joinpath(*parts[:i]) / PROJECT_FILE).is_file()
+               for i, part in enumerate(parts))
+
+
+def _root_of(settings: Settings, project: str | None, target: Path) -> Path:
+    allowed = [r.resolve() for r in roots(settings, project) if r.exists()]
+    return next(r for r in allowed if target == r or target.is_relative_to(r))
 
 
 def view(settings: Settings, project: str | None, raw: str = ".", max_chars: int = DEFAULT_CHARS) -> FileView:
     target = resolve(settings, project, raw)
     if target.is_dir():
-        return _folder(target, raw)
+        inside = _root_of(settings, project, target)
+        return _folder(target, raw, inside, target.relative_to(inside).parts)
     size = target.stat().st_size
     if target.suffix == ".h5ad":
         try:
@@ -93,11 +111,11 @@ def view(settings: Settings, project: str | None, raw: str = ".", max_chars: int
     return FileView(path=raw, kind="text", size=size, text=kept, truncated_chars=max(0, size - len(kept.encode())))
 
 
-def _folder(target: Path, raw: str) -> FileView:
+def _folder(target: Path, raw: str, inside: Path, parts: tuple[str, ...]) -> FileView:
     entries = []
     names = sorted(os.listdir(target))
     for name in names[:MAX_LISTED]:
-        if name in HIDDEN:
+        if hidden(inside, (*parts, name)):
             continue
         path = target / name
         try:

@@ -38,6 +38,10 @@ class JournalError(ValueError):
     pass
 
 
+class FinalEntryError(JournalError):
+    """The entry is final already (e.g. the watchdog closed it while the cell was still running)."""
+
+
 def parse_ref(ref: str) -> tuple[str, str]:
     match = REF.fullmatch(ref.strip())
     if match is None:
@@ -105,7 +109,7 @@ class Journal:
         path = self.cells_dir / f"{check_cid(entry.cid)}.json"
         current = read_json(path)
         if current is not None and current.get("status") in FINAL_STATUSES:
-            raise JournalError(f"{entry.ref} is final ({current['status']}); add an addendum instead")
+            raise FinalEntryError(f"{entry.ref} is final ({current['status']}); add an addendum instead")
         write_json_atomic(path, entry.model_dump(mode="json"))
 
     def raw_cell(self, cid: str) -> CellEntry | None:

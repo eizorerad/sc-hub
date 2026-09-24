@@ -22,6 +22,7 @@ SIGNAL = re.compile(r"^(B:)?(USR1|USR2|TERM|INT)@\d{1,6}$")
 BEGIN = re.compile(r"^(now(\+\d{1,5}(seconds|minutes|hours)?)?|\d{4}-\d\d-\d\dT\d\d:\d\d(:\d\d)?)$")
 COMMENT = re.compile(r"^[A-Za-z0-9_.:/-]{1,120}$")
 SCONTROL_STATE = re.compile(r"\bJobState=([A-Z_]+)")
+UNKNOWN_JOB = re.compile(r"invalid job id", re.I)  # squeue/scontrol for a job that is gone: an answer, not an error
 ACTIVE_STATES = frozenset({"PENDING", "RUNNING", "CONFIGURING", "COMPLETING", "REQUEUED", "SUSPENDED"})
 FAILED_STATES = frozenset(
     {"FAILED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY", "NODE_FAIL", "BOOT_FAIL", "DEADLINE", "PREEMPTED"}
@@ -53,6 +54,7 @@ class JobSpec:
     signal: str = ""  # e.g. "B:USR1@1800": warn the batch shell before the time limit
     begin: str = ""  # e.g. "now+30minutes": a self-rescheduling job (scrontab is disabled)
     comment: str = ""  # an idempotency key, found again with squeue %k
+    requeue: bool = True  # False: a node failure ends the job instead of rerunning it under the same id
 
 
 class PartitionInfo(Frozen):
@@ -102,6 +104,8 @@ def render_script(spec: JobSpec) -> str:
     ]
     if r.gpus:
         lines.append(f"#SBATCH --gres=gpu:{r.gpus}")
+    if not spec.requeue:
+        lines.append("#SBATCH --no-requeue")
     lines += _optional_lines(spec)
     if spec.dependency and spec.after_any:
         raise ValueError("a job waits either on a chain (dependency) or on any of several jobs (after_any)")
@@ -158,7 +162,9 @@ class Slurm:
 
         sacct needs the accounting database, which some login nodes cannot reach;
         squeue knows queued/running jobs and scontrol recently finished ones.
-        Ids unknown to all three are omitted; callers decide from step markers.
+        Ids unknown to all three are omitted; callers decide from step markers. When
+        Slurm does not answer (a timeout, the controller restarting) this raises
+        SlurmError: "no answer" must never read as "the job is gone".
         """
         if not job_ids:
             return {}
@@ -166,13 +172,20 @@ class Slurm:
         missing = [j for j in job_ids if j not in states]
         if missing:
             # squeue exits non-zero for ids it no longer knows; keep whatever it printed.
-            queued = self._run(["squeue", "-h", "-j", ",".join(missing), "-o", "%i|%T"]).stdout
+            queued = self._answered(["squeue", "-h", "-j", ",".join(missing), "-o", "%i|%T"])
             states = {**states, **{row[0]: row[1] for row in _rows(queued) if len(row) >= 2}}
         for job_id in [j for j in job_ids if j not in states]:
-            found = SCONTROL_STATE.search(self._run(["scontrol", "show", "job", "-o", job_id]).stdout)
+            found = SCONTROL_STATE.search(self._answered(["scontrol", "show", "job", "-o", job_id]))
             if found:
                 states = {**states, job_id: found.group(1)}
         return states
+
+    def _answered(self, args: Sequence[str]) -> str:
+        """stdout of a query whose non-zero exit only means "no such job"; anything else is Slurm not answering."""
+        proc = self._run(args)
+        if proc.returncode != 0 and not UNKNOWN_JOB.search(proc.stderr + proc.stdout):
+            raise SlurmError(f"{args[0]} did not answer: {proc.stderr.strip() or proc.stdout.strip()}")
+        return proc.stdout
 
     def _sacct_states(self, job_ids: Sequence[str]) -> dict[str, str]:
         try:

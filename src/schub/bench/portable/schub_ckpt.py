@@ -23,12 +23,13 @@ would mix two experiments; start a new run folder instead. Stdlib only.
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import hashlib
 import json
 import os
 import shutil
 import signal
+import socket
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -66,14 +67,27 @@ def _durable_json(path: Path, value: Any) -> None:
     _fsync_dir(path.parent)
 
 
+LOCK_STALE_S = 300.0  # an owner file untouched this long belongs to a process that died
+LOCK_BEAT_S = 60.0
+
+
 def _plain(value: Any) -> Any:
-    """JSON for what a registration may hold: sets become sorted lists, paths strings; anything else whose
-    text would change between processes (an object's repr, a set's order) is refused."""
+    """JSON for a registration or a checkpoint's info: sets become sorted lists, paths strings, numpy and
+    torch numbers plain numbers (loss=loss.item() or loss=loss both work); anything else whose text would
+    change between processes (an object's repr, a set's order) is refused."""
     if isinstance(value, (set, frozenset)):
-        return sorted((_plain(v) for v in value), key=lambda v: json.dumps(v, sort_keys=True))
+        return sorted((_plain(v) for v in value), key=lambda v: json.dumps(v, sort_keys=True, default=_plain))
     if isinstance(value, os.PathLike):
         return os.fspath(value)
-    raise CheckpointError(f"a registration holds only JSON values, sets and paths, not {type(value).__name__}")
+    size = getattr(value, "size", None)
+    if hasattr(value, "item") and (size in (None, 1) or (callable(size) and len(value.size()) == 0)):
+        with contextlib.suppress(Exception):
+            return value.item()  # a numpy scalar or a one-element tensor
+    if hasattr(value, "tolist") and getattr(value, "ndim", 2) <= 1 and len(value) <= 1000:
+        with contextlib.suppress(Exception):
+            return value.tolist()  # a short vector (per-class metrics)
+    raise CheckpointError(f"a registration or a checkpoint's info holds only JSON values, numbers, sets and paths, "
+                          f"not {type(value).__name__}")
 
 
 def _canonical(value: Any) -> Any:
@@ -88,7 +102,8 @@ class Run:
         self.keep = max(1, keep)
         self._asked = False
         self.stop_signal = ""
-        self._lock = None
+        self._lock: Path | None = None
+        self._beat: threading.Event | None = None
         self._started = 0.0
 
     @property
@@ -118,13 +133,8 @@ class Run:
     def start(self) -> dict | None:
         """Take the run (one process at a time); returns the latest complete checkpoint, or None."""
         self.folder.mkdir(parents=True, exist_ok=True)
-        lock = (self.folder / ".lock").open("a")
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            lock.close()
-            raise CheckpointError(f"another process trains {self.folder}") from exc
-        self._lock, self._started = lock, time.monotonic()
+        self._take()
+        self._started = time.monotonic()
         path = self.folder / "registration.json"
         if not path.exists():
             _durable_json(path, self.registration)
@@ -139,10 +149,40 @@ class Run:
             self.close()  # a refused resume must not keep the run locked for the next attempt
             raise
 
+    def _take(self) -> None:
+        """One process per run, on any node: an owner file made with O_EXCL (flock is node-local on Lustre
+        mounted with localflock), touched every LOCK_BEAT_S while held."""
+        path = self.folder / ".owner"
+        while True:
+            try:
+                fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+                break
+            except FileExistsError:
+                try:
+                    if time.time() - path.stat().st_mtime > LOCK_STALE_S:
+                        path.unlink(missing_ok=True)  # its process died without closing
+                        continue
+                    owner = path.read_text().strip()
+                except OSError:
+                    continue
+                raise CheckpointError(f"another process trains {self.folder} ({owner})") from None
+        with os.fdopen(fd, "w") as handle:
+            handle.write(f"{socket.gethostname()} pid {os.getpid()} job {os.environ.get('SLURM_JOB_ID', '-')}\n")
+        stop = threading.Event()
+
+        def beat() -> None:
+            while not stop.wait(LOCK_BEAT_S):
+                with contextlib.suppress(OSError):
+                    os.utime(path)
+        threading.Thread(target=beat, daemon=True).start()
+        self._lock, self._beat = path, stop
+
     def close(self) -> None:
+        if self._beat is not None:
+            self._beat.set()
+            self._beat = None
         if self._lock is not None:
-            fcntl.flock(self._lock, fcntl.LOCK_UN)
-            self._lock.close()
+            self._lock.unlink(missing_ok=True)
             self._lock = None
 
     def latest(self) -> dict | None:
@@ -171,6 +211,7 @@ class Run:
         """write(folder) writes the checkpoint's files; then they are made durable and published."""
         if self._lock is None:
             raise CheckpointError("call start() before save()")
+        info = _canonical(info)  # refused before anything is written, not after
         self.checkpoints.mkdir(exist_ok=True)
         folder = self.checkpoints / f"{int(step):09d}-{uuid.uuid4().hex[:8]}"
         folder.mkdir()
@@ -185,7 +226,7 @@ class Run:
             raise CheckpointError("the write function wrote nothing into the checkpoint folder")
         for sub in sorted({p.parent for p in folder.rglob("*") if p.is_file()}, reverse=True):
             _fsync_dir(sub)
-        record = {"step": int(step), "status": status, "files": files, "info": _canonical(info),
+        record = {"step": int(step), "status": status, "files": files, "info": info,
                   "registration_sha256": self.registration_sha256,
                   "saved": datetime.now(timezone.utc).isoformat(timespec="seconds")}
         _durable_json(folder / "complete.json", record)

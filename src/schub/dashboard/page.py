@@ -82,6 +82,7 @@ def render_site(snap: Snapshot, image_url: ImageUrl) -> Site:
     index = (
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        '<link rel="icon" href="data:,">'  # no favicon request (a 404 in every console)
         f"<title>sc-hub · {esc(snap.user)}</title><style>{CSS}{JOURNAL_CSS}</style></head><body>"
         f'<header class="top">{_account(snap)}<nav class="tabs">{tabs}</nav>{status_chip(snap)}</header>'
         f"<main>{sections}</main>{code_templates(snap)}"

@@ -465,7 +465,10 @@ class Slice:
         if checkpoint.disposition != "waiting" or not checkpoint.waiting_jobs:
             return []
         ids = [j.job_id for j in checkpoint.waiting_jobs]
-        states = self.slurm.states(ids)
+        try:
+            states = self.slurm.states(ids)
+        except SlurmError:
+            return ids  # Slurm did not answer: keep waiting rather than wake the model for nothing
         if all(states.get(i, "").split(" ")[0] in ACTIVE for i in ids):
             return ids
         return []

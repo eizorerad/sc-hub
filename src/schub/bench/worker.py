@@ -24,7 +24,7 @@ from .checks import run_checks
 from .executor import announce, drain_ledger, execute, prime
 from .filesnap import diff, scan
 from .inbox import Claimed, Inbox
-from .journal import Journal, JournalError
+from .journal import FinalEntryError, Journal, JournalError
 from .kernels import ProjectKernel, kernel_env, kernel_name
 from .ledger import parse_user_expression
 from .models import Actor, CellEntry, CellRequest, Download, JobRef
@@ -65,6 +65,9 @@ def _warn(message: str) -> None:
     sys.stderr.write(f"[bench] {message}\n")
 
 
+EVICT = object()  # a queue item: shut the idle kernel down
+
+
 class ProjectWorker:
     def __init__(self, host: Host, project: str) -> None:
         self.host = host
@@ -76,6 +79,7 @@ class ProjectWorker:
         self.closing = False
         self._interrupts: set[str] = set()
         self._lock = threading.Lock()
+        self.last_used = time.monotonic()
         self._thread = threading.Thread(target=self._loop, name=f"bench-{project}", daemon=True)
 
     # ---- called by the runner ------------------------------------------------------
@@ -100,6 +104,10 @@ class ProjectWorker:
         self.closing = True
         self.queue.put(None)
 
+    def evict(self) -> None:
+        """Ask the thread to shut its kernel down if nothing is queued (memory for the busy projects)."""
+        self.queue.put(EVICT)
+
     def join(self, timeout_s: float) -> bool:
         self._thread.join(timeout=max(0.0, timeout_s))
         return not self._thread.is_alive()
@@ -112,7 +120,7 @@ class ProjectWorker:
                 item = self.queue.get_nowait()
             except queue.Empty:
                 return items
-            if item is not None:
+            if item is not None and item is not EVICT:
                 items.append(item)
 
     # ---- the thread ----------------------------------------------------------------
@@ -122,6 +130,11 @@ class ProjectWorker:
             item = self.queue.get()
             if item is None:
                 break
+            if item is EVICT:
+                if self.queue.empty() and self.busy is None and self.kernel is not None:
+                    _warn(f"{self.project}: idle kernel shut down to free memory; the next cell starts a new one")
+                    self._shutdown_kernel()
+                continue
             try:
                 self._handle(item)
             except Exception as exc:  # noqa: BLE001 - the thread must survive anything a cell does
@@ -135,11 +148,15 @@ class ProjectWorker:
         self.busy = item.request.cid
         try:
             self._run(item)
+        except FinalEntryError as exc:  # someone closed the entry meanwhile: the kernel and its variables are fine
+            _warn(f"{self.project}: {exc}")
+            self.host.inbox.done(item)
         except Exception as exc:  # noqa: BLE001 - recorded in the journal below
             self._shutdown_kernel()  # the code may still run; stop it before the next cell
             self._fail(item, f"sc-hub could not run this cell: {type(exc).__name__}: {exc}")
         finally:
             self.busy = None
+            self.last_used = time.monotonic()
             self.host.touch()
 
     def _journal(self, item: Claimed) -> tuple[Journal, Path] | None:

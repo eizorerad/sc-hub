@@ -127,3 +127,28 @@ def test_an_editable_repo_gets_a_new_environment_when_its_packaging_changes(orig
     assert environment(repo, requirements="requirements.txt") == first
     (repo / "pyproject.toml").write_text('[project]\nname = "model"\ndependencies = ["scanpy", "torch"]\n')
     assert environment(repo, requirements="requirements.txt") != first
+
+
+def test_outputs_in_the_checkout_do_not_block_a_replayed_clone(origin: Path, tmp_path: Path) -> None:
+    v1 = git("rev-parse", "v1", cwd=origin)
+    repo = clone(URL, ref=v1)
+    (repo / "checkpoints").mkdir()
+    (repo / "checkpoints" / "epoch1.pt").write_text("weights")  # what the paper's code writes
+    assert clone(URL, ref=v1) == repo  # a setup cell replayed after a kernel restart
+    assert clone(URL, ref="main") == repo  # untracked outputs are not local changes to the code
+    (repo / "train.py").write_text("print('edited')\n")
+    with pytest.raises(RepoError, match="local changes"):
+        clone(URL, ref="v1")
+
+
+def test_an_editable_install_is_not_shared_between_checkouts(tmp_path: Path) -> None:
+    from schub.bench.repos import _spec
+
+    for name in ("a", "b"):
+        folder = tmp_path / name / "model"
+        folder.mkdir(parents=True)
+        (folder / "requirements.txt").write_text("-e .\nnumpy\n")
+        (folder / "setup.py").write_text("from setuptools import setup\nsetup()\n")
+    first, _ = _spec(tmp_path / "a" / "model", "3.11", None, "cu128", "requirements.txt", False, ())
+    second, _ = _spec(tmp_path / "b" / "model", "3.11", None, "cu128", "requirements.txt", False, ())
+    assert first != second  # the same files, but each env points at its own checkout

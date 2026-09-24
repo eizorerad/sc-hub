@@ -54,7 +54,8 @@ def compact(entry: CellEntry | NoteEntry, max_chars: int = 1500, for_agent: bool
     per_output = max(200, max_chars // max(1, len(entry.outputs)))
     return {
         "ref": entry.ref, "kind": "cell", "created": entry.created, "status": entry.status,
-        "why": entry.why, "expect": entry.expect, "data_scope": entry.data_scope, "setup": entry.setup,
+        "why": _trim(entry.why, 600), "expect": _trim(entry.expect, 600), "data_scope": entry.data_scope,
+        "setup": entry.setup,
         "duration_s": entry.duration_s, "kernel_epoch": entry.kernel_epoch, "message": entry.message,
         "outputs": [{"kind": o.kind, "text": _trim(o.text, per_output), "image": o.image, "ename": o.ename}
                     for o in entry.outputs],
