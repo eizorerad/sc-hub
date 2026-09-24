@@ -23,7 +23,10 @@ def read_arg(raw: str) -> str:
 
 def _load_spec(raw: str) -> BranchSpec:
     text = read_arg(raw)
-    data = yaml.safe_load(text)  # YAML is a superset of JSON
+    try:
+        data = yaml.safe_load(text)  # YAML is a superset of JSON
+    except yaml.YAMLError as exc:
+        raise ValueError(f"branch spec is not valid YAML or JSON: {exc}") from exc
     if not isinstance(data, dict):
         raise ValueError("branch spec must be a mapping (YAML or JSON)")
     return BranchSpec.model_validate(data)

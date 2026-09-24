@@ -140,7 +140,16 @@ function Test-CleanChannel {
     }
 }
 
+function Test-KeyLimited {
+    $answer = (Invoke-Native { ssh -o BatchMode=yes $Alias 'echo sc-hub-probe' 2>&1 } | Out-String)
+    if ($answer -like '*only opens sc-hub*') {
+        Fail ("your sc-hub key only opens sc-hub now, so this installer cannot update the cluster side. " +
+              "Update with the setup page instead (onboard\start.cmd in a copy of sc-hub): it asks your password once.")
+    }
+}
+
 function Send-Bundle {
+    Test-KeyLimited
     Log "copying sc-hub $Version to the cluster"
     # Cluster paths contain no spaces, so the remote shell needs no quoting. The
     # bundle goes as one line; base64 -i ignores the CR PowerShell appends.

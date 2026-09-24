@@ -216,7 +216,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     try:
         _emit(_dispatch(hub, args))
-    except (HubError, RunError, SlurmError, UnsupportedFile, ProjectError, ValueError) as exc:
+    except (HubError, RunError, SlurmError, UnsupportedFile, ProjectError, ValueError, OSError) as exc:
         sys.stderr.write(f"error: {exc}\n")
         return 1
     return 0

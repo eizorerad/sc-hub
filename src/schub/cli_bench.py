@@ -37,12 +37,22 @@ def add_bench_parsers(sub: Any) -> None:
     journal.add_argument("--limit", type=int, default=20)
 
 
+def _checks(raw: str) -> list[CheckSpec]:
+    try:
+        data = json.loads(raw)
+    except ValueError as exc:
+        raise ValueError(f"--checks is not JSON: {exc}") from exc
+    if not isinstance(data, list):
+        raise ValueError('--checks takes a JSON list, e.g. [{"name": "file", "params": {"path": "work/x"}}]')
+    return [CheckSpec.model_validate(c) for c in data]
+
+
 def bench_handlers(hub: Hub, args: argparse.Namespace) -> dict[str, Callable[[], Any]]:
     bench = BenchService(hub.settings, hub.slurm)
     human = Actor(kind="human", client="schub-cli")
     return {
         "bench-run": lambda: bench.run(args.project, read_arg(args.code), args.why, args.expect,
-                                       checks=[CheckSpec.model_validate(c) for c in json.loads(args.checks)],
+                                       checks=_checks(args.checks),
                                        setup=args.setup, actor=human, wait_s=args.wait),
         "bench-wait": lambda: bench.wait(args.ref, args.wait),
         "bench-interrupt": lambda: bench.interrupt(args.ref),

@@ -7,6 +7,7 @@ the owner's terminal twice (incident A2). Text in the journal is data, not order
 
 from __future__ import annotations
 
+import json
 from typing import Any, Iterable
 
 from ..config import Settings
@@ -17,6 +18,7 @@ from .journal import Journal
 from .models import CellEntry, Checkpoint, NoteEntry
 
 MAX_FILES_SHOWN = 10
+MAX_OUTPUTS_SHOWN = 8  # per entry: the first and last ones and every error; the journal has the rest
 HUMAN_ONLY = "(a note for the student; not shown to the assistant)"
 
 
@@ -36,6 +38,7 @@ class JournalView(Frozen):
     checkpoint: Checkpoint
     entries: tuple[dict[str, Any], ...]
     newest: str = ""  # pass as `since` next time to get only what is new
+    left_out: int = 0  # entries not shown to fit the client's limit (see journal_view)
 
 
 def _trim(text: str, budget: int) -> str:
@@ -51,14 +54,16 @@ def compact(entry: CellEntry | NoteEntry, max_chars: int = 1500, for_agent: bool
             "reverses_if": entry.reverses_if, "verdict": entry.verdict, "by": entry.actor.client or entry.actor.kind,
             "unresolved_numbers": list(entry.unresolved_numbers),
         }
-    per_output = max(200, max_chars // max(1, len(entry.outputs)))
+    shown, more_outputs = _some_outputs(entry)
+    per_output = max(120, max_chars // max(1, len(shown)))
     return {
         "ref": entry.ref, "kind": "cell", "created": entry.created, "status": entry.status,
         "why": _trim(entry.why, 600), "expect": _trim(entry.expect, 600), "data_scope": entry.data_scope,
         "setup": entry.setup,
         "duration_s": entry.duration_s, "kernel_epoch": entry.kernel_epoch, "message": entry.message,
         "outputs": [{"kind": o.kind, "text": _trim(o.text, per_output), "image": o.image, "ename": o.ename}
-                    for o in entry.outputs],
+                    for o in shown],
+        "more_outputs": more_outputs,
         "files": [f"{f.change} {f.path}" for f in entry.files[:MAX_FILES_SHOWN]],
         "more_files": max(0, len(entry.files) - MAX_FILES_SHOWN),
         "jobs": [f"{j.job_id} {j.state}" for j in entry.jobs],
@@ -74,11 +79,39 @@ def journal_view(settings: Settings, project: str, since: str | None, kinds: Ite
     store = CheckpointStore(project_dir)
     changes = journal.changes(since=since, kinds=kinds, limit=limit)
     budget = max(300, max_chars // max(1, len(changes)))
+    entries = [compact(e, budget) for _, e in changes]
+    left_out = 0
+    # Still too long for the client (many entries, each at its floor): leave entries out. Without `since`
+    # the oldest go (the recent work matters most); with `since` the newest wait for the next call, and
+    # `newest` stops before them, so paging on never skips one.
+    while len(entries) > 1 and len(json.dumps(entries, default=str)) > max_chars:
+        if since is None:
+            entries.pop(0)
+            changes.pop(0)
+        else:
+            entries.pop()
+            changes.pop()
+        left_out += 1
     newest = max((changed for changed, _ in changes), default=since or "")
     return JournalView(
         project=project, handoff=store.read_handoff(), checkpoint=store.read(),
-        entries=tuple(compact(e, budget) for _, e in changes), newest=newest,
+        entries=tuple(entries), newest=newest, left_out=left_out,
     )
+
+
+def _some_outputs(entry: CellEntry) -> tuple[list[Any], int]:
+    """At most MAX_OUTPUTS_SHOWN outputs (more only if there are more errors): every error, then the first
+    and the last ones."""
+    outputs = list(entry.outputs)
+    if len(outputs) <= MAX_OUTPUTS_SHOWN:
+        return outputs, 0
+    errors = {i for i, o in enumerate(outputs) if o.kind == "error"}
+    others = [i for i in range(len(outputs)) if i not in errors]
+    room = max(0, MAX_OUTPUTS_SHOWN - len(errors))
+    first, last = room - room // 2, room // 2
+    keep = errors | set(others[:first]) | set(others[len(others) - last:] if last else [])
+    kept = [outputs[i] for i in sorted(keep)]
+    return kept, len(outputs) - len(kept)
 
 
 def project_cards(settings: Settings) -> list[ProjectCard]:

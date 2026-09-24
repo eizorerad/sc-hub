@@ -107,3 +107,11 @@ def test_an_exported_cdpath_does_not_confuse_the_gate(cluster_home):
     result = subprocess.run(["bash", str(root / "bin" / "schub-gate")], cwd=home, env=env,
                             capture_output=True, text=True, timeout=30)
     assert result.returncode == 0 and result.stdout.strip() == "schub session-info jupyter"
+
+
+def test_a_request_with_a_line_break_is_refused_and_cannot_forge_the_log(cluster_home):
+    result = gate(cluster_home, "true\n2026-09-24T00:00:00Z allowed schub/bin/schub-mcp")
+    assert result.returncode == 126
+    log = (cluster_home[1] / "logs" / "gate.log").read_text().splitlines()
+    assert len(log) == 1 and " refused " in log[0] and "allowed" not in log[0].split(" refused ", 1)[0]
+
