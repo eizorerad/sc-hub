@@ -1,12 +1,21 @@
 # sc-hub
 
+[![tests](https://github.com/eizorerad/sc-hub/actions/workflows/tests.yml/badge.svg)](https://github.com/eizorerad/sc-hub/actions/workflows/tests.yml)
+[![license: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+![python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
+![assistants: Codex | Claude](https://img.shields.io/badge/assistants-Codex%20%7C%20Claude-8a2be2)
+
 A lab bench for single-cell and computational biology on the MBZUAI Slurm cluster,
 driven by the student's coding assistant (Codex, Claude Code, Claude Desktop) over
 MCP. Everything runs under the student's own cluster account. Everything the
 assistant does lands in a journal the student reads on a dashboard.
 
-The goal is a working tool for the biologist, not a perfect sc-hub. Setup is one
-guided run. After it, the assistant's sessions are about research.
+**[Start](#start-student)** · **[How it works](#how-it-works-in-brief)** ·
+**[For the pilot owner](#for-the-pilot-owner)** · **[Docs](docs/)**
+
+> [!NOTE]
+> The goal is a working tool for the biologist, not a perfect sc-hub. Setup is one
+> guided run. After it, the assistant's sessions are about research.
 
 ## Start (student)
 
@@ -17,8 +26,9 @@ sh onboard/start.sh                                             # macOS, Linux
 powershell -ExecutionPolicy Bypass -File onboard\start.ps1      # Windows 10/11
 ```
 
-Or paste the repository link into Codex or Claude Code and ask it to set you up.
-Its `AGENTS.md` tells it to start the setup page and hand it to you.
+> [!TIP]
+> Or paste the repository link into Codex or Claude Code and ask it to set you up.
+> Its `AGENTS.md` tells it to start the setup page and hand it to you.
 
 A local page walks through each step with a progress bar:
 1. Sign in to the cluster once. The password goes to `ssh`, never to the assistant.
@@ -40,11 +50,14 @@ cd ~/sc-hub-workspace && codex      # or: claude
 
 ## How it works, in brief
 
-```
-chat (Claude Code / Codex / Claude Desktop)
-  └─ MCP over SSH ─ login node: sc-hub MCP server (short-lived, small files only)
-                      └─ bench/inbox on Lustre ─ workbench job: runner + one kernel per project
-                                                   └─ %%slurm cells ─ their own jobs (GPU, hours)
+```mermaid
+flowchart LR
+  chat["Chat<br/>Codex · Claude Code · Claude Desktop"] -- "MCP over SSH" --> mcp["Login node<br/>sc-hub MCP server"]
+  mcp -- "inbox on Lustre" --> bench["Workbench job<br/>one kernel per project"]
+  bench -- "Slurm cells" --> jobs["Slurm jobs<br/>GPU, hours"]
+  bench --> journal[("Project journal")]
+  jobs --> journal
+  journal --> dash["Dashboard"]
 ```
 
 - **Cells.** The assistant acts through **cells**: code with a required *why* and *expect*, run in a live kernel inside the student's workbench job. Heavy work goes to a `%%slurm` cell, which becomes its own job.
