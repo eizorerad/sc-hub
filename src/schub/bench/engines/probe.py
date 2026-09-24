@@ -48,6 +48,8 @@ def probe(settings: Settings, engines: tuple[str, ...] | None = None, timeout_s:
             window.record(settings.bench_dir, outcome.details.get("rate_limit"))
         if outcome.status == "usage_limited":
             cooldown.mark(name, outcome.error)
+        elif ok:
+            cooldown.clear(name)  # answering again (a cap raised, a window reset early)
         results[name] = {"ok": ok, "status": outcome.status, "at": stamp(), "detail": (outcome.error or
                          outcome.text)[-200:], "version": version(str(guards / name)) if ok else "",
                          "login": credential_fingerprint(name)}

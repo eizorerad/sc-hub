@@ -80,6 +80,12 @@ class Cooldown:
         write_json_atomic(self.path, state)
         return until
 
+    def clear(self, engine: str) -> None:
+        """The engine answered (a probe): its pause ends before the time the limit named."""
+        state = self._state()
+        if engine in state:
+            write_json_atomic(self.path, {k: v for k, v in state.items() if k != engine})
+
     def until(self, engine: str) -> datetime | None:
         record = self._state().get(engine)
         if not isinstance(record, dict):

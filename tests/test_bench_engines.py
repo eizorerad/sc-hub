@@ -259,3 +259,14 @@ def test_a_weekly_ceiling_is_a_policy_field() -> None:
     for bad in (1.5, -0.1, "high"):
         with pytest.raises(PolicyError):
             EnginePolicy(claude_weekly_ceiling=bad)
+
+
+def test_an_engine_that_answers_the_probe_is_no_longer_paused(settings: Settings, fakes, tmp_path: Path,
+                                                               monkeypatch) -> None:
+    for key, value in guard_env(settings, tmp_path).items():
+        monkeypatch.setenv(key, value)
+    cooldown = Cooldown(settings.bench_dir / "engine-cooldown.json")
+    cooldown.mark("codex", "You hit your spend cap")
+    assert not cooldown.ready("codex")
+    probe(settings, engines=("codex",))  # the cap was raised: codex answers OK again
+    assert cooldown.ready("codex")
