@@ -1,0 +1,49 @@
+#!/usr/bin/env python3
+"""A fake `ssh` to the fake cluster in $FAKE_CLUSTER: password via askpass, the key, the gate, the setup commands."""
+import json, os, subprocess, sys
+from pathlib import Path
+
+args = sys.argv[1:]
+if args == ["-V"]:
+    sys.stderr.write(os.environ.get("FAKE_SSH_VERSION", "OpenSSH_9.6p1, LibreSSL 3.3.6") + "\n")
+    sys.exit(0)
+cluster = Path(os.environ["FAKE_CLUSTER"])
+cluster.mkdir(parents=True, exist_ok=True)
+command = args[args.index("mbzuai-schub") + 1]
+stdin = b"" if sys.stdin is None or sys.stdin.closed else sys.stdin.buffer.read()
+with (cluster / "calls.jsonl").open("a") as log:
+    log.write(json.dumps({"args": args[:-1], "command": command[:300]}) + "\n")
+state = cluster / "authorized.json"
+auth = json.loads(state.read_text()) if state.exists() else {}
+password_login = "PubkeyAuthentication=no" in args
+if password_login:
+    given = subprocess.run([os.environ["SSH_ASKPASS"]], capture_output=True, text=True).stdout.strip()
+    if given != os.environ["FAKE_PASSWORD"]:
+        sys.stderr.write("test.user@login: Permission denied (password).\n"); sys.exit(255)
+elif not auth.get("key"):
+    sys.stderr.write("test.user@login: Permission denied (publickey).\n"); sys.exit(255)
+elif "schub-gate" in auth.get("options", ""):
+    if not (command == "true" or command.endswith("/bin/schub-mcp") or command.endswith("dashboard >/dev/null")):
+        sys.stderr.write("sc-hub: this key only opens sc-hub (MCP server, dashboard, sessions): no shell\n"); sys.exit(126)
+if "authorized_keys" in command:
+    options = command.split("OPTS='", 1)[1].split("';", 1)[0]
+    state.write_text(json.dumps({"key": stdin.decode().strip(), "options": options}))
+elif command == "true":
+    pass
+elif command.startswith("echo sc-hub-probe"):
+    print("sc-hub-probe")
+elif "base64 -di" in command:
+    (cluster / "bundle.b64").write_bytes(stdin)
+    sys.stdout.write("/l/users/test.user/schub")
+elif "bootstrap_cluster.sh" in command:
+    print("[sc-hub] using the shared library"); print("[sc-hub] done")
+elif "bench-run" in command:
+    slurm = "%%slurm" in stdin.decode()
+    answer = {"ref": "hello#c0002", "status": "ok", "jobs": [{"job_id": "812", "state": "COMPLETED"}],
+              "checks": [{"name": "table_columns", "status": "pass"}], "outputs": []} if slurm else \
+             {"ref": "hello#c0001", "status": "ok", "outputs": [{"text": "gpu-03 8 CPUs"}]}
+    print(json.dumps(answer))
+elif "bench-wait" in command or "projects" in command or "dashboard" in command:
+    print("{}" if "bench-wait" in command else "")
+else:
+    sys.stderr.write(f"fake cluster: unknown command {command[:80]}\n"); sys.exit(1)
