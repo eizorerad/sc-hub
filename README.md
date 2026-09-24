@@ -133,6 +133,26 @@ A step that fails says what to do and has a Retry button; running the page again
 skips what is done. `--home DIR` writes everything under `DIR` instead of your
 home (for trials), `--no-browser` opens nothing by itself.
 
+### When the assistant runs it: fixes that come back
+
+Students set up through their coding assistant, and the repository's `AGENTS.md`
+and `onboard/AGENT_GUIDE.md` explain the whole setup to it. It gets three
+commands: `start.sh status`, `start.sh retry <step>` and `start.sh check`. None
+of them shows a password, a sign-in code or the page's token.
+
+When a step gets stuck, the assistant finds the cause and fixes it:
+- **On the student's side** (OpenSSH, the cluster `~/.bashrc`, the VPN), with the student's consent. Nothing is committed.
+- **A bug in sc-hub**: it fixes the code, runs the tests and retries the step.
+  1. A second, independent assistant reviews the change against `onboard/REVIEW.md`.
+  2. The assistant commits it on a branch `fix/onboard-...` and opens a pull request. It never pushes to `main` or to the branch it started from.
+  3. Without push access, it writes patch files for the student to send.
+  4. Without git, it installs git or copies the changed files.
+
+GitHub Actions (`.github/workflows/tests.yml`) runs the tests on every pull
+request: all of them on Linux, the helper's portable ones on Windows. The pilot
+owner merges what is green and correct, and every student's assistant picks it
+up with `git pull --ff-only` at its next start.
+
 ## Install (student): one command
 
 The older installer, without the page (no VS Code or cluster agents setup).
@@ -215,6 +235,7 @@ exist as a CLI on the cluster:
 | Publish or update the shared library (env, datasets, models) | `bash scripts/publish_library.sh` on the cluster |
 | ...inside an allocation you already hold | `SCHUB_SRUN_ARGS="--jobid=<id> --overlap" SCHUB_GPU_CHECK=0 bash scripts/publish_library.sh` |
 | Build and publish the installers | `SCHUB_LIBRARY_ROOT=<cluster folder> bash scripts/release.sh` on your laptop (`--gist` also updates a secret gist) |
+| Review fixes from students' assistants | pull requests `fix/onboard-*`: the `tests` check must be green; merge into the branch students clone |
 | Use a shared library in your own workspace | `SCHUB_LIBRARY=<library> bash scripts/bootstrap_cluster.sh` on the cluster (students build their own by default) |
 | Install Cell Ranger (10x license; link from the 10x downloads page) | `bash scripts/install_cellranger.sh '<link>' human` on the cluster |
 | Choose the lab agents' engines (owner only) | `schub engine-policy set mixed --primary claude`, `... grant <project> codex`, `schub engine-probe` |
