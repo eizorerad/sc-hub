@@ -47,6 +47,7 @@ def gate(cluster_home, command: str | None) -> subprocess.CompletedProcess[str]:
     ("{root}/bin/schub-mcp", "mcp-server"),  # absolute, as the installer registers it
     ("schub/bin/schub dashboard >/dev/null", ""),  # schub-view; output discarded
     ("schub/bin/schub session-info jupyter", "schub session-info jupyter"),  # schub-lab
+    ("{root}/bin/schub ide-proxy", "schub ide-proxy"),  # VS Code: sshd inside the workbench job
     ("rsync --server --sender -logDtpre.iLsfxCIvu --safe-links . schub/view/",
      "rsync --server --sender -logDtpre.iLsfxCIvu --safe-links . schub/view/"),  # GNU rsync
     ("rsync --server --sender -g -l -o -p -D -r -t --delete-before --dirs --safe-links --exclude .schub-view . schub/view/",
@@ -67,6 +68,8 @@ def test_sc_hub_commands_pass(cluster_home, command, output):
     "schub/bin/schub submit abc",  # everything the assistant does goes through the MCP server
     "schub/bin/schub dashboard; rm -rf ~",
     "schub/bin/schub-mcp --debug",
+    "schub/bin/schub ide-proxy --debug",
+    "schub/bin/schub ide-setup",  # the key's own line is set by the setup with the student's login, not by the key
     "true && cat ~/.ssh/id_rsa",
     "/tmp/schub/bin/schub-mcp",  # another program of the same name
     "rsync --server --sender -logDtpre.iLsfxCIvu . /etc/",

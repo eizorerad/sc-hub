@@ -49,7 +49,7 @@ ASKS = (
      "step {ref} (\"{why}\") and then changes: <what>. Leave {p} as it is; say in both journals why the variant "
      "exists."),
 )
-VSCODE_HINT = ("Opens the file on the cluster in VS Code (Remote-SSH). What you edit there is not in the journal: "
+VSCODE_HINT = ("Opens the file in VS Code, inside your workbench job (Remote-SSH). What you edit there is not in the journal: "
                "tell your assistant what you changed before it runs again.")
 JOURNAL_HINT = ("Your projects: find one by name or question. Variants sit under their project. A project's page "
                 "starts with where it stands and its outcome; every step is one line that opens on a click.")
@@ -335,7 +335,7 @@ def _summary_marks(entry: dict[str, Any]) -> str:
 
 def _vscode(path: str) -> str:
     """A link that opens a file or folder of the cluster in VS Code over Remote-SSH (the installer's ssh alias)."""
-    host = os.environ.get("SCHUB_SSH_ALIAS", "mbzuai-schub")
+    host = os.environ.get("SCHUB_SSH_ALIAS", "mbzuai-schub-ide")  # the setup's VS Code host: into the workbench job
     return f"vscode://vscode-remote/ssh-remote+{quote(host)}{quote(path)}"
 
 

@@ -149,6 +149,8 @@ class FakeCluster:
             rows = [f"{i}|{self.names[i]}|{s}{extra}\n" for i, s in self.jobs.items() if s in self.ACTIVE]
             return self._ok(args, "".join(rows))
         ids = args[args.index("-j") + 1].split(",")
+        if args[args.index("-o") + 1] == "%N|%P":  # Slurm.node_of
+            return self._ok(args, "".join(f"node-{i}|gpu\n" for i in ids if self.jobs.get(i) == "RUNNING"))
         rows = [f"{i}|{self.jobs[i]}\n" for i in ids if self.jobs.get(i) in self.ACTIVE]
         # the real squeue: a gone job is an error message, but still an answer
         return subprocess.CompletedProcess(args, 0 if rows else 1, "".join(rows),

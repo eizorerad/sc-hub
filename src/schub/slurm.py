@@ -223,6 +223,14 @@ class Slurm:
                 return row[0]
         return None
 
+    def node_of(self, job_id: str) -> tuple[str, str]:
+        """(node list, partition) of a running job."""
+        out = self._checked(["squeue", "-h", "-j", str(job_id), "-o", "%N|%P"]).strip()
+        node, _, partition = out.partition("|")
+        if not node:
+            raise SlurmError(f"job {job_id} has no node (not running)")
+        return node, partition
+
     def my_jobs(self) -> list[QueueJob]:
         out = self._checked(["squeue", "--me", "-h", "-o", "%i|%j|%T|%M|%R|%P|%l|%S"])
         return [

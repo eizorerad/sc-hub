@@ -251,7 +251,9 @@ class Runner:
                 replacement.submit(item)
 
     def _idle_too_long(self) -> bool:
-        if any(not w.idle() for w in self.workers.values()):
+        from .ide import active
+
+        if any(not w.idle() for w in self.workers.values()) or active(self.settings):  # a cell, or VS Code
             self.touch()
             return False
         with self._lock:
@@ -284,7 +286,9 @@ class Runner:
             worker.retire_note(reason)
 
     def _recently_active(self) -> bool:
-        busy = any(not w.idle() for w in self.workers.values())
+        from .ide import active
+
+        busy = any(not w.idle() for w in self.workers.values()) or active(self.settings)
         with self._lock:
             return busy or self.monotonic() - self._last_activity < self.idle_stop_s
 

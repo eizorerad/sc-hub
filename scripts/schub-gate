@@ -3,9 +3,10 @@
 #
 # The key has no passphrase so that assistants can connect on their own; this gate
 # keeps what they can do with it to sc-hub itself: the MCP server, the dashboard
-# mirror (schub-view) and interactive sessions (schub-lab). Anything else, a shell
-# included, is refused; the student's own login (password) is unaffected. Every
-# decision is appended to <root>/logs/gate.log.
+# mirror (schub-view), interactive sessions (schub-lab) and VS Code, which gets its
+# shell inside the student's own workbench job (schub ide-proxy), not here. Anything
+# else, a shell on the login node included, is refused; the student's own login
+# (password) is unaffected. Every decision is appended to <root>/logs/gate.log.
 #
 # Arguments never go through eval or a shell: each allowed command is matched word
 # by word and started with exec.
@@ -95,6 +96,9 @@ if [ "$PROGRAM" = "$ROOT/bin/schub" ]; then
     "session-info jupyter" | "session-info cellxgene")
       note allowed
       exec "$ROOT/bin/schub" session-info "${WORDS[2]}" ;;
+    "ide-proxy")  # VS Code: sshd inside the student's own workbench job, never a shell here
+      note allowed
+      exec "$ROOT/bin/schub" ide-proxy ;;
   esac
 fi
 refuse "'${WORDS[0]}' is not an sc-hub command"

@@ -179,6 +179,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if args.command == "gpu-check":
         return _gpu_check()
+    if args.command == "ide-proxy":  # stdout is the ssh stream: nothing else may be printed
+        from .bench.ide import proxy
+
+        return proxy(hub.settings, hub.slurm)
+    if args.command == "ide-setup":
+        from .bench.ide import IdeError, setup
+
+        try:
+            _emit(setup(hub.settings, sys.stdin.read()))
+        except IdeError as exc:
+            sys.stderr.write(f"error: {exc}\n")
+            return 1
+        return 0
     if args.command == "fetch":
         from .fetch import FetchError, fetch
 

@@ -12,8 +12,8 @@ from pathlib import Path
 
 from . import assistants, cluster
 from .engine import Context, Skip, Step, StepFailed
-from .sshkit import ASKPASS_MIN, HOST, Paths, Ssh, SshError, alias_block, check_login, create_key, ssh_version, \
-    write_block
+from .sshkit import ALIAS, ASKPASS_MIN, HOST, IDE_ALIAS, Paths, Ssh, SshError, alias_block, check_login, create_key, \
+    quote_cmd, ssh_version, write_block
 
 GATE_OPTIONS = 'restrict,port-forwarding,command="{root}/bin/schub-gate"'
 HELLO = "hello"
@@ -81,7 +81,7 @@ class Setup:
         create = None
         for _ in range(3):
             if login:
-                write_block(self.paths.ssh_config, alias_block(self.paths, login, self.host))
+                write_block(self.paths.ssh_config, alias_block(self.paths, login, self.host, ctx.values.get("ide_proxy", "")))
                 create = create_key(self.paths, login)
                 if Ssh(self.paths, login, self.host).key_works():
                     ctx.values["login"] = login
@@ -98,7 +98,7 @@ class Setup:
             except SshError as exc:
                 error, login = str(exc), ""
                 continue
-            write_block(self.paths.ssh_config, alias_block(self.paths, login, self.host))
+            write_block(self.paths.ssh_config, alias_block(self.paths, login, self.host, ctx.values.get("ide_proxy", "")))
             create_key(self.paths, login)
             ctx.say(f"installing a key for {login} on {self.host}")
             try:
@@ -201,7 +201,40 @@ class Setup:
         return (", ".join(connected) + " connected" if connected else "no assistant found to connect") + \
             f"; workspace {folder}"
 
-    # ---- 7. the key only opens sc-hub -------------------------------------------------------------------------
+    # ---- 7. VS Code in the workbench job --------------------------------------------------------------------------
+
+    def vscode(self, ctx: Context) -> str:
+        """VS Code (Remote-SSH) into the student's own workbench job, through the gate: set up once, then opening
+        VS Code connects to the running job or starts it."""
+        ssh, root = self.ssh(ctx), ctx.values["remote_root"]
+        done = ssh.run(f"'{root}/bin/schub' ide-setup", stdin=self.paths.key.with_suffix(".pub").read_bytes(),
+                       timeout=120)
+        if done.returncode != 0:
+            raise StepFailed(f"could not prepare VS Code on the cluster: {done.stderr.decode(errors='replace')[-300:]}",
+                             "Retry this step.")
+        proxy = quote_cmd([shutil.which("ssh") or "ssh", *(["-F", str(self.paths.ssh_config)] if self.paths.custom else []),
+                           "-T", "-o", "BatchMode=yes", ALIAS, f"{root}/bin/schub ide-proxy"])
+        ctx.values["ide_proxy"] = proxy
+        write_block(self.paths.ssh_config, alias_block(self.paths, ctx.values["login"], self.host, proxy))
+        ctx.say("connecting into your workbench job (it starts if it is not running; up to a few minutes)")
+        probe = subprocess.run(Ssh(self.paths, ctx.values["login"], self.host).base() +
+                               ["-o", "BatchMode=yes", IDE_ALIAS, "echo $SLURM_JOB_ID $(hostname)"],
+                               capture_output=True, text=True, timeout=1200, stdin=subprocess.DEVNULL)
+        if probe.returncode != 0:
+            raise StepFailed(f"VS Code's connection did not open: {probe.stderr.strip()[-300:]}",
+                             "Retry in a few minutes (the workbench job may be waiting for a free slot).")
+        job, _, node = probe.stdout.strip().partition(" ")
+        folder = f"{root}/projects"
+        ctx.values["vscode_link"] = f"vscode://vscode-remote/ssh-remote+{IDE_ALIAS}{folder}"
+        code = shutil.which("code")
+        if code and "ms-vscode-remote.remote-ssh" not in _run([code, "--list-extensions"]):
+            ctx.log(_run([code, "--install-extension", "ms-vscode-remote.remote-ssh"]).strip()[-200:])
+        where = f"job {job} on {node}" if job else "your workbench job"
+        if not ctx.values.get("vscode"):
+            raise Skip(f"ready for VS Code ({where}); install VS Code, then Remote-SSH → {IDE_ALIAS}")
+        return f"VS Code opens a shell and files in {where}: Remote-SSH → {IDE_ALIAS}"
+
+    # ---- 8. the key only opens sc-hub -------------------------------------------------------------------------
 
     def limit_key(self, ctx: Context) -> str:
         ssh, root = self.ssh(ctx), ctx.values["remote_root"]
@@ -238,8 +271,17 @@ class Setup:
             "example: \"What datasets are in sc-hub? Create a project for my question.\"",
             "The dashboard mirror runs in the background and opens in your browser; its Journal shows the "
             f"project '{HELLO}' with the first run.",
+            *([f"VS Code: Remote-SSH → {IDE_ALIAS} opens your projects inside your workbench job "
+               f"({ctx.values['vscode_link']})."] if ctx.values.get("vscode_link") else []),
         ]}
         return "the dashboard mirror is running"
+
+
+def _run(args: list[str]) -> str:
+    try:
+        return subprocess.run(args, capture_output=True, text=True, timeout=300).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
 
 
 def _q(text: str) -> str:
@@ -272,6 +314,7 @@ def build(setup: Setup) -> list[Step]:
         Step("cluster", "sc-hub on the cluster", setup.install_cluster, 4.0),
         Step("hello", "A first run: a cell and a Slurm job", setup.hello, 3.0),
         Step("assistants", "Connect your assistants", setup.connect_assistants, 0.5),
+        Step("vscode", "VS Code in your workbench job", setup.vscode, 1.0),
         Step("limit", "Limit the key to sc-hub", setup.limit_key, 0.3),
         Step("dashboard", "Open the dashboard", setup.dashboard, 0.3),
     ]

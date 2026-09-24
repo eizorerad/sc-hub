@@ -9,13 +9,19 @@ if args == ["-V"]:
     sys.exit(0)
 cluster = Path(os.environ["FAKE_CLUSTER"])
 cluster.mkdir(parents=True, exist_ok=True)
-command = args[args.index("mbzuai-schub") + 1]
+host = next(a for a in args if a in ("mbzuai-schub", "mbzuai-schub-ide"))
+command = args[args.index(host) + 1]
 stdin = b"" if sys.stdin is None or sys.stdin.closed else sys.stdin.buffer.read()
 with (cluster / "calls.jsonl").open("a") as log:
     log.write(json.dumps({"args": args[:-1], "command": command[:300]}) + "\n")
 state = cluster / "authorized.json"
 auth = json.loads(state.read_text()) if state.exists() else {}
 password_login = "PubkeyAuthentication=no" in args
+if host == "mbzuai-schub-ide":  # through the gate's ide-proxy into the job's own sshd
+    ide = cluster / "ide_authorized"
+    if not ide.exists() or ide.read_text().strip() != auth.get("key", ""):
+        sys.stderr.write("Permission denied (publickey).\n"); sys.exit(255)
+    print("207131 gpu-03"); sys.exit(0)
 if password_login:
     given = subprocess.run([os.environ["SSH_ASKPASS"]], capture_output=True, text=True).stdout.strip()
     if given != os.environ["FAKE_PASSWORD"]:
@@ -37,6 +43,9 @@ elif "base64 -di" in command:
     sys.stdout.write("/l/users/test.user/schub")
 elif "bootstrap_cluster.sh" in command:
     print("[sc-hub] using the shared library"); print("[sc-hub] done")
+elif "ide-setup" in command:
+    (cluster / "ide_authorized").write_text(stdin.decode().strip())
+    print('{"ide": "/l/users/test.user/schub/ide"}')
 elif "bench-run" in command:
     slurm = "%%slurm" in stdin.decode()
     answer = {"ref": "hello#c0002", "status": "ok", "jobs": [{"job_id": "812", "state": "COMPLETED"}],

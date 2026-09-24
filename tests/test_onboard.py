@@ -78,10 +78,13 @@ def test_the_whole_onboarding_from_the_page(helper) -> None:
     failed = [x for x in state["steps"] if x["status"] == "failed"]
     assert not failed, failed
     assert state["progress"] == 100 and [x["status"] for x in state["steps"]][-1] == "skipped"
+    vscode = next(x for x in state["steps"] if x["id"] == "vscode")  # no VS Code here: ready, then skipped
+    assert vscode["status"] == "skipped" and "job 207131 on gpu-03" in vscode["detail"]
     # this computer: the alias first in ~/.ssh/config, the old settings kept, a key, the assistants' configs
     config = (paths.ssh_config).read_text()
     assert config.startswith("# >>> sc-hub >>>\nHost mbzuai-schub\n") and "ServerAliveInterval 30" in config
     assert "User test.user" in config and paths.key.exists()
+    assert "Host mbzuai-schub-ide" in config and "/l/users/test.user/schub/bin/schub ide-proxy" in config
     codex = (paths.home / ".codex" / "config.toml").read_text()
     assert "[mcp_servers.schub]" in codex and "/l/users/test.user/schub/bin/schub-mcp" in codex and str(paths.ssh_config) in codex
     assert (paths.workspace / "AGENTS.md").exists() and (paths.workspace / "schub-view").exists()
@@ -99,7 +102,7 @@ def test_a_rerun_skips_what_is_done_and_asks_the_password_for_setup(helper) -> N
     server, paths, cluster = helper
     test_the_whole_onboarding_from_the_page(helper)
     engine = Engine(build(Setup(paths, open_dashboard=False)), paths.state)
-    assert [engine.states[s.id].status for s in engine.steps] == ["done"] * 7 + ["skipped"]
+    assert [engine.states[s.id].status for s in engine.steps] == ["done"] * 6 + ["skipped", "done", "skipped"]
     engine.retry("cluster")  # e.g. an update of the cluster side: the key only opens sc-hub now
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline and engine.states["cluster"].status != "asking":

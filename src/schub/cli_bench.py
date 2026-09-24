@@ -29,6 +29,8 @@ def add_bench_parsers(sub: Any) -> None:
     sub.add_parser("bench-status", help="the workbench and your job slots")
     sub.add_parser("bench-stop", help="stop the workbench now (frees its job slot)")
     sub.add_parser("bench-watchdog", help="run one watchdog check (the watchdog job does this)")
+    sub.add_parser("ide-setup", help="let VS Code into the workbench job with the public key on stdin")
+    sub.add_parser("ide-proxy", help="VS Code's ProxyCommand: sshd inside the workbench job on stdin/stdout")
     journal = sub.add_parser("bench-journal", help="a project's journal entries")
     journal.add_argument("project")
     journal.add_argument("--since", default=None)
