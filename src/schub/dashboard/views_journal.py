@@ -25,9 +25,10 @@ from .html import esc, hint, pill
 OUTPUT_LINES = 14
 NOTES_SHOWN = 8
 DONE_SHOWN = 12
-NAV_GROUPS = (("blocked", "Needs you", True), ("working", "In progress", True), ("done", "Done", True),
-              ("idle", "Quiet for a week", False), ("eval", "Evaluation runs", False))
-RANK = {"blocked": 0, "working": 1, "done": 2, "idle": 3, "eval": 4}
+NAV_GROUPS = (("blocked", "Needs you", True), ("running", "Running now", True), ("working", "Open, nothing running", True),
+              ("done", "Done", True), ("idle", "Quiet for a week", False), ("eval", "Evaluation runs", False))
+RANK = {"blocked": 0, "running": 1, "working": 2, "done": 3, "idle": 4, "eval": 5}
+LIVELY = ("blocked", "running", "working")
 STATE = {"active": ("RUNNING", "in progress"), "waiting": ("PENDING", "waiting for jobs"),
          "blocked": ("FAILED", "needs you"), "complete": ("COMPLETED", "complete")}
 CELL_ICON = {"ok": ("ok", "✓"), "error": ("bad", "✗"), "lost": ("bad", "✗"), "retired": ("muted", "–"),
@@ -78,7 +79,7 @@ def _branch_group(card: JournalCard, children: dict[str, list[JournalCard]]) -> 
     """A project's place in the navigator: the liveliest of its branch (a blocked variant needs you, even
     under an evaluation run)."""
     groups = [c.group for c in _branch(card, children)]
-    live = [g for g in groups if g in ("blocked", "working")]
+    live = [g for g in groups if g in LIVELY]
     if live:
         return min(live, key=RANK.__getitem__)
     if card.group == "eval":
@@ -95,11 +96,12 @@ def page_version(html: str) -> str:
 
 
 def _status(card: JournalCard) -> str:
-    css, glyph = {"blocked": ("bad", "!"), "done": ("ok", "✓"), "idle": ("muted", "○"), "eval": ("muted", "·")} \
-        .get(card.group, ("run", "●"))
-    if card.group == "working" and card.disposition == "waiting":
-        glyph = "◔"
-    label = STATE.get(card.disposition, ("", card.disposition))[1]
+    css, glyph = {"blocked": ("bad", "!"), "done": ("ok", "✓"), "idle": ("muted", "○"), "eval": ("muted", "·"),
+                  "running": ("run", "●"), "working": ("run", "○")}.get(card.group, ("muted", "○"))
+    if card.live and card.group == "eval":
+        css, glyph = "run", "●"
+    label = card.live or ("open, nothing running" if card.group == "working"
+                          else STATE.get(card.disposition, ("", card.disposition))[1])
     return f'<span class="jst {css}" role="img" title="{esc(label)}" aria-label="{esc(label)}">{glyph}</span>'
 
 
@@ -113,7 +115,7 @@ def _node(card: JournalCard, children: dict[str, list[JournalCard]], versions: d
            f'<span class="jname">{esc(name)}</span><span class="jwhen" data-when="{esc(card.updated)}"></span></a>')
     inner = ""
     if kids:
-        live = any(c.group in ("working", "blocked") for k in kids for c in _branch(k, children))
+        live = any(c.group in LIVELY for k in kids for c in _branch(k, children))
         count = len(_branch(card, children)) - 1
         inner = (f'<details class="jkids"{" open" if live else ""}><summary>{count} variant{"s" if count != 1 else ""}'
                  f'</summary>{"".join(_node(k, children, versions, depth + 1) for k in kids)}</details>')
@@ -154,11 +156,14 @@ def _crumbs(project: str, names: set[str]) -> str:
 
 def _head(card: JournalCard, names: set[str]) -> str:
     css, label = STATE.get(card.disposition, ("PENDING", card.disposition))
+    if card.disposition == "active":  # "active" only says the work is not finished: say whether anything runs
+        css, label = ("RUNNING", "running") if card.live else ("PENDING", "open, nothing running")
+    now = f'<span class="jp-live">{esc(card.live)}</span>' if card.live else ""
     nxt = (f'<span class="jp-next" title="{esc(card.next_action)}">Next: {esc(_line(card.next_action, 180))}</span>'
            if card.next_action and card.disposition != "complete" else "")
     meta = f'<span class="muted small">{esc(card.project)} · {card.cells} cells · updated {esc(_time(card.updated))}</span>'
     return (f'{_crumbs(card.project, names)}<h2 class="jp-q">{esc(card.question or card.project)}</h2>'
-            f'<div class="jp-state">{pill(css, label)}{nxt}{meta}</div>')
+            f'<div class="jp-state">{pill(css, label)}{now}{nxt}{meta}</div>')
 
 
 def report_key(project: str, folder: str) -> str:

@@ -226,3 +226,30 @@ def test_a_live_variant_lifts_an_evaluation_project(settings: Settings, cluster:
     build(settings, cluster)
     index = (settings.view_dir / "index.html").read_text()
     assert re.findall(r'class="jgroup" data-group="([a-z]+)"', index) == ["blocked"]
+
+
+def test_running_now_comes_from_the_queue_not_from_a_stale_journal(settings: Settings, cluster: FakeCluster) -> None:
+    from schub.bench.goal import Goal
+
+    def made(name: str, **cell) -> None:
+        ProjectStore(settings).create(name, question=f"q {name}")
+        journal = Journal(settings.projects_dir / name, name)
+        cid = journal.allocate("c")
+        journal.write_cell(CellEntry(ref=f"{name}#{cid}", project=name, cid=cid, why="w", expect="e", code="x",
+                                     created=journal.now(), **cell))
+
+    made("with-job", status="ok", jobs=(JobRef(job_id="812", state="SUBMITTED"),))
+    made("stale-cell", status="running")  # its workbench died: nothing runs
+    made("agent", status="ok")
+    made("idle-open", status="ok")
+    cluster.jobs["812"], cluster.names["812"] = "RUNNING", "schub-cell-with-job-c0001"
+    cluster.jobs["900"], cluster.names["900"] = "PENDING", Goal(settings, "agent").job_name
+    build(settings, cluster)
+    index = (settings.view_dir / "index.html").read_text()
+    running = index[index.index('data-group="running"'):index.index('data-group="working"')]
+    assert 'data-path="with-job"' in running and 'data-path="agent"' in running
+    opened = index[index.index('data-group="working"'):]
+    assert 'data-path="stale-cell"' in opened and 'data-path="idle-open"' in opened
+    assert "job 812 running" in page_of(settings, "with-job")
+    assert "open, nothing running" in page_of(settings, "idle-open")
+    assert "the lab agent&#x27;s next turn is queued" in page_of(settings, "agent")

@@ -429,7 +429,7 @@ def collect(hub: Any) -> Snapshot:
         steps_by_key.update({s.key: s for s in run.steps})
     nodes = _nodes(runs, previews)
     overview = _overview(hub)
-    journals = journal_cards(hub.settings)
+    journals = journal_cards(hub.settings, None if jobs_error else tuple(jobs))
     return Snapshot(
         generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         user=os.environ.get("USER", ""),

@@ -34,7 +34,8 @@ BOLD = re.compile(r"\*\*(\S(?:.*?\S)?)\*\*")
 ITALIC = re.compile(r"(?<![\w*])\*(\S(?:[^*]*?\S)?)\*(?![\w*])")
 CODE = re.compile(r"`([^`\n]+)`")
 HEADING = re.compile(r"^#{2,6} +", re.M)
-GROUPS = ("blocked", "working", "done", "idle", "eval")  # most in need of the student first
+GROUPS = ("blocked", "running", "working", "done", "idle", "eval")  # most in need of the student first
+ACTIVE_CELLS = ("running", "queued")
 CODE_CHARS = 6000
 OUTPUT_CHARS = 3000
 QUOTA_ALERT = 0.95
@@ -52,7 +53,8 @@ class JournalCard(Frozen):
     notebook: str = ""  # the rendered notebook inside the view folder, without extension (.js, .ipynb)
     figures: tuple[tuple[str, str], ...] = ()  # (source file, path inside the view)
     reports: tuple[dict[str, Any], ...] = ()  # published reports, oldest first, with their paths in the view
-    group: str = "working"  # working, blocked, done, idle (unfinished, quiet for a week) or eval
+    group: str = "working"  # running (something runs now), working (open, nothing runs), blocked, done, idle, eval
+    live: str = ""  # what runs now: a cell, a Slurm job, the lab agent's next turn
     updated: str = ""  # the newest entry or checkpoint change
     outcome: str = ""  # the latest report's summary, else the start of the hand-over
     outcome_from: str = ""  # "report" or "handoff"
@@ -117,6 +119,30 @@ def _updated(entries: list, checkpoint_updated: str) -> str:
     return max(times, default="")
 
 
+def _live(settings: Settings, name: str, entries: list, queue: tuple[QueueJob, ...] | None) -> str:
+    """What runs for the project right now, from Slurm's queue (the journal alone can be stale: a cell marked
+    running by a workbench that died). None for the queue: Slurm did not answer; the journal is all we have."""
+    from ..bench.goal import Goal
+
+    cells = [e for e in entries if isinstance(e, CellEntry) and e.status in ACTIVE_CELLS]
+    if queue is None:
+        return f"cell {cells[-1].cid} {cells[-1].status}" if cells else ""
+    states = {j.job_id: j.state for j in queue}
+    names = {j.name: j for j in queue}
+    workbench = names.get(f"{settings.job_prefix}-workbench")
+    if cells and workbench is not None:
+        return f"cell {cells[-1].cid} {cells[-1].status}"
+    jobs = [(j.job_id, states[j.job_id]) for e in entries if isinstance(e, CellEntry) for j in e.jobs
+            if j.job_id in states]
+    if jobs:
+        job_id, state = jobs[-1]
+        return f"job {job_id} {state.lower()}" + (f" (+{len(jobs) - 1} more)" if len(jobs) > 1 else "")
+    slice_ = next((names[n] for n in Goal(settings, name).job_names if n in names), None)
+    if slice_ is not None:
+        return "the lab agent is working" if slice_.state == "RUNNING" else "the lab agent's next turn is queued"
+    return ""
+
+
 def _group(disposition: str, updated: str, evaluated: bool, now: datetime) -> str:
     if evaluated:
         return "eval"
@@ -155,7 +181,7 @@ def _outcome(project_dir: Any, reports: tuple[dict[str, Any], ...], handoff: str
     return (_lead(handoff), "handoff") if handoff.strip() else ("", "")
 
 
-def journal_cards(settings: Settings) -> tuple[JournalCard, ...]:
+def journal_cards(settings: Settings, queue: tuple[QueueJob, ...] | None = ()) -> tuple[JournalCard, ...]:
     store = ProjectStore(settings)
     evaluated, now = eval_projects(settings), datetime.now(timezone.utc)
     cards = []
@@ -183,10 +209,14 @@ def journal_cards(settings: Settings) -> tuple[JournalCard, ...]:
         outcome, source = _outcome(project_dir, reports, handoff)
         notes = journal.notes_dir
         total = len(numbers) + (sum(1 for p in notes.glob("n*.json")) if notes.is_dir() else 0)
+        live = _live(settings, name, entries, queue)
+        group = _group(state.disposition, updated, name in evaluated, now)
+        if live and group in ("working", "idle"):
+            group = "running"
         cards.append(JournalCard(
             project=name, question=meta.question, disposition=state.disposition, next_action=state.next_action,
             handoff=handoff, entries=data, cells=len(numbers), failed_checks=failed, notebook=f"jnb/{slug(name)}",
-            figures=figures, reports=reports, group=_group(state.disposition, updated, name in evaluated, now),
+            figures=figures, reports=reports, group=group, live=live,
             updated=updated, outcome=outcome, outcome_from=source, total_entries=total,
         ))
     return tuple(cards)
@@ -223,7 +253,7 @@ def bench_panel(settings: Settings, jobs: tuple[QueueJob, ...], overview: Overvi
     alerts += _slot_alerts(jobs)
     alerts += [f"{c.project}: checks {', '.join(c.failed_checks)} are failing (their latest results)"
                if len(c.failed_checks) > 1 else f"{c.project}: check {c.failed_checks[0]} is failing (its latest result)"
-               for c in cards if c.failed_checks and c.group in ("working", "blocked")]  # not finished or evaluation work
+               for c in cards if c.failed_checks and c.group in ("running", "working", "blocked")]  # not finished work
     alerts += _quota_alerts(overview)
     if workbench_job is not None:
         where = f" on {workbench_job.node}" if getattr(workbench_job, "node", "") else ""
