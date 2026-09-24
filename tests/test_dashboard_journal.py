@@ -64,7 +64,16 @@ def test_the_journal_tab_shows_the_work(settings: Settings, cluster: FakeCluster
     assert "codex-mcp-client" in page
     assert (settings.view_dir / "jfig" / "ifn" / "c0002" / "fig-001.png").read_bytes() == PNG
     assert 'src="jfig/ifn/c0002/fig-001.png"' in page
-    assert "ifn: 1 cell(s) with failed checks" in page
+    assert "ifn: check table_columns is failing (its latest result)" in page
+
+
+def test_a_check_fixed_later_raises_no_alert(settings: Settings, cluster: FakeCluster) -> None:
+    journal = bench_project(settings)
+    cid = journal.allocate("c")
+    journal.write_cell(CellEntry(ref=f"ifn#{cid}", project="ifn", cid=cid, why="fixed", expect="pass", code="x",
+                                 created=journal.now(), status="ok",
+                                 check_results=(CheckResult(name="table_columns", status="pass", message="ok"),)))
+    assert "is failing" not in build(settings, cluster)
 
 
 def test_the_notebook_is_valid_and_kept_in_the_journal(settings: Settings, cluster: FakeCluster) -> None:

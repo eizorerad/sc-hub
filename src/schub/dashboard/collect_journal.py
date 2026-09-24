@@ -35,7 +35,7 @@ class JournalCard(Frozen):
     handoff: str = ""
     entries: tuple[dict[str, Any], ...] = ()
     cells: int = 0
-    failed_checks: int = 0
+    failed_checks: tuple[str, ...] = ()  # checks whose latest result fails (a later pass resolves one)
     notebook: str = ""  # the rendered notebook inside the view folder, without extension (.js, .ipynb)
     figures: tuple[tuple[str, str], ...] = ()  # (source file, path inside the view)
 
@@ -95,7 +95,7 @@ def journal_cards(settings: Settings) -> tuple[JournalCard, ...]:
         data = tuple(cell_data(e, prefix) if isinstance(e, CellEntry) else note_data(e) for e in entries)
         figures = tuple((str(journal.folder / o.image), _figure_path(prefix, o.image))
                         for e in entries if isinstance(e, CellEntry) for o in e.outputs if o.image)
-        failed = sum(1 for e in data if any(c["status"] in ("fail", "error") for c in e.get("checks", [])))
+        failed = _failing_checks(data)
         ids = journal.folder / "ids"
         cards.append(JournalCard(
             project=name, question=meta.question, disposition=checkpoint.read().disposition,
@@ -106,6 +106,14 @@ def journal_cards(settings: Settings) -> tuple[JournalCard, ...]:
     return tuple(cards)
 
 
+def _failing_checks(data: tuple[dict, ...]) -> tuple[str, ...]:
+    latest: dict[str, str] = {}
+    for entry in data:  # oldest first
+        for check in entry.get("checks", []):
+            latest[check["name"]] = check["status"]
+    return tuple(sorted(name for name, status in latest.items() if status in ("fail", "error")))
+
+
 def bench_panel(settings: Settings, jobs: tuple[QueueJob, ...], overview: Overview | None,
                 cards: tuple[JournalCard, ...]) -> BenchPanel:
     from ..bench.workbench import WORKBENCH
@@ -114,7 +122,9 @@ def bench_panel(settings: Settings, jobs: tuple[QueueJob, ...], overview: Overvi
     workbench_job = next((j for j in jobs if j.name == f"{settings.job_prefix}-{WORKBENCH}"), None)
     alerts = list(_bench_alerts(settings, record, workbench_job))
     alerts += _slot_alerts(jobs)
-    alerts += [f"{c.project}: {c.failed_checks} cell(s) with failed checks" for c in cards if c.failed_checks]
+    alerts += [f"{c.project}: checks {', '.join(c.failed_checks)} are failing (their latest results)"
+               if len(c.failed_checks) > 1 else f"{c.project}: check {c.failed_checks[0]} is failing (its latest result)"
+               for c in cards if c.failed_checks]
     alerts += _quota_alerts(overview)
     if workbench_job is not None:
         where = f" on {workbench_job.node}" if getattr(workbench_job, "node", "") else ""
