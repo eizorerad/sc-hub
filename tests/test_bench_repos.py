@@ -77,7 +77,7 @@ def fake_uv(tmp_path: Path, monkeypatch) -> Path:
     uv = tmp_path / "bin" / "uv"
     uv.parent.mkdir()
     uv.write_text(f"""#!/bin/sh
-echo "$@" >> {log}
+echo "$(pwd) :: $@" >> {log}
 if [ "$1" = venv ]; then
   for last; do :; done
   mkdir -p "$last/bin" && ln -sf {sys.executable} "$last/bin/python"
@@ -96,9 +96,10 @@ def test_environment_is_built_once_per_spec_with_a_supported_cuda(origin: Path, 
     python = environment(repo, python="3.10", torch="2.4.1", cuda="cu121", requirements="requirements.txt")
     env = python.parent.parent
     assert env.parent == tmp_path / "root" / "repo-envs"
-    calls = fake_uv.read_text().splitlines()
+    calls = [c.split(" :: ", 1)[1] for c in fake_uv.read_text().splitlines()]
     assert calls[0].startswith("venv --python 3.10")
     install = next(c for c in calls if c.startswith("pip install"))
+    assert all(c.startswith(f"{repo} :: ") for c in fake_uv.read_text().splitlines())  # "-e ." means this repo
     assert "--torch-backend cu121" in install and "torch==2.4.1" in install and f"-r {repo}/requirements.txt" in install
     assert "torch==2.4.1+cu121" in (env / "environment.lock").read_text()
     spec = json.loads((env / "spec.json").read_text())
@@ -116,3 +117,13 @@ def test_environment_refuses_cuda_the_driver_cannot_run(origin: Path, fake_uv: P
     with pytest.raises(RepoError, match="inside the repository"):
         environment(repo, requirements="../../etc/passwd")
     assert not fake_uv.exists()
+
+
+def test_an_editable_repo_gets_a_new_environment_when_its_packaging_changes(origin: Path, fake_uv: Path) -> None:
+    repo = clone(URL)
+    (repo / "requirements.txt").write_text("-e .\nnumpy\n")
+    (repo / "pyproject.toml").write_text('[project]\nname = "model"\ndependencies = ["scanpy"]\n')
+    first = environment(repo, requirements="requirements.txt")
+    assert environment(repo, requirements="requirements.txt") == first
+    (repo / "pyproject.toml").write_text('[project]\nname = "model"\ndependencies = ["scanpy", "torch"]\n')
+    assert environment(repo, requirements="requirements.txt") != first

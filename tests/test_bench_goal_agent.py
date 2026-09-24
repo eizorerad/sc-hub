@@ -199,3 +199,77 @@ def test_the_lab_agents_cells_are_marked_as_its_own() -> None:
     actor = actor_for("codex-mcp-client", "0.155", env)
     assert (actor.kind, actor.engine, actor.model, actor.session_id) == ("lab_agent", "codex", "gpt-x", "t-1")
     assert actor_for("claude-code", "2.1", {}).kind == "chat"
+
+
+def test_a_limit_after_real_work_counts_and_the_other_engine_gets_what_is_left(lab: Settings, cluster: FakeCluster,
+                                                                               monkeypatch) -> None:
+    monkeypatch.setenv("FAKE_CLAUDE", "limitwork")
+    first = goal_agent.start(lab, Slurm(cluster), "p", GOAL)
+    cluster.jobs[first] = "RUNNING"
+    clock = {"t": 0.0}
+    slice_ = Slice(lab, Slurm(cluster), "p", first, clock=lambda: clock["t"])
+    real_turn = slice_.turn
+
+    def turn(engine, config, policy, rotated=False):
+        clock["t"] += 22 * 60  # claude worked 22 of the slice's 30 minutes before its limit
+        return real_turn(engine, config, policy, rotated)
+
+    slice_.turn = turn
+    assert slice_.run() == "usage_limited"  # 8 minutes left: less than a turn needs, codex waits
+    assert Goal(lab, "p").turns() == 1 and Goal(lab, "p").sessions()["claude"]["session_id"]
+    assert [c["engine"] for c in engine_calls()] == ["claude"]
+    assert "no_time_for_other_engine" in [e["event"] for e in Goal(lab, "p").events()]
+
+
+def test_restarting_a_finished_goal_opens_it_again(lab: Settings, cluster: FakeCluster) -> None:
+    first, _ = start_and_run(lab, cluster)
+    CheckpointStore(lab.projects_dir / "p").write("blocked", reason="budget")
+    cluster.jobs = {k: "COMPLETED" for k in cluster.jobs}
+    again = goal_agent.start(lab, Slurm(cluster), "p", GOAL)  # the same objective: budget and sessions stay
+    assert CheckpointStore(lab.projects_dir / "p").read().disposition == "active" and Goal(lab, "p").turns() == 1
+    cluster.jobs[again] = "RUNNING"
+    assert Slice(lab, Slurm(cluster), "p", again).run() == "ok"
+    cluster.jobs = {k: "COMPLETED" for k in cluster.jobs}
+    goal_agent.start(lab, Slurm(cluster), "p", GOAL.replace("QC it.", "QC it, then compare to RPE1."))
+    assert Goal(lab, "p").turns() == 0 and Goal(lab, "p").sessions() == {}  # a new objective starts fresh
+    assert list((Goal(lab, "p").state / "archive").iterdir())
+
+
+def test_broken_files_do_not_break_the_chain(lab: Settings, cluster: FakeCluster) -> None:
+    engine_policy.set_mode(lab.bench_dir / "engine-policy.json", "mixed", weekly_turns=50)
+    (lab.bench_dir / "engine-usage.jsonl").write_text('{"at": "2026-09-2\nnot json\n')
+    first, result = start_and_run(lab, cluster)
+    assert result == "ok"
+    (lab.bench_dir / "engine-policy.json").write_text('{"grants": []}')
+    second, result = next_slice(lab, cluster, first)
+    assert result == "refused" and successor_of(cluster, second)
+    assert CheckpointStore(lab.projects_dir / "p").read().disposition == "blocked"  # once, not every slice
+    cluster.jobs[second] = "COMPLETED"
+    third = successor_of(cluster, second)
+    cluster.jobs[third] = "RUNNING"
+    assert Slice(lab, Slurm(cluster), "p", third).run() == "done"
+
+
+def test_nested_projects_and_similar_names_have_their_own_slices(lab: Settings, cluster: FakeCluster) -> None:
+    ProjectStore(lab).create("a-b")
+    ProjectStore(lab).create("a")
+    ProjectStore(lab).create("a/b")
+    assert Goal(lab, "a-b").job_name != Goal(lab, "a/b").job_name
+    goal_agent.start(lab, Slurm(cluster), "a/b", GOAL)
+    goal_agent.start(lab, Slurm(cluster), "a-b", GOAL)
+    assert len(cluster.jobs) == 2  # neither start mistook the other's slice for its own
+    assert set(goal_agent.active_goals(lab)) >= {"a/b", "a-b"}
+    cluster.jobs = {k: "CANCELLED" for k in cluster.jobs}
+    assert len(revive(lab, Slurm(cluster))) >= 2
+
+
+def test_a_second_copy_of_a_running_slice_leaves_quietly(lab: Settings, cluster: FakeCluster) -> None:
+    from schub.bench.goal_agent import held
+
+    first = goal_agent.start(lab, Slurm(cluster), "p", GOAL)
+    cluster.jobs[first] = "RUNNING"
+    twin = "4242"
+    cluster.jobs[twin], cluster.names[twin] = "RUNNING", Goal(lab, "p").job_name
+    with held(Goal(lab, "p"), Slurm(cluster), first):
+        assert Slice(lab, Slurm(cluster), "p", twin).run() == "busy"
+    assert not engine_calls()

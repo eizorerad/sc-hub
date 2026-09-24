@@ -75,3 +75,37 @@ def test_limits_and_rules() -> None:
     assert len(select(None, 1000, 0.05, 10, [], 0, 1000, rng)) == 50
     with pytest.raises(TwinError):
         select(labels, 110, 0.5, 20, [], 50, 10, rng)
+
+
+def test_a_twin_reads_only_its_rows_of_layers_and_obsm(tmp_path: Path) -> None:
+    full = screen(controls=200, targets=5, per_target=100)
+    full.layers["counts"] = np.asarray(full.X.todense())  # dense: backed mode would load it whole
+    full.obsm["X_pca"] = np.random.default_rng(0).normal(size=(full.n_obs, 5))
+    full.obsp["distances"] = sparse.identity(full.n_obs, format="csr")
+    path = tmp_path / "with_layers.h5ad"
+    full.write_h5ad(path)
+    small = ad.read_h5ad(twin(path, stratify="perturbation", keep=["control"], fraction=0.1, min_per_group=10))
+    assert small.layers["counts"].shape == small.shape and small.obsm["X_pca"].shape == (small.n_obs, 5)
+    assert np.array_equal(np.asarray(small.X.todense()), small.layers["counts"])  # the same cells in both
+    info = json.loads((twin(path, stratify="perturbation", keep=["control"], fraction=0.1, min_per_group=10)
+                       .parent / "twin.json").read_text())
+    assert info["dropped"] == ["obsp"] and info["n_obs_source"] == full.n_obs
+
+
+def test_without_stratify_the_source_size_is_the_real_one(data: Path) -> None:
+    info = json.loads((twin(data, fraction=0.5, max_cells=100).parent / "twin.json").read_text())
+    assert info["n_obs_source"] == 7000 and info["n_obs_twin"] == 100
+
+
+def test_two_builds_of_the_same_twin_give_one_whole_file(data: Path) -> None:
+    import threading
+
+    paths = []
+    threads = [threading.Thread(target=lambda: paths.append(twin(data, stratify="perturbation", keep=["control"])))
+               for _ in range(3)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert len(set(paths)) == 1 and ad.read_h5ad(paths[0]).n_obs > 0
+    assert not list(paths[0].parent.glob("*.partial"))

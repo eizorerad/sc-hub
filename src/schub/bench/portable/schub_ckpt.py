@@ -66,8 +66,18 @@ def _durable_json(path: Path, value: Any) -> None:
     _fsync_dir(path.parent)
 
 
+def _plain(value: Any) -> Any:
+    """JSON for what a registration may hold: sets become sorted lists, paths strings; anything else whose
+    text would change between processes (an object's repr, a set's order) is refused."""
+    if isinstance(value, (set, frozenset)):
+        return sorted((_plain(v) for v in value), key=lambda v: json.dumps(v, sort_keys=True))
+    if isinstance(value, os.PathLike):
+        return os.fspath(value)
+    raise CheckpointError(f"a registration holds only JSON values, sets and paths, not {type(value).__name__}")
+
+
 def _canonical(value: Any) -> Any:
-    return json.loads(json.dumps(value, sort_keys=True, default=str))
+    return json.loads(json.dumps(value, sort_keys=True, default=_plain))
 
 
 class Run:
@@ -76,10 +86,28 @@ class Run:
         self.registration = _canonical(registration)
         self.registration_sha256 = hashlib.sha256(json.dumps(self.registration, sort_keys=True).encode()).hexdigest()
         self.keep = max(1, keep)
-        self.stop_requested = False
+        self._asked = False
         self.stop_signal = ""
         self._lock = None
         self._started = 0.0
+
+    @property
+    def stop_requested(self) -> bool:
+        """A signal (Run.signals()) or the job's time-limit file ($SCHUB_STOP_FILE, written by sc-hub's jobrun,
+        which also reaches a paper's own --python process) asks to save and stop."""
+        if self._asked:
+            return True
+        path = os.environ.get("SCHUB_STOP_FILE")
+        if path and os.path.exists(path):
+            self.stop_signal = self.stop_signal or "time limit near"
+            return True
+        return False
+
+    def __enter__(self) -> "Run":
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
 
     @property
     def checkpoints(self) -> Path:
@@ -105,7 +133,11 @@ class Run:
             self.close()
             raise CheckpointError(f"the registration differs from the one {self.folder} was started with; "
                                   "start a new run folder (resuming would mix two experiments)")
-        return self.latest()
+        try:
+            return self.latest()
+        except Exception:
+            self.close()  # a refused resume must not keep the run locked for the next attempt
+            raise
 
     def close(self) -> None:
         if self._lock is not None:
@@ -157,6 +189,7 @@ class Run:
                   "registration_sha256": self.registration_sha256,
                   "saved": datetime.now(timezone.utc).isoformat(timespec="seconds")}
         _durable_json(folder / "complete.json", record)
+        _fsync_dir(self.checkpoints)  # the new folder's own entry, before anything points at it
         _durable_json(self.folder / "latest.json", {"checkpoint": folder.name, "registration_sha256":
                                                     self.registration_sha256,
                                                     "complete_sha256": _sha256(folder / "complete.json")})
@@ -178,7 +211,7 @@ class Run:
     def signals(self) -> Iterator["Run"]:
         """SIGTERM (scancel, time limit) and SIGUSR1 (time limit near) set stop_requested instead of killing."""
         def ask(number: int, _frame: Any) -> None:
-            self.stop_requested = True
+            self._asked = True
             self.stop_signal = signal.Signals(number).name
 
         previous = {number: signal.signal(number, ask) for number in (signal.SIGTERM, signal.SIGUSR1)}

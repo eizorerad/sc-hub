@@ -24,11 +24,11 @@ if mode == "missing":
     print("No conversation found with session ID: " + session, file=sys.stderr); sys.exit(1)
 prompt = args[args.index("-p") + 1]
 text = "OK" if "exactly" in prompt else "did the step"
-error = mode == "limit"
+error = mode in ("limit", "limitwork")  # refused at once, or after some work
 print(json.dumps({"type": "result", "subtype": "success", "is_error": error,
                   "result": "You've hit your limit · resets 3pm (Asia/Dubai)" if error else text,
-                  "session_id": session, "total_cost_usd": 0.01, "num_turns": 2,
-                  "modelUsage": {"claude-fake": {}}}))
+                  "session_id": session, "total_cost_usd": 0.0 if mode == "limit" else 0.01,
+                  "num_turns": 1 if mode == "limit" else 5, "modelUsage": {"claude-fake": {}}}))
 sys.exit(1 if error else 0)
 '''
 
@@ -55,7 +55,7 @@ HEADER = r'''
 import json, os, sys, time
 from pathlib import Path
 with open(os.environ["FAKE_LOG"], "a") as log:
-    log.write(json.dumps({"engine": ENGINE, "argv": sys.argv[1:],
+    log.write(json.dumps({"engine": ENGINE, "argv": sys.argv[1:], "pid": os.getpid(),
                           "env": {k: v for k, v in os.environ.items() if k.startswith("SCHUB_LAB")}}) + "\n")
 
 def next_mode(name):

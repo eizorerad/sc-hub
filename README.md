@@ -402,7 +402,13 @@ Results and screenshots go to `tests/e2e/out/`.
 - Linear pipelines only. FASTQ support covers 10x droplet chemistries (v1-v4);
   STARsolo and Salmon/Alevin are not wrapped.
 - The lab agent's engines use the student's own Claude Code and Codex logins on
-  the cluster; the journal records only a fingerprint of the login files.
+  the cluster; the journal records only a fingerprint of the login files. Both
+  run with their own tools off (Claude `--tools ""`; Codex shell, browser,
+  computer use, apps and sub-agents disabled) and only the sc-hub MCP server.
+- The engine guards sit first on the PATH of lab-agent slices and of kernels,
+  but everything runs as the same Unix user: the policy and the turn budget stop
+  accidents and casual bypasses, not a determined one (that needs a separate user
+  or a container).
 - Sessions listen on the compute node behind a random token (compute nodes take
   no ssh logins, so the tunnel ends at node:port through the login node).
 - Cell Ranger is only available after the owner installs it (10x license).

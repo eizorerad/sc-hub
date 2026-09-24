@@ -57,13 +57,16 @@ def check(settings: Settings, slurm: Slurm, own_job_id: str | None = None, now: 
         job_id = bench.submit_workbench()
         actions.append(f"started the workbench (job {job_id}) for {len(waiting)} waiting cell(s)")
     goals = active_goals(settings)
-    if goals:
-        actions += _lab_agents(settings, slurm)
-    rearmed = None
+    rearmed = None  # re-armed before the lab-agent work: a slow probe must not end the watchdog's chain
     if waiting or bench.jobs(WORKBENCH) or open_records(settings) or goals or not bench.dormant():
         rearmed = bench.ensure_watchdog(own_job_id=own_job_id)
     else:
         actions.append("dormant: no bench activity lately, not re-arming")
+    if goals:
+        try:
+            actions += _lab_agents(settings, slurm)
+        except Exception as exc:  # noqa: BLE001 - one broken goal or policy must not stop the watchdog
+            actions.append(f"lab agents: {type(exc).__name__}: {exc}"[:300])
     return _save(settings, WatchdogReport(checked=now(), actions=tuple(actions), rearmed=rearmed,
                                           workbench=bench.state().summary()))
 

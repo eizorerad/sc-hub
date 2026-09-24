@@ -1,8 +1,9 @@
 """Codex: `codex exec --json <prompt>`, later turns `codex exec resume <thread id> --json <prompt>`.
 
-The sandbox is read-only and approvals never asked: the agent's work goes through
-the sc-hub MCP server (declared with -c, its tools pre-approved), so every step lands
-in the journal. The thread id comes from the `thread.started` event.
+Its own tools are off (shell, browser, computer use, apps, sub-agents; the sandbox is
+read-only besides) and approvals are never asked: the agent's work goes through the
+sc-hub MCP server (declared with -c, its tools pre-approved), so every step lands in
+the journal. The thread id comes from the `thread.started` event.
 """
 
 from __future__ import annotations
@@ -12,6 +13,10 @@ import re
 
 from .base import Engine, Outcome, Turn, classify
 
+# Codex's own tools, off: a read-only sandbox still lets its shell read any file of the account (other
+# engines' logins included). Names from `codex features list` (codex-cli 0.155).
+BUILT_IN_TOOLS = ("shell_tool", "browser_use", "browser_use_external", "computer_use", "in_app_browser", "apps",
+                  "multi_agent", "image_generation")
 MISSING = re.compile(r"no (saved )?(session|conversation|thread|rollout)|(session|thread) .*not found", re.I)
 
 
@@ -25,15 +30,18 @@ class Codex(Engine):
     def argv(self, binary: str, turn: Turn) -> list[str]:
         head = [binary, "exec", "resume", turn.session_id] if turn.session_id else [binary, "exec"]
         config = ['sandbox_mode="read-only"', 'approval_policy="never"']
+        config += [f"features.{name}=false" for name in BUILT_IN_TOOLS]  # the sc-hub MCP tools are its only tools
         config += [f"model={_toml(turn.model)}"] if turn.model else []
         config += [f"model_reasoning_effort={_toml(turn.effort)}"] if turn.effort else []
         if turn.mcp is not None:
-            env = ", ".join(f"{key} = {_toml(value)}" for key, value in turn.mcp.env)
+            env = ", ".join(f"{_toml(key)} = {_toml(value)}" for key, value in turn.mcp.env)
             config += [f"mcp_servers.schub.command={_toml(turn.mcp.command)}",
                        f"mcp_servers.schub.args={_toml(list(turn.mcp.args))}",
                        f"mcp_servers.schub.env={{ {env} }}",
                        "mcp_servers.schub.startup_timeout_sec=60", "mcp_servers.schub.tool_timeout_sec=180",
                        'mcp_servers.schub.default_tools_approval_mode="approve"']
+        else:
+            config += ["mcp_servers={}"]  # a probe: none of the user's own MCP servers
         options = [part for item in config for part in ("-c", item)]
         return [*head, "--json", "--skip-git-repo-check", *options, turn.prompt]
 
@@ -43,6 +51,8 @@ class Codex(Engine):
             try:
                 event = json.loads(line)
             except ValueError:
+                continue
+            if not isinstance(event, dict):
                 continue
             kind = event.get("type")
             if kind == "thread.started":

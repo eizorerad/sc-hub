@@ -109,11 +109,11 @@ def score(settings: Settings, project: str, request: EvalRequest) -> dict:
     for cell in cells:
         for result in cell.check_results:
             latest[result.name] = result.status
-    passed = {r.name for c in cells for r in c.check_results if r.status == "pass"}
+    passed = {name for name, status in latest.items() if status == "pass"}  # as the work ended, not ever
     kinds = {n.kind for n in notes}
     expect = request.expect
     met = {
-        "downloads": sum(len(c.downloads) for c in cells) >= expect.downloads,
+        "downloads": sum(d.status == "ok" for c in cells for d in c.downloads) >= expect.downloads,
         "slurm_jobs": sum(len(c.jobs) for c in cells) >= expect.slurm_jobs,
         "checks": set(expect.checks) <= passed,
         "notes": set(expect.notes) <= kinds,
@@ -131,12 +131,19 @@ def score(settings: Settings, project: str, request: EvalRequest) -> dict:
         "incidents": sum(n.kind == "incident" for n in notes), "own_errors": sum(n.kind == "error" for n in notes),
         "human_steps": sum(e.actor.kind == "human" for e in entries),
         "engines": sorted({e["engine"] for e in finished}),
-        "turns": sum(e.get("status") in ("ok", "timed_out", "failed") for e in finished),
+        "turns": sum(_worked(e) for e in finished),
         "timeouts": sum(e.get("status") == "timed_out" for e in finished),
         "usage_limits": sum(e.get("status") == "usage_limited" for e in finished),
         "cost_usd": round(sum(e.get("cost_usd") or 0 for e in finished), 2),
         "tool_errors": _tool_errors(settings, project),
     }
+
+
+def _worked(event: dict) -> bool:
+    """The lab agent's own rule (goal_agent.did_work), from a turn_finished event."""
+    if event.get("status") in ("ok", "timed_out", "failed"):
+        return True
+    return event.get("status") == "usage_limited" and ((event.get("turns") or 0) > 1 or bool(event.get("cost_usd")))
 
 
 def _tool_errors(settings: Settings, project: str) -> int:

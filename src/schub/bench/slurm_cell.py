@@ -155,8 +155,11 @@ def submit_cell(settings: Settings, slurm: Slurm, project: str, project_dir: Pat
     job_dir.mkdir(parents=True, exist_ok=False)
     body = job_dir / ("cell.sh" if spec.bash else "cell.py")
     body.write_text(code)
-    digest = hashlib.sha256(body.read_bytes()).hexdigest()
-    (job_dir / "SHA256SUMS").write_text(f"{digest}  {body.name}\n")
+    frozen = job_dir / "frozen.json"  # what jobrun runs: listed in SHA256SUMS with the body
+    frozen.write_text(json.dumps({"project": project, "ref": ref, "cid": cid, "body": body.name,
+                                  "body_python": spec.python, "checks": checks}, sort_keys=True))
+    (job_dir / "SHA256SUMS").write_text("".join(f"{hashlib.sha256(f.read_bytes()).hexdigest()}  {f.name}\n"
+                                                for f in (body, frozen)))
     comment = f"schub-{slug(project).replace('.', '-')[:40]}-{cid}-{key}"
     python = sys.executable  # jobrun needs sc-hub; a foreign interpreter only runs the cell's body
     meta = {"project": project, "ref": ref, "cid": cid, "spec": spec.model_dump(), "checks": checks,

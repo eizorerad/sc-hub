@@ -54,7 +54,8 @@ def test_the_default_policy_is_mixed_with_claude_first(tmp_path: Path) -> None:
 def test_a_broken_policy_allows_nothing(tmp_path: Path) -> None:
     path = tmp_path / "engine-policy.json"
     for text in ("{not json", '{"mode": "anything"}', '{"mode": "mixed", "sneaky": 1}', "[]",
-                 '{"grants": {"p": {"engines": ["gpt"]}}}', '{"claude_model": "x; rm -rf /"}'):
+                 '{"grants": {"p": {"engines": ["gpt"]}}}', '{"claude_model": "x; rm -rf /"}', '{"grants": []}',
+                 '{"grants": {"p": "claude"}}'):
         path.write_text(text)
         with pytest.raises(PolicyError):
             load(path)
@@ -62,6 +63,8 @@ def test_a_broken_policy_allows_nothing(tmp_path: Path) -> None:
 
 def test_the_owner_switches_and_grants(tmp_path: Path) -> None:
     path = tmp_path / "engine-policy.json"
+    path.write_text("{broken")
+    assert engine_policy.set_mode(path, "mixed").mode == "mixed"  # the owner can always repair the file
     engine_policy.set_mode(path, "codex-only", reason="Claude week spent", codex_model="gpt-fake")
     engine_policy.grant(path, "paper", ["claude"], note="one paper needs it")
     policy = load(path)
@@ -94,6 +97,7 @@ def test_limits_are_recognised_and_resets_parsed() -> None:
     assert parse_reset("Try again at 2026-09-24T10:30:00Z.", NOW) == datetime(2026, 9, 24, 10, 30, tzinfo=timezone.utc)
     assert parse_reset("try again at 2020-01-01T00:00Z", NOW) is None  # an old date is not a reset
     assert parse_reset("the job finished at 3pm", NOW) is None
+    assert parse_reset("resets at 2026-02-30T10:00Z", NOW) is None  # not a date
 
 
 def test_a_paused_engine_is_ready_again_after_its_reset(tmp_path: Path) -> None:
@@ -103,6 +107,8 @@ def test_a_paused_engine_is_ready_again_after_its_reset(tmp_path: Path) -> None:
     assert until == datetime(2026, 9, 24, 10, 0, tzinfo=timezone.utc) and not cooldown.ready("claude")
     assert cooldown.ready("codex")
     assert cooldown.mark("codex", "quota exceeded") == datetime(2026, 9, 24, 13, 0, tzinfo=timezone.utc)
+    assert cooldown.mark("gemini", "limit reached, resets at 2099-01-01T00:00Z") == datetime(2026, 10, 2, 8, 0,
+                                                                                               tzinfo=timezone.utc)
     clock["now"] = datetime(2026, 9, 24, 10, 1, tzinfo=timezone.utc)
     assert cooldown.ready("claude") and cooldown.summary(("claude",)) == {"claude": "ready"}
 
@@ -140,7 +146,8 @@ def test_codex_thread_resume_and_limit(fakes, tmp_path: Path, monkeypatch) -> No
     new, resumed = [c["argv"] for c in calls(Path(os.environ["FAKE_LOG"]))]
     assert new[:2] == ["exec", "--json"] and resumed[:3] == ["exec", "resume", first.session_id]
     assert 'sandbox_mode="read-only"' in new and 'model="gpt-fake"' in new and 'model_reasoning_effort="high"' in new
-    assert 'mcp_servers.schub.env={ SCHUB_LAB_AGENT_ENGINE = "x" }' in new
+    assert 'mcp_servers.schub.env={ "SCHUB_LAB_AGENT_ENGINE" = "x" }' in new
+    assert "features.shell_tool=false" in new and "features.multi_agent=false" in new  # MCP tools only
     assert 'mcp_servers.schub.default_tools_approval_mode="approve"' in new and new[-1] == "do the next step"
     monkeypatch.setenv("FAKE_CODEX", "limit")
     limited = Codex().run(turn(tmp_path, session_id=first.session_id))
@@ -193,4 +200,46 @@ def test_probe_records_each_engine(settings: Settings, fakes, tmp_path: Path, mo
     assert results["claude"]["ok"] and results["claude"]["status"] == "ok"
     assert not results["codex"]["ok"] and results["codex"]["status"] == "usage_limited"
     lines = summary(settings)
-    assert lines[0].startswith("claude: ok") and lines[1].startswith("codex: paused until 2099-01-01T10:00")
+    assert lines[0].startswith("claude: ok") and lines[1].startswith("codex: paused until")  # at most 8 days
+    probes = [c["argv"] for c in calls(Path(os.environ["FAKE_LOG"]))]
+    claude, codex = next(a for a in probes if "-p" in a), next(a for a in probes if a[:1] == ["exec"])
+    assert json.loads(claude[claude.index("--mcp-config") + 1]) == {"mcpServers": {}} and "mcp_servers={}" in codex
+
+
+def test_codex_lines_that_are_not_events_are_skipped() -> None:
+    outcome = Codex().parse('[1, 2]\n"text"\n{"type": "thread.started", "thread_id": "t"}\n{"type": "turn.completed"}\n',
+                            "", 0)
+    assert outcome.status == "ok" and outcome.session_id == "t"
+
+
+def test_an_interrupted_turn_stops_the_engine(fakes, tmp_path: Path, monkeypatch) -> None:
+    import signal
+    import time
+
+    monkeypatch.setenv("FAKE_CLAUDE", "slow")
+
+    def interrupt(*_: object) -> None:
+        raise KeyboardInterrupt
+
+    previous = signal.signal(signal.SIGALRM, interrupt)
+    signal.alarm(2)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            Claude().run(turn(tmp_path, new_session_id="s-3", timeout_s=60))
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
+    pid = calls(Path(os.environ["FAKE_LOG"]))[-1]["pid"]
+    time.sleep(0.2)
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
+
+
+def test_kernels_meet_the_guards_first(settings: Settings, monkeypatch) -> None:
+    from schub.bench.worker import _guarded_path
+
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    path = _guarded_path(settings).split(os.pathsep)
+    guard = settings.bench_dir / "guard"
+    assert path[0] == str(guard) and path[1:] == ["/usr/bin", "/bin"]
+    assert os.access(guard / "claude", os.X_OK) and os.access(guard / "codex", os.X_OK)

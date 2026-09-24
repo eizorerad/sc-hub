@@ -32,6 +32,8 @@ from .models import CheckSpec
 
 EXIT_OK, EXIT_FAILED, EXIT_TAMPERED = 0, 1, 3
 PORTABLE = Path(__file__).with_name("portable")  # stdlib-only helpers (schub_ckpt) for any environment
+STOP_ENV = "SCHUB_STOP_FILE"
+BODIES = ("cell.py", "cell.sh")
 
 
 def verify(job_dir: Path) -> str | None:
@@ -60,7 +62,7 @@ def run_body(job_dir: Path, meta: dict[str, Any], cwd: Path) -> int:
         return _child(["bash", str(body)], {**os.environ, "PYTHONPATH": path})
     if meta.get("body_python"):  # e.g. a paper's own environment: no sc-hub, only the portable helpers
         return _child([meta["body_python"], str(body)], {**os.environ, "PYTHONPATH": str(PORTABLE)})
-    with _time_warning(), _importable(PORTABLE):
+    with _importable(PORTABLE):
         try:
             runpy.run_path(str(body), init_globals={"bench": _bench(meta)}, run_name="__main__")
             return EXIT_OK
@@ -72,35 +74,44 @@ def run_body(job_dir: Path, meta: dict[str, Any], cwd: Path) -> int:
 
 
 def _child(argv: list[str], env: dict[str, str]) -> int:
-    """Run the body in its own process; the time-limit warning (USR1) and scancel (TERM) reach it too:
-    Slurm sends --signal=B:USR1 to the batch process only, which is jobrun."""
+    """Run the body in its own process. scancel's TERM is passed on; the time-limit warning is not (a
+    process without a USR1 handler dies of it): the child sees it as the file $SCHUB_STOP_FILE."""
     process = subprocess.Popen(argv, env=env)
 
     def forward(number: int, _frame: Any) -> None:
         with contextlib.suppress(ProcessLookupError):
             process.send_signal(number)
 
-    previous = {number: signal.signal(number, forward) for number in (signal.SIGUSR1, signal.SIGTERM)}
+    previous = signal.signal(signal.SIGTERM, forward)
     try:
         code = process.wait()
     finally:
-        for number, handler in previous.items():
-            signal.signal(number, handler)
+        signal.signal(signal.SIGTERM, previous)
     return code if code >= 0 else 128 - code  # killed by a signal: the shell's convention
 
 
 @contextlib.contextmanager
-def _time_warning() -> Iterator[None]:
-    """USR1 (the time limit is near) must not kill a body that does not listen for it."""
+def _time_warning(stop_file: Path) -> Iterator[None]:
+    """For the whole run (the body, the file scan, the checks): USR1 (the time limit is near, sent by
+    --signal=B:USR1 to jobrun only) writes $SCHUB_STOP_FILE, which schub_ckpt.Run.stop_requested reads in
+    any process, and never kills jobrun before it reports."""
     def warn(_number: int, _frame: Any) -> None:
+        with contextlib.suppress(OSError):
+            stop_file.touch()
         sys.stderr.write("[bench] SIGUSR1: the job's time limit is near; save a checkpoint and stop "
-                         "(schub_ckpt: Run.signals())\n")
+                         "(schub_ckpt: Run.stop_requested)\n")
 
+    previous_env = os.environ.get(STOP_ENV)
+    os.environ[STOP_ENV] = str(stop_file)
     previous = signal.signal(signal.SIGUSR1, warn)
     try:
         yield
     finally:
         signal.signal(signal.SIGUSR1, previous)
+        if previous_env is None:
+            os.environ.pop(STOP_ENV, None)
+        else:
+            os.environ[STOP_ENV] = previous_env
 
 
 @contextlib.contextmanager
@@ -149,11 +160,26 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="schub.bench.jobrun")
     parser.add_argument("--job-dir", required=True, type=Path)
     job_dir = parser.parse_args(argv).job_dir.resolve()
+    with _time_warning(job_dir / "time-limit-near"):
+        return _run(job_dir)
+
+
+def submission(job_dir: Path) -> dict[str, Any]:
+    """What was submitted: job.json, with the fields that decide what runs taken from frozen.json (listed in
+    SHA256SUMS, so editing a queued job's job.json changes nothing)."""
     meta = json.loads((job_dir / "job.json").read_text())
+    frozen = job_dir / "frozen.json"
+    if frozen.exists():
+        meta = {**meta, **json.loads(frozen.read_text())}
+    return meta
+
+
+def _run(job_dir: Path) -> int:
+    meta = submission(job_dir)
     settings = load_settings()
     project_dir = settings.projects_dir / meta["project"]
     started = stamp()
-    tampered = verify(job_dir)
+    tampered = verify(job_dir) or (None if meta.get("body") in BODIES else f"unexpected body {meta.get('body')!r}")
     if tampered:
         sys.stderr.write(f"[bench] refusing to run: {tampered}\n")
         result = report(job_dir, meta, EXIT_TAMPERED, (), [], (), started)

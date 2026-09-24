@@ -133,10 +133,18 @@ def _spec(repo: Path, python: str, torch: str | None, cuda: str, requirements: s
         req_path = (repo / requirements).resolve()
         if not req_path.is_relative_to(repo.resolve()) or not req_path.is_file():
             raise RepoError(f"requirements={requirements!r} must be a file inside the repository")
+    local = install_repo or (req_path is not None and re.search(r"^\s*-e\s", req_path.read_text(), re.M))
     spec = {"python": python, "torch": torch, "cuda": cuda, "extra": sorted(extra),
             "requirements": stable_hash(req_path.read_text()) if req_path else None,
-            "install_repo": str(repo.resolve()) if install_repo else None}
+            "install_repo": str(repo.resolve()) if install_repo else None,
+            # the repository's own package: its dependencies change with its packaging files
+            "packaging": _packaging_hash(repo) if local else None}
     return spec, req_path
+
+
+def _packaging_hash(repo: Path) -> str:
+    files = [repo / name for name in ("pyproject.toml", "setup.py", "setup.cfg", "requirements.txt")]
+    return stable_hash([f.read_text(errors="replace") if f.is_file() else None for f in files])
 
 
 def environment(repo: str | os.PathLike, python: str = "3.11", torch: str | None = None, cuda: str = "cu128",
@@ -171,17 +179,19 @@ def _build(env: Path, root: Path, spec: dict, req_path: Path | None) -> None:
                "UV_PYTHON_INSTALL_DIR": str(root / "python"), "UV_PYTHON_PREFERENCE": "managed"}
     python = str(env / "bin" / "python")
 
+    cwd = req_path.parent if req_path else Path(spec["install_repo"] or env)  # "-e ." in a requirements file
+
     def uv_run(*args: str) -> str:
         try:
             done = subprocess.run([uv, *args], capture_output=True, text=True, env=run_env, timeout=BUILD_TIMEOUT_S,
-                                  check=False)
+                                  check=False, cwd=cwd)
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise RepoError(f"uv {args[0]} failed: {exc}") from exc
         if done.returncode != 0:
             raise RepoError(f"uv {' '.join(args[:2])} failed: {done.stderr.strip()[-1500:]}")
         return done.stdout
 
-    uv_run("venv", "--python", spec["python"], str(env))
+    uv_run("venv", "--python", spec["python"], str(env))  # the paths inside are absolute: cwd does not matter
     wanted = [f"torch=={spec['torch']}"] if spec["torch"] else []
     wanted += ["-r", str(req_path)] if req_path else []
     wanted += ["-e", spec["install_repo"]] if spec["install_repo"] else []

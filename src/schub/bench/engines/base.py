@@ -94,6 +94,14 @@ def _wait(process: subprocess.Popen, timeout_s: int) -> bool:
         return False
     except subprocess.TimeoutExpired:
         pass
+    except BaseException:
+        _stop(process)  # the slice itself is ending (Slurm's TERM): the engine must not outlive it
+        raise
+    _stop(process)
+    return True
+
+
+def _stop(process: subprocess.Popen) -> None:
     for sig, grace in ((signal.SIGTERM, 20), (signal.SIGKILL, 10)):
         try:
             os.killpg(process.pid, sig)
@@ -104,7 +112,6 @@ def _wait(process: subprocess.Popen, timeout_s: int) -> bool:
             break
         except subprocess.TimeoutExpired:
             continue
-    return True
 
 
 def classify(ok: bool, error: str, missing_session: bool) -> Status:

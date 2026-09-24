@@ -23,7 +23,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, *args) -> None:
         pass
 
+    requests = 0
+    chunked_dropped = False
+
     def do_GET(self) -> None:
+        Handler.requests += 1
+        if self.path == "/chunked.bin":
+            self._chunked(drop=not Handler.chunked_dropped)
+            return
+        if self.path.startswith("/nolength.bin"):
+            self.send_response(200)
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(PAYLOAD)
+            self.close_connection = True
+            return
         if self.path == "/flaky.bin":
             self._range_response(PAYLOAD, drop=not Handler.dropped)
             return
@@ -31,6 +45,22 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._range_response(PAYLOAD)
             return
         super().do_GET()
+
+    def _chunked(self, drop: bool) -> None:
+        self.protocol_version = "HTTP/1.1"
+        self.send_response(200)
+        self.send_header("Transfer-Encoding", "chunked")
+        self.end_headers()
+        pieces = [PAYLOAD[i:i + 8192] for i in range(0, len(PAYLOAD), 8192)]
+        for index, piece in enumerate(pieces):
+            if drop and index == len(pieces) // 2:
+                Handler.chunked_dropped = True
+                self.wfile.write(b"2000\r\n" + piece[:100])  # a chunk cut short: IncompleteRead
+                self.wfile.flush()
+                self.connection.shutdown(2)
+                return
+            self.wfile.write(f"{len(piece):x}\r\n".encode() + piece + b"\r\n")
+        self.wfile.write(b"0\r\n\r\n")
 
     def _range_response(self, data: bytes, drop: bool = False) -> None:
         start = 0
@@ -59,6 +89,8 @@ def server(tmp_path: Path):
     root.mkdir()
     (root / "small.txt").write_text("hello")
     Handler.dropped = False
+    Handler.chunked_dropped = False
+    Handler.requests = 0
     httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), partial(Handler, directory=str(root)))
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
@@ -127,3 +159,43 @@ def test_md5_as_zenodo_publishes_it(server: str, project: Path) -> None:
     assert fetch(f"{server}/small.txt", md5=good).read_text() == "hello"
     with pytest.raises(FetchError, match="md5"):
         fetch(f"{server}/small.txt", dest=project / "data" / "other.txt", md5="0" * 32)
+
+
+SHA = hashlib.sha256(PAYLOAD).hexdigest()
+
+
+def test_a_cut_chunked_response_is_retried(server: str, project: Path) -> None:
+    path = fetch(f"{server}/chunked.bin", sha256=SHA, pause_s=0)
+    assert path.read_bytes() == PAYLOAD and Handler.chunked_dropped
+
+
+def test_no_length_and_no_checksum_is_said(server: str, project: Path) -> None:
+    fetch(f"{server}/nolength.bin", pause_s=0)
+    [event] = ledger.drain()
+    assert event["status"] == "ok" and "not verified" in event["message"]
+
+
+def test_credentials_never_reach_the_journal(server: str, project: Path) -> None:
+    with pytest.raises(FetchError, match="user or password"):
+        fetch("https://me:secret@example.org/x.h5ad")
+    fetch(f"{server}/nolength.bin?token=abc123&download=1", pause_s=0)
+    [event] = ledger.drain()
+    assert "abc123" not in event["url"] and "token=REDACTED" in event["url"] and "download=1" in event["url"]
+    assert not any("abc123" in f.name or "abc123" in f.read_text(errors="ignore")
+                   for f in (project / "data").iterdir() if f.is_file() and f.suffix != ".bin")
+
+
+def test_a_file_already_there_is_not_fetched_again_and_fetches_take_turns(server: str, project: Path) -> None:
+    import threading
+
+    results = []
+    threads = [threading.Thread(target=lambda: results.append(fetch(f"{server}/data.bin", sha256=SHA, pause_s=0)))
+               for _ in range(3)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert len(set(results)) == 1 and results[0].read_bytes() == PAYLOAD
+    assert Handler.requests == 1  # the others found it done under the lock
+    events = ledger.drain()
+    assert sum("already there" in e.get("message", "") for e in events) == 2

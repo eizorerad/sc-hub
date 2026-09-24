@@ -30,7 +30,7 @@ def probe_path(settings: Settings) -> Path:
     return settings.bench_dir / "engine-probe.json"
 
 
-def probe(settings: Settings, engines: tuple[str, ...] | None = None, timeout_s: int = 180) -> dict:
+def probe(settings: Settings, engines: tuple[str, ...] | None = None, timeout_s: int = 120) -> dict:
     policy = load(settings.bench_dir / "engine-policy.json")
     cooldown = Cooldown(settings.bench_dir / "engine-cooldown.json")
     guards = install_guards(settings.bench_dir)

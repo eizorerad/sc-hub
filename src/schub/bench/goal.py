@@ -25,9 +25,11 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from ..config import Settings
+from ..hashing import stable_hash
 from .clock import stamp
 from .fsio import read_json, write_json_atomic
 
@@ -86,8 +88,14 @@ class Goal:
 
     @property
     def job_name(self) -> str:
-        slug = re.sub(r"[^A-Za-z0-9_.-]", "-", self.project)[:60]
-        return f"{self.settings.job_prefix}-goal-{slug}"
+        """Unique per project: 'a/b' and 'a-b' share a slug, never the hash of the full path."""
+        slug = re.sub(r"[^A-Za-z0-9_.-]", "-", self.project)[:48]
+        return f"{self.settings.job_prefix}-goal-{slug}-{stable_hash(self.project, length=6)}"
+
+    @property
+    def job_names(self) -> tuple[str, str]:
+        """This goal's slice names in the queue: the current one and the one before the hash was added."""
+        return self.job_name, f"{self.settings.job_prefix}-goal-{re.sub(r'[^A-Za-z0-9_.-]', '-', self.project)[:60]}"
 
     def config(self) -> GoalConfig:
         try:
@@ -116,13 +124,30 @@ class Goal:
             lines = (self.state / "events.jsonl").read_text().splitlines()
         except FileNotFoundError:
             return []
-        return [json.loads(line) for line in lines[-limit:] if line.strip()]
+        events = []
+        for line in lines[-limit:]:
+            try:
+                events.append(json.loads(line))
+            except ValueError:
+                continue  # a line torn by a concurrent append
+        return events
 
     def sessions(self) -> dict:
         return read_json(self.state / "sessions.json") or {}
 
     def save_sessions(self, sessions: dict) -> None:
         write_json_atomic(self.state / "sessions.json", sessions)
+
+    def archive_state(self) -> Path | None:
+        """A new objective starts with a fresh budget and fresh sessions; the old ones are kept aside."""
+        moved = [p for p in (self.state / "turns.json", self.state / "sessions.json") if p.exists()]
+        if not moved:
+            return None
+        folder = self.state / "archive" / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        folder.mkdir(parents=True, exist_ok=True)
+        for path in moved:
+            path.replace(folder / path.name)
+        return folder
 
     def turns(self) -> int:
         return int((read_json(self.state / "turns.json") or {}).get("turns", 0))

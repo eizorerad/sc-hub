@@ -25,6 +25,8 @@ import os
 import secrets
 import signal
 import sys
+import time
+import traceback
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -49,8 +51,21 @@ from .workbench import PASS_THROUGH
 ADAPTERS: dict[str, Engine] = {"claude": Claude(), "codex": Codex()}
 TERMINAL = ("complete", "blocked")
 WORKED = ("ok", "timed_out", "failed")  # outcomes of a turn in which the engine did (or may have done) work
+MIN_TURN_S = 600  # the other engine takes over only with at least this much of the slice left
+
+
+def did_work(outcome: Outcome) -> bool:
+    """A usage limit can arrive mid-turn, after real work: that turn counts and its session is kept."""
+    if outcome.status in WORKED:
+        return True
+    return outcome.status == "usage_limited" and ((outcome.turns or 0) > 1 or bool(outcome.cost_usd)
+                                                  or bool(outcome.text))
 ACTIVE = ("PENDING", "RUNNING", "CONFIGURING", "COMPLETING", "SUSPENDED", "REQUEUED")
 SYSTEM = Actor(kind="system", client="sc-hub lab agent")
+
+
+class GoalBusy(GoalError):
+    """Another slice of this goal runs: it arms its own successor, so this one just leaves."""
 
 
 @contextmanager
@@ -66,12 +81,15 @@ def held(goal: Goal, slurm: Slurm, job: str) -> Iterator[None]:
             break
         except BlockingIOError:
             handle.close()
-            running = [j.job_id for j in slurm.my_jobs() if j.name == goal.job_name and j.state == "RUNNING"
+            running = [j.job_id for j in slurm.my_jobs() if j.name in goal.job_names and j.state == "RUNNING"
                        and j.job_id != job]
             if attempt == 2 or running:
-                raise GoalError(f"another slice holds the goal of {goal.project} (running: {running})")
+                raise GoalBusy(f"another slice holds the goal of {goal.project} (running: {running})")
             path.rename(path.with_name(f"owner.lock.stale-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}"))
             goal.event("stale_lock_set_aside", job=job)
+        except OSError as exc:
+            handle.close()
+            raise GoalError(f"cannot lock {path}: {exc}") from exc
     try:
         yield
     finally:
@@ -81,8 +99,9 @@ def held(goal: Goal, slurm: Slurm, job: str) -> Iterator[None]:
 
 class Slice:
     def __init__(self, settings: Settings, slurm: Slurm, project: str, job: str,
-                 adapters: Mapping[str, Engine] = ADAPTERS) -> None:
+                 adapters: Mapping[str, Engine] = ADAPTERS, clock=time.monotonic) -> None:
         self.settings, self.slurm, self.project, self.job = settings, slurm, project, job
+        self.clock, self.started = clock, clock()
         self.goal = Goal(settings, project)
         self.adapters = adapters
         self.cooldown = Cooldown(settings.bench_dir / "engine-cooldown.json")
@@ -103,16 +122,24 @@ class Slice:
         if checkpoint.disposition in TERMINAL:
             goal.event("terminal", job=self.job, disposition=checkpoint.disposition)
             return "done"
-        with self._lock():
-            successor, created = self.arm_successor(config)
-            goal.event("successor", job=self.job, successor=successor, created=created)
-            if not created:
-                return "deferred"  # another slice of this goal is already queued: it does the work
-            waiting = self._open_waiting_jobs(checkpoint)
-            if waiting:
-                goal.event("waiting", job=self.job, jobs=waiting)
-                return "waiting"
-            return self._turns(config)
+        try:
+            with self._lock():
+                return self._locked(config, checkpoint)
+        except GoalBusy as exc:
+            goal.event("busy", job=self.job, detail=str(exc))
+            return "busy"
+
+    def _locked(self, config: GoalConfig, checkpoint) -> str:
+        goal = self.goal
+        successor, created = self.arm_successor(config)
+        goal.event("successor", job=self.job, successor=successor, created=created)
+        if not created:
+            return "deferred"  # another slice of this goal is already queued: it does the work
+        waiting = self._open_waiting_jobs(checkpoint)
+        if waiting:
+            goal.event("waiting", job=self.job, jobs=waiting)
+            return "waiting"
+        return self._turns(config)
 
     def _turns(self, config: GoalConfig) -> str:
         goal = self.goal
@@ -126,7 +153,9 @@ class Slice:
             policy = load_policy(self.settings.bench_dir / "engine-policy.json")
             engines = order(policy, self.project, config.engine, self.cooldown.ready)
         except PolicyError as exc:
-            self._incident(f"The lab agent cannot run: {exc}")
+            CheckpointStore(goal.project_dir).write("blocked", reason=f"engine policy: {exc}", actor=SYSTEM)
+            self._incident(f"The lab agent cannot run: {exc} It stops here; fix goal.md or ask the owner, then "
+                           "start it again.")
             return "refused"
         if policy.weekly_turns and self._turns_this_week() >= policy.weekly_turns:
             goal.event("weekly_ceiling", job=self.job, ceiling=policy.weekly_turns)
@@ -136,7 +165,10 @@ class Slice:
             goal.event("all_paused", job=self.job, until={k: str(v) for k, v in paused.items()})
             return "paused"
         status = "usage_limited"
-        for engine in engines[:2]:  # mixed: when the first engine hits its limit, the other takes the turn
+        for index, engine in enumerate(engines[:2]):  # mixed: when one engine hits its limit, the other goes on
+            if index and self.remaining_s(config) < MIN_TURN_S:
+                goal.event("no_time_for_other_engine", job=self.job, engine=engine)
+                break
             outcome = self.turn(engine, config, policy)
             status = outcome.status
             if status != "usage_limited":
@@ -162,7 +194,7 @@ class Slice:
         (run_dir / "prompt.md").write_text(prompt)
         goal.event("turn_started", job=self.job, engine=engine, turn=goal.turns() + 1, resume=resume,
                    handover=handover, login=credential_fingerprint(engine))
-        turn = Turn(prompt=prompt, cwd=run_dir, run_dir=run_dir, timeout_s=config.slice_minutes * 60,
+        turn = Turn(prompt=prompt, cwd=run_dir, run_dir=run_dir, timeout_s=max(60, self.remaining_s(config)),
                     session_id=resume, new_session_id=new_id, model=policy.model(engine), effort=policy.effort(engine),
                     mcp=self.mcp_server(engine, policy.model(engine), policy.effort(engine), resume or new_id or ""))
         guards = install_guards(self.settings.bench_dir)
@@ -173,15 +205,20 @@ class Slice:
         if outcome.status == "session_missing" and not rotated:
             goal.save_sessions({**sessions, engine: None})
             return self.turn(engine, config, policy, rotated=True)
-        if outcome.status in WORKED:  # a turn refused for a usage limit did nothing: not counted, not kept
+        worked = did_work(outcome)
+        if worked:  # a turn refused for a usage limit before doing anything is neither counted nor kept
             goal.count_turn(engine, self.job)
             self._log_usage(engine)
-        if outcome.session_id and outcome.status in WORKED:
+        if outcome.session_id and worked:
             goal.save_sessions({**sessions, engine: {"session_id": outcome.session_id,
                                                      "since": saved.get("since") or self.job}, "last": engine})
         if outcome.status == "failed":
             self._incident(f"The lab agent's {engine} turn failed: {outcome.error[-400:]}")
         return outcome
+
+    def remaining_s(self, config: GoalConfig) -> int:
+        """What is left of this slice's time for a turn (one deadline per slice, not per engine)."""
+        return int(config.slice_minutes * 60 - (self.clock() - self.started))
 
     def prompt(self, config: GoalConfig, handover: bool, missed: bool = False) -> str:
         p = self.project
@@ -230,8 +267,8 @@ class Slice:
                 write_json_atomic(intent_path, {**prior, "job_id": found})
             else:
                 write_json_atomic(intent_path, {**prior, "job_id": "never-submitted"})
-        others = [j for j in self.slurm.my_jobs() if j.name == self.goal.job_name and j.job_id != self.job
-                  and j.state in ACTIVE]
+        others = [j for j in self.slurm.my_jobs() if j.name in self.goal.job_names and j.job_id != self.job
+                  and j.state == "PENDING"]  # a running one without the lock is leaving
         if others:
             return others[0].job_id, False
         return self.submit(config, after=self.job), True
@@ -304,7 +341,13 @@ class Slice:
             lines = (self.settings.bench_dir / "engine-usage.jsonl").read_text().splitlines()
         except FileNotFoundError:
             return 0
-        return sum(1 for line in lines if line.strip() and datetime.fromisoformat(json.loads(line)["at"]) >= since)
+        count = 0
+        for line in lines:
+            try:
+                count += datetime.fromisoformat(json.loads(line)["at"]) >= since
+            except (ValueError, KeyError, TypeError):
+                continue  # a torn or foreign line
+        return count
 
 
 def start(settings: Settings, slurm: Slurm, project: str, text: str) -> str:
@@ -314,10 +357,19 @@ def start(settings: Settings, slurm: Slurm, project: str, text: str) -> str:
         raise GoalError(f"project {project!r} does not exist")
     config = parse_goal(text)
     order(load_policy(settings.bench_dir / "engine-policy.json"), project, config.engine, lambda e: True)
+    try:
+        previous = goal.config().objective
+    except GoalError:
+        previous = None
+    if previous is not None and previous != config.objective:
+        goal.archive_state()
     goal.write(text)
     (goal.folder / "STOP").unlink(missing_ok=True)
+    store = CheckpointStore(goal.project_dir)
+    if store.read().disposition in TERMINAL:  # a restart: the goal is open again
+        store.write("active", next_action="continue the goal from the journal's hand-over", actor=SYSTEM)
     slice_ = Slice(settings, slurm, project, job="launch")
-    active = [j.job_id for j in slurm.my_jobs() if j.name == goal.job_name and j.state in ACTIVE]
+    active = [j.job_id for j in slurm.my_jobs() if j.name in goal.job_names and j.state in ACTIVE]
     if active:
         goal.event("start_skipped", queued=active)
         return active[0]
@@ -329,8 +381,10 @@ def start(settings: Settings, slurm: Slurm, project: str, text: str) -> str:
 def active_goals(settings: Settings) -> list[str]:
     """Projects whose lab agent should be working: a goal, no STOP, not complete or blocked."""
     found = []
-    for folder in sorted(settings.projects_dir.glob("*/goal/goal.md")) if settings.projects_dir.is_dir() else []:
-        goal = Goal(settings, folder.parent.parent.name)
+    patterns = ("*/goal/goal.md", "*/*/goal/goal.md", "*/*/*/goal/goal.md")  # projects and subprojects
+    files = [f for pattern in patterns for f in settings.projects_dir.glob(pattern)] if settings.projects_dir.is_dir() else []
+    for folder in sorted(files):
+        goal = Goal(settings, folder.parent.parent.relative_to(settings.projects_dir).as_posix())
         if not goal.stopped() and CheckpointStore(goal.project_dir).read().disposition not in TERMINAL:
             found.append(goal.project)
     return found
@@ -343,7 +397,7 @@ def revive(settings: Settings, slurm: Slurm) -> list[str]:
     revived = []
     for project in active_goals(settings):
         goal = Goal(settings, project)
-        if goal.job_name in queued:
+        if queued & set(goal.job_names):
             continue
         try:
             job = Slice(settings, slurm, project, job="watchdog").submit(goal.config(), after=None)
@@ -371,7 +425,7 @@ def status(settings: Settings, slurm: Slurm, project: str) -> dict:
     except GoalError as exc:
         config = {"error": str(exc)}
     try:
-        queued = [j.model_dump() for j in slurm.my_jobs() if j.name == goal.job_name]
+        queued = [j.model_dump() for j in slurm.my_jobs() if j.name in goal.job_names]
     except SlurmError as exc:
         queued = [{"error": str(exc)}]
     return {"project": project, "goal": config, "stopped": goal.stopped(), "turns": goal.turns(),
@@ -400,9 +454,17 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         Goal(settings, args.project).event("slice_ended_by_slurm", job=job)
         return 1
-    except (GoalError, SlurmError, OSError) as exc:
-        Goal(settings, args.project).event("slice_error", job=job, error=str(exc)[:1000])
-        raise
+    except Exception as exc:  # noqa: BLE001 - recorded where the student sees it, then the slice ends
+        detail = f"{type(exc).__name__}: {exc}"[:1000]
+        goal = Goal(settings, args.project)
+        goal.event("slice_error", job=job, error=detail)
+        try:
+            Journal(goal.project_dir, args.project).add_note("incident", f"A lab-agent slice failed: {detail}",
+                                                             actor=SYSTEM)
+        except Exception:  # noqa: BLE001 - the event above already holds it
+            pass
+        traceback.print_exc()
+        return 1
     print(f"slice {job} of {args.project}: {result}")
     return 0
 

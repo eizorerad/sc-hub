@@ -24,6 +24,8 @@ class Claude(Engine):
             server = {"command": turn.mcp.command, "args": list(turn.mcp.args), "env": dict(turn.mcp.env)}
             argv += ["--mcp-config", json.dumps({"mcpServers": {"schub": server}}), "--strict-mcp-config",
                      "--allowedTools", "mcp__schub__*"]
+        else:
+            argv += ["--mcp-config", json.dumps({"mcpServers": {}}), "--strict-mcp-config"]  # a probe
         argv += ["--model", turn.model] if turn.model else []
         argv += ["--effort", turn.effort] if turn.effort else []
         if turn.session_id:
@@ -42,7 +44,7 @@ class Claude(Engine):
         ok = returncode == 0 and result.get("subtype") == "success" and not result.get("is_error")
         error = "" if ok else (text or (stderr or "").strip())[-2000:]
         return Outcome(self.name, classify(ok, error, bool(MISSING.search(error))),
-                       session_id=result.get("session_id"), text=text[-4000:], error=error,
+                       session_id=result.get("session_id"), text=text[-4000:] if ok else "", error=error,
                        cost_usd=result.get("total_cost_usd"), turns=result.get("num_turns"), returncode=returncode,
                        details={"models": sorted((result.get("modelUsage") or {}).keys())})
 

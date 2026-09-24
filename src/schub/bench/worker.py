@@ -284,6 +284,7 @@ class ProjectWorker:
         epoch = f"{self.host.job_id}.{self.epochs}"
         env = kernel_env(os.environ, {
             "SCHUB_PROJECT": self.project, "SCHUB_PROJECT_DIR": str(project_dir), "SCHUB_KERNEL_EPOCH": epoch,
+            "PATH": _guarded_path(self.host.settings),
         })
         kernel = self.host.kernel_factory(kernel_name(self.host.settings, self.project), project_dir / "work", env, epoch)
         kernel.start()
@@ -324,3 +325,15 @@ def _events(events: list[dict[str, Any]]) -> tuple[tuple[Download, ...], tuple[J
         except ValidationError:
             continue
     return tuple(downloads), tuple(jobs)
+
+
+def _guarded_path(settings) -> str:
+    """The engine guards first on a kernel's PATH: a cell that starts `claude` or `codex` meets the owner's
+    policy too. (Same Unix user: this stops accidents and casual bypasses, not a determined one.)"""
+    from .engines.base import install_guards
+
+    try:
+        guards = str(install_guards(settings.bench_dir))
+    except OSError:
+        return os.environ.get("PATH", "")
+    return os.pathsep.join(p for p in (guards, os.environ.get("PATH", "")) if p)

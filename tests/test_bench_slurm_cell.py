@@ -189,9 +189,11 @@ def test_a_time_warning_does_not_kill_the_job_and_checkpoints_import(settings: S
     assert signals.getsignal(signals.SIGUSR1) == before
 
 
-def test_a_foreign_interpreter_gets_the_warning_and_the_portable_helpers(settings: Settings, cluster: FakeCluster,
-                                                                         project: Path, monkeypatch,
-                                                                         tmp_path: Path) -> None:
+def test_a_foreign_interpreter_sees_the_warning_as_a_file_and_is_not_killed(settings: Settings,
+                                                                           cluster: FakeCluster, project: Path,
+                                                                           monkeypatch, tmp_path: Path) -> None:
+    """A --python child without any USR1 handler (and a bash body) must live on after the warning: Slurm sends
+    it to jobrun only, and jobrun writes $SCHUB_STOP_FILE instead of passing the signal on."""
     import os
     import signal as signals
     import threading
@@ -201,9 +203,11 @@ def test_a_foreign_interpreter_gets_the_warning_and_the_portable_helpers(setting
     fake = tmp_path / "paper-python"
     fake.write_text(f"""#!/bin/sh
 echo "$PYTHONPATH" > {marks / 'pythonpath.txt'}
-trap 'echo usr1 > {marks / 'usr1.txt'}; exit 0' USR1
 touch {marks / 'started.txt'}
-i=0; while [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done
+i=0; while [ $i -lt 100 ]; do
+  if [ -f "$SCHUB_STOP_FILE" ]; then echo saved > {marks / 'saved.txt'}; exit 0; fi
+  sleep 0.1; i=$((i+1))
+done
 exit 3
 """)
     fake.chmod(0o755)
@@ -222,8 +226,40 @@ exit 3
 
     threading.Thread(target=warn, daemon=True).start()
     assert jobrun.main(["--job-dir", submitted.job_dir]) == 0
-    assert (marks / "usr1.txt").read_text().strip() == "usr1"
+    assert (marks / "saved.txt").read_text().strip() == "saved"
     assert (marks / "pythonpath.txt").read_text().strip().endswith("schub/bench/portable")
+    assert "SCHUB_STOP_FILE" not in os.environ  # restored after the run
+
+
+def test_a_warning_during_the_checks_does_not_lose_the_report(settings: Settings, cluster: FakeCluster,
+                                                              project: Path, monkeypatch) -> None:
+    import os
+    import signal as signals
+
+    def slow_checks(*args, **kwargs):
+        os.kill(os.getpid(), signals.SIGUSR1)  # the warning arrives while a big check runs
+        return ()
+
+    monkeypatch.setattr(jobrun, "run_checks", slow_checks)
+    submitted, code_ = _run_job(settings, cluster, project, "x = 1", monkeypatch,
+                                checks=[{"name": "file", "params": {"path": "work/x"}}])
+    assert code_ == 0 and (Path(submitted.job_dir) / "result.json").exists()
+
+
+def test_only_the_frozen_submission_decides_what_runs(settings: Settings, cluster: FakeCluster, project: Path,
+                                                     monkeypatch) -> None:
+    submitted = submit_cell(settings, Slurm(cluster), "demo", project, "demo#c0001", "open('ran.txt', 'w')",
+                            parse_line("", "ws-ia"), [])
+    job_json = Path(submitted.job_dir) / "job.json"
+    job_json.write_text(json.dumps({**json.loads(job_json.read_text()), "body_python": "/bin/false",
+                                    "body": "/etc/passwd"}))
+    monkeypatch.setenv("SCHUB_ROOT", str(settings.root))
+    monkeypatch.setenv("SLURM_JOB_ID", submitted.job.job_id)
+    monkeypatch.chdir(project)
+    assert jobrun.main(["--job-dir", submitted.job_dir]) == 0 and (project / "work" / "ran.txt").exists()
+    frozen = Path(submitted.job_dir) / "frozen.json"
+    frozen.write_text(frozen.read_text().replace('"body_python": ""', '"body_python": "/bin/false"'))
+    assert jobrun.main(["--job-dir", submitted.job_dir]) == jobrun.EXIT_TAMPERED
 
 
 def test_a_job_that_will_wait_for_a_slot_says_so(settings: Settings, cluster: FakeCluster, project: Path) -> None:

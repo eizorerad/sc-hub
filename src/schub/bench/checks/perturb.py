@@ -76,11 +76,11 @@ def _summary(d: dict) -> str:
 
 
 def _knockdown(path: Path, labels: pd.Series, targets: pd.Series, p: PerturbParams) -> dict:
-    import anndata as ad
+    from ..h5rows import frame, h5ad
 
-    adata = ad.read_h5ad(path, backed="r")
-    try:
-        genes = pd.Index(adata.var[p.gene_column].astype(str) if p.gene_column else adata.var_names.astype(str))
+    with h5ad(path) as f:
+        var = frame(f, "var")
+        genes = pd.Index(var[p.gene_column].astype(str) if p.gene_column else var.index.astype(str))
         first = {g: i for i, g in reversed(list(enumerate(genes)))}  # repeated symbols: the first column
         tested = [t for t in targets.index[: p.max_targets * 4] if t in first][: p.max_targets]
         if not tested:
@@ -90,23 +90,23 @@ def _knockdown(path: Path, labels: pd.Series, targets: pd.Series, p: PerturbPara
         controls = _sample(np.flatnonzero(labels.values == p.control), p.max_controls, rng)
         rows = np.unique(np.concatenate([controls, *groups.values()]))
         columns = sorted({first[t] for t in tested})
-        matrix = _expression(adata, rows, columns)
-    finally:
-        adata.file.close()
+        matrix = _expression(f["X"], rows, columns)
     return _compare(matrix, rows, controls, groups, {t: columns.index(first[t]) for t in tested}, p)
 
 
-def _expression(adata, rows: np.ndarray, columns: list[int]) -> np.ndarray:
+def _expression(x, rows: np.ndarray, columns: list[int]) -> np.ndarray:
     """Library-size-normalized expression of the target genes in the sampled cells (dense).
 
-    Whole rows are read in blocks, sparse or dense alike: a cell's library size needs all
-    its genes (comparing raw counts called a perturbation that shrinks every gene's
+    Only X's rows are read, in blocks, sparse or dense alike: a cell's library size needs
+    all its genes (comparing raw counts called a perturbation that shrinks every gene's
     counts a knockdown; Codex found it in the K562 PoC)."""
     from scipy import sparse
 
+    from ..h5rows import rows_of
+
     targets, totals, first = [], [], None
     for start in range(0, len(rows), ROW_BLOCK):
-        block = adata[rows[start:start + ROW_BLOCK]].to_memory().X
+        block = rows_of(x, rows[start:start + ROW_BLOCK])
         block = block.tocsr() if sparse.issparse(block) else np.asarray(block)
         first = block if first is None else first
         part = block[:, columns]

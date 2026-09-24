@@ -10,14 +10,16 @@ page, so the status is always checked too.
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
+import http.client
 import os
 import re
 import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from . import ledger
 from .fsio import read_json, write_json_atomic
@@ -27,6 +29,14 @@ ATTEMPTS = 5
 TIMEOUT_S = 60
 SCHEMES = ("https", "http")  # GEO and the others serve https (urllib's ftp has no status to check)
 USER_AGENT = "sc-hub-bench/1 (+https://github.com/eizorerad/sc-hub)"
+SECRET_PARAM = re.compile(r"token|key|sig|signature|secret|password|passwd|auth|credential|session|^x-amz-", re.I)
+
+
+def public(url: str) -> str:
+    """The URL as the journal shows it: values of secret-looking query parameters are hidden."""
+    parts = urlsplit(url)
+    query = [(k, "REDACTED" if SECRET_PARAM.search(k) else v) for k, v in parse_qsl(parts.query, keep_blank_values=True)]
+    return urlunsplit(parts._replace(query=urlencode(query, safe="/:")))
 
 
 class FetchError(RuntimeError):
@@ -59,10 +69,14 @@ def _sidecar(part: Path) -> Path:
     return part.with_name(part.name + ".json")
 
 
+def _url_key(url: str) -> str:
+    return hashlib.sha256(url.encode()).hexdigest()
+
+
 def _resumable(url: str, part: Path) -> tuple[int, str]:
     """Bytes to resume from and the validator, only if the partial file is from this URL."""
     meta = read_json(_sidecar(part))
-    if not part.exists() or meta is None or meta.get("url") != url:
+    if not part.exists() or meta is None or meta.get("url_sha256") != _url_key(url):
         part.unlink(missing_ok=True)
         _sidecar(part).unlink(missing_ok=True)
         return 0, ""
@@ -100,7 +114,7 @@ def _attempt(url: str, part: Path) -> int | None:
         if status == 206 and not re.match(rf"bytes {offset}-", response.headers.get("Content-Range", "")):
             raise FetchError(f"{url}: the server resumed from another byte than {offset}")
         total = _expected_total(response, offset)
-        write_json_atomic(_sidecar(part), {"url": url, "total": total, "validator":
+        write_json_atomic(_sidecar(part), {"url": public(url), "url_sha256": _url_key(url), "total": total, "validator":
                                            response.headers.get("ETag") or response.headers.get("Last-Modified") or ""})
         mode = "ab" if status == 206 and offset else "wb"  # a 200 means the server restarted from 0
         with part.open(mode) as handle:
@@ -130,27 +144,48 @@ def fetch(url: str, dest: str | os.PathLike | None = None, sha256: str | None = 
           attempts: int = ATTEMPTS, pause_s: float = 5.0) -> Path:
     """Download `url` (default: the project's data/ folder) and record it in the journal.
     `sha256` / `md5`: the checksum the source publishes (Zenodo gives md5); a mismatch deletes the file."""
-    if urlsplit(url).scheme not in SCHEMES:
+    parts = urlsplit(url)
+    if parts.scheme not in SCHEMES:
         raise FetchError(f"only {', '.join(SCHEMES)} URLs can be fetched")
+    if parts.username or parts.password:
+        raise FetchError("a URL with a user or password would put it in the journal; use a public link")
     target = _target(url, dest)
     target.parent.mkdir(parents=True, exist_ok=True)
+    with open(target.with_name(target.name + ".lock"), "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)  # jobs fetching the same file take turns; the second finds it done
+        return _fetch_locked(url, target, sha256, md5, attempts, pause_s)
+
+
+def _fetch_locked(url: str, target: Path, sha256: str | None, md5: str | None, attempts: int,
+                  pause_s: float) -> Path:
+    shown = public(url)
+    if target.exists() and (sha256 or md5):
+        digest, md5_digest = digests_of(target)
+        if (not sha256 or digest == sha256.lower()) and (not md5 or md5_digest == md5.lower().removeprefix("md5:")):
+            ledger.record("download", url=shown, path=str(target), size=target.stat().st_size, sha256=digest,
+                          status="ok", message="already there with the expected checksum")
+            print(f"{target} is already there with the expected checksum")
+            return target
     part = target.with_name(target.name + ".part")
     total = _download(url, part, attempts, pause_s)
     size = part.stat().st_size
     if size == 0 or (total is not None and size != total):
         _discard(part)
-        _fail(url, target, f"got {size} bytes, expected {total}")
+        _fail(shown, target, f"got {size} bytes, expected {total}")
     digest, md5_digest = digests_of(part)
     if sha256 and digest != sha256.lower():
         _discard(part)
-        _fail(url, target, f"sha256 {digest} does not match the expected {sha256}")
+        _fail(shown, target, f"sha256 {digest} does not match the expected {sha256}")
     if md5 and md5_digest != md5.lower().removeprefix("md5:"):
         _discard(part)
-        _fail(url, target, f"md5 {md5_digest} does not match the expected {md5}")
+        _fail(shown, target, f"md5 {md5_digest} does not match the expected {md5}")
     part.replace(target)
     _sidecar(part).unlink(missing_ok=True)
-    ledger.record("download", url=url, path=str(target), size=size, sha256=digest, status="ok")
-    print(f"fetched {url}\n  -> {target} ({size / 1e6:.1f} MB, sha256 {digest[:12]}...)")
+    unverified = total is None and not (sha256 or md5)
+    note = "the server sent no length and no checksum was given: the size is not verified" if unverified else ""
+    ledger.record("download", url=shown, path=str(target), size=size, sha256=digest, status="ok", message=note)
+    print(f"fetched {shown}\n  -> {target} ({size / 1e6:.1f} MB, sha256 {digest[:12]}...)"
+          + (f"\n  warning: {note}" if note else ""))
     return target
 
 
@@ -161,7 +196,7 @@ def _download(url: str, part: Path, attempts: int, pause_s: float) -> int | None
             return _attempt(url, part)
         except FetchError:
             raise  # an HTTP error status: retrying will not help
-        except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as exc:
+        except (urllib.error.URLError, TimeoutError, ConnectionError, OSError, http.client.HTTPException) as exc:
             last = exc
             time.sleep(pause_s * attempt)
     raise FetchError(f"{url}: download failed after {attempts} attempts: {last}")

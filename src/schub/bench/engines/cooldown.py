@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from ..fsio import read_json, write_json_atomic
 
 DEFAULT_HOURS = 5
+MAX_PAUSE = timedelta(days=8)  # a weekly window plus a day; "resets in 2099" must not stop an engine for good
 LIMIT = re.compile(
     r"usage limit|rate.?limit|limit reached|limit will reset|\bresets? at\b|"
     r"\b(?:weekly|daily|monthly|session) limit\b|hit your limit\b|out of extra usage|"
@@ -34,7 +35,10 @@ def parse_reset(text: str, now: datetime) -> datetime | None:
     """The reset time an engine names ('resets at 2026-09-24T14:00Z', 'resets 3pm (Asia/Dubai)'), in UTC."""
     match = ISO.search(text or "")
     if match:
-        value = datetime.fromisoformat(match.group(1).replace("Z", "+00:00").replace(" ", "T"))
+        try:
+            value = datetime.fromisoformat(match.group(1).replace("Z", "+00:00").replace(" ", "T"))
+        except ValueError:
+            return None  # "2026-02-30": not a date
         value = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
         return value.astimezone(timezone.utc) if value > now else None
     match = CLOCK.search(text or "")
@@ -70,7 +74,7 @@ class Cooldown:
     def mark(self, engine: str, text: str) -> datetime:
         now = self.now()
         parsed = parse_reset(text, now)
-        until = parsed or now + timedelta(hours=DEFAULT_HOURS)
+        until = min(parsed or now + timedelta(hours=DEFAULT_HOURS), now + MAX_PAUSE)
         state = {**self._state(), engine: {"until": until.isoformat(timespec="seconds"), "parsed": parsed is not None,
                                            "marked": now.isoformat(timespec="seconds"), "reason": (text or "")[-300:]}}
         write_json_atomic(self.path, state)

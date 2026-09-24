@@ -56,6 +56,8 @@ class EnginePolicy:
                 raise PolicyError(f"{name} must be a model or effort name")
         if not isinstance(self.weekly_turns, int) or not 0 <= self.weekly_turns <= 10_000:
             raise PolicyError("weekly_turns must be a whole number from 0 to 10000")
+        if not isinstance(self.grants, dict):
+            raise PolicyError("grants must map projects to {\"engines\": [...]}")
         for project, grant in self.grants.items():
             engines = grant.get("engines") if isinstance(grant, dict) else None
             if not isinstance(engines, list) or not set(engines) <= set(ENGINES) or not engines:
@@ -102,8 +104,12 @@ def save(path: Path, policy: EnginePolicy) -> EnginePolicy:
 
 
 def set_mode(path: Path, mode: str, reason: str = "", **settings: str | int) -> EnginePolicy:
-    """The owner's switch (CLI only)."""
-    return save(path, dataclasses.replace(load(path), mode=mode, reason=reason, **settings))
+    """The owner's switch (CLI only). A broken file is replaced from the defaults, so the owner can repair it."""
+    try:
+        base = load(path)
+    except PolicyError:
+        base = EnginePolicy()
+    return save(path, dataclasses.replace(base, mode=mode, reason=reason, **settings))
 
 
 def grant(path: Path, project: str, engines: Sequence[str], note: str = "") -> EnginePolicy:

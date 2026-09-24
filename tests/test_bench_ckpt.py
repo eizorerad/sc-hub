@@ -101,3 +101,38 @@ def test_nothing_written_is_not_a_checkpoint(tmp_path: Path) -> None:
         run.save(1, lambda folder: None)
     with pytest.raises(CheckpointError, match="start"):
         Run(tmp_path / "other", REG).save(1, write_model("a"))
+
+
+def test_the_jobs_time_limit_file_asks_to_stop(tmp_path: Path, monkeypatch) -> None:
+    stop = tmp_path / "time-limit-near"
+    monkeypatch.setenv("SCHUB_STOP_FILE", str(stop))
+    run = Run(tmp_path / "run", REG)
+    run.start()
+    assert not run.stop_requested
+    stop.touch()
+    assert run.stop_requested and run.stop_signal == "time limit near"
+
+
+def test_a_registration_with_a_set_resumes_and_odd_values_are_refused(tmp_path: Path) -> None:
+    import subprocess
+    import sys
+
+    code = ("import sys; sys.path.insert(0, sys.argv[1]); from schub_ckpt import Run; "
+            "r = Run(sys.argv[2], {'genes': {'MYC', 'GATA1', 'TP53', 'KLF1'}}); print(r.registration_sha256)")
+    portable = str(Path(__file__).parents[1] / "src" / "schub" / "bench" / "portable")
+    hashes = {subprocess.run([sys.executable, "-c", code, portable, str(tmp_path / "r")], capture_output=True,
+                             text=True, env={"PYTHONHASHSEED": str(seed)}).stdout for seed in range(4)}
+    assert len(hashes) == 1  # the same registration in every process
+    with pytest.raises(CheckpointError, match="JSON values"):
+        Run(tmp_path / "odd", {"model": object()})
+
+
+def test_a_refused_resume_releases_the_run(tmp_path: Path) -> None:
+    with Run(tmp_path / "run", REG) as run:
+        run.start()
+        saved = run.save(1, write_model("a"))
+    (saved["dir"] / "model.bin").write_text("tampered")
+    with pytest.raises(CheckpointError, match="changed"):
+        Run(tmp_path / "run", REG).start()
+    with pytest.raises(CheckpointError, match="changed"):
+        Run(tmp_path / "run", REG).start()  # not "another process": the first refusal let go of the lock
