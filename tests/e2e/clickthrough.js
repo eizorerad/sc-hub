@@ -207,6 +207,14 @@ async function main() {
     await page.click('#jpage .jsteps details.jstep[open] details.fold > summary');
     assert(await vis('#jpage .jsteps details.jstep[open] details.fold[open] pre.code'), 'code hidden');
   });
+  await check('a step copies a ready request for the assistant and links its files to VS Code', async () => {
+    await page.click('#jpage .jsteps details.jstep[open] [data-request^="In sc-hub project k562-qc, make other plots"]');
+    const text = await copied();
+    assert(text.includes('make other plots of what step k562-qc#c0002') && text.includes('<which plots>'), text.slice(0, 120));
+    assert(await vis('#jpage .jsteps details.jstep[open] .jasked'), 'no "Copied" note');
+    const href = await page.getAttribute('#jpage .jsteps details.jstep[open] .jvscode a:last-child', 'href');
+    assert(href.startsWith('vscode://vscode-remote/ssh-remote+') && href.includes('/projects/k562-qc'), href);
+  });
   await check('a step copies its reference', async () => {
     await page.click('#jpage .jsteps details.jstep[open] [data-copy]');
     assert((await copied()).startsWith('k562-qc#c0'), await copied());

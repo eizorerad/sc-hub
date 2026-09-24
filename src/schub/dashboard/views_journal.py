@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from typing import Any, Iterable
+from urllib.parse import quote
 
 from ..bench.inbox import slug
 from .collect_journal import BenchPanel, JournalCard
@@ -36,6 +38,19 @@ CELL_ICON = {"ok": ("ok", "✓"), "error": ("bad", "✗"), "lost": ("bad", "✗"
 NOTE_LABELS = {"registration": "registered", "decision": "decision", "finding": "finding", "error": "mistake",
                "incident": "incident", "verdict": "verdict", "handoff": "hand-over", "note": "note"}
 STORY_KINDS = ("verdict", "finding", "decision", "registration", "error", "note")
+ASKS = (
+    ("redo", "Redo differently", "In sc-hub project {p}, redo step {ref} (\"{why}\") differently: <what to change>. "
+     "Keep {ref} as it is; run the new version as new cells and compare the results with it."),
+    ("extend", "Extend from here", "In sc-hub project {p}, continue from step {ref} (\"{why}\"): <what to add>. "
+     "Build on what {ref} produced (its files and outputs); do not redo the earlier steps."),
+    ("plots", "Other plots", "In sc-hub project {p}, make other plots of what step {ref} (\"{why}\") produced: "
+     "<which plots>. Read the files it saved; do not recompute them."),
+    ("variant", "A variant from here", "In sc-hub project {p}, start a variant {p}/<name> that takes the work up to "
+     "step {ref} (\"{why}\") and then changes: <what>. Leave {p} as it is; say in both journals why the variant "
+     "exists."),
+)
+VSCODE_HINT = ("Opens the file on the cluster in VS Code (Remote-SSH). What you edit there is not in the journal: "
+               "tell your assistant what you changed before it runs again.")
 JOURNAL_HINT = ("Your projects: find one by name or question. Variants sit under their project. A project's page "
                 "starts with where it stands and its outcome; every step is one line that opens on a click.")
 
@@ -98,8 +113,8 @@ def page_version(html: str) -> str:
 def _status(card: JournalCard) -> str:
     css, glyph = {"blocked": ("bad", "!"), "done": ("ok", "✓"), "idle": ("muted", "○"), "eval": ("muted", "·"),
                   "running": ("run", "●"), "working": ("run", "○")}.get(card.group, ("muted", "○"))
-    if card.live and card.group == "eval":
-        css, glyph = "run", "●"
+    if card.live:  # something in Slurm's queue: running now, or waiting for its turn
+        css, glyph = "run", "●" if card.running else "◔"
     label = card.live or ("open, nothing running" if card.group == "working"
                           else STATE.get(card.disposition, ("", card.disposition))[1])
     return f'<span class="jst {css}" role="img" title="{esc(label)}" aria-label="{esc(label)}">{glyph}</span>'
@@ -157,7 +172,8 @@ def _crumbs(project: str, names: set[str]) -> str:
 def _head(card: JournalCard, names: set[str]) -> str:
     css, label = STATE.get(card.disposition, ("PENDING", card.disposition))
     if card.disposition == "active":  # "active" only says the work is not finished: say whether anything runs
-        css, label = ("RUNNING", "running") if card.live else ("PENDING", "open, nothing running")
+        css, label = ("RUNNING", "running") if card.running else \
+            ("PENDING", "open, waiting in the queue") if card.live else ("PENDING", "open, nothing running")
     now = f'<span class="jp-live">{esc(card.live)}</span>' if card.live else ""
     nxt = (f'<span class="jp-next" title="{esc(card.next_action)}">Next: {esc(_line(card.next_action, 180))}</span>'
            if card.next_action and card.disposition != "complete" else "")
@@ -317,7 +333,31 @@ def _summary_marks(entry: dict[str, Any]) -> str:
     return f'<span class="jmarks">{"".join(marks)}</span>' if marks else ""
 
 
-def _step_row(entry: dict[str, Any]) -> str:
+def _vscode(path: str) -> str:
+    """A link that opens a file or folder of the cluster in VS Code over Remote-SSH (the installer's ssh alias)."""
+    host = os.environ.get("SCHUB_SSH_ALIAS", "mbzuai-schub")
+    return f"vscode://vscode-remote/ssh-remote+{quote(host)}{quote(path)}"
+
+
+def _change(entry: dict[str, Any], project_path: str) -> str:
+    """Ready requests about this step for the student's assistant, and the step's files in VS Code."""
+    project = entry["ref"].partition("#")[0]
+    why = _line(entry["why"], 120).replace('"', "'")
+    asks = "".join(f'<button type="button" class="quiet" data-request="{esc(t.format(p=project, ref=entry["ref"], why=why))}">'
+                   f'{esc(label)}</button>' for _, label, t in ASKS)
+    files = [f["path"] for f in entry["files"] if f["change"] != "deleted"][:4]
+    links = ""
+    if project_path:
+        opened = [f'<a href="{esc(_vscode(f"{project_path}/{f}"))}" title="{esc(VSCODE_HINT)}">'
+                  f'{esc(f.rpartition("/")[2])}</a>' for f in files]
+        opened.append(f'<a href="{esc(_vscode(project_path))}" title="{esc(VSCODE_HINT)}">project folder</a>')
+        links = f'<span class="jvscode muted small">open in VS Code: {" · ".join(opened)}</span>'
+    return (f'<div class="jchange"><span class="muted small">Change this:</span>{asks}{links}'
+            '<p class="muted small jasked" hidden>Copied: paste it into your assistant and replace the part in &lt;…&gt;.'
+            '</p></div>')
+
+
+def _step_row(entry: dict[str, Any], project_path: str = "") -> str:
     css, glyph = CELL_ICON.get(entry["status"], ("muted", "○"))
     took = f" · {entry['duration_s']:.0f} s" if entry.get("duration_s") else ""
     message = f'<p class="note small">{esc(entry["message"])}</p>' if entry["message"] else ""
@@ -327,7 +367,8 @@ def _step_row(entry: dict[str, Any]) -> str:
             f'{glyph}</span><code class="jcid">{esc(entry["cid"])}</code><span class="jrow-text">{esc(_line(entry["why"]))}'
             f'</span>{_summary_marks(entry)}<span class="jwhen-abs">{esc(_time(entry["created"]))}</span></summary>'
             f'<div class="jrow-body"><div class="muted small">expected: {esc(entry["expect"])}{esc(took)}</div>'
-            f'{_badges(entry)}{message}{_output(entry)}{_folded(entry)}{_foot(entry)}</div></details>')
+            f'{_badges(entry)}{message}{_output(entry)}{_folded(entry)}{_change(entry, project_path)}'
+            f'{_foot(entry)}</div></details>')
 
 
 def _system_row(entry: dict[str, Any]) -> str:
@@ -359,7 +400,7 @@ def _steps(card: JournalCard) -> str:
     system = [e for e in card.entries if e["kind"] == "incident"]
     if not steps and not system:
         return '<p class="empty">No cells yet.</p>'
-    rows = "".join(_step_row(e) if e["kind"] == "cell" else _system_row(e) for e in card.entries
+    rows = "".join(_step_row(e, card.path) if e["kind"] == "cell" else _system_row(e) for e in card.entries
                    if e["kind"] in ("cell", "incident"))  # the journal's order: oldest first
     cut = (f'<p class="muted small">Showing the newest {len(card.entries)} of {card.total_entries} entries; the '
            'protocol notebook has all of them.</p>' if card.total_entries > len(card.entries) else "")
@@ -561,6 +602,14 @@ JOURNAL_SCRIPT = r"""
     if (filter) { keep('jstep:' + current, filter.dataset.stepFilter); applySteps($('#jpage')); return; }
     if (t.closest('[data-step-order]')) { keep('jorder', keep('jorder', undefined, true) === 'new' ? 'old' : 'new', true); applySteps($('#jpage')); return; }
     if (t.closest('[data-step-sys]')) { keep('jsys', keep('jsys') === 'on' ? 'off' : 'on'); applySteps($('#jpage')); return; }
+    const ask = t.closest('[data-request]');
+    if (ask) {
+      const note = ask.closest('.jchange')?.querySelector('.jasked');
+      const shown = () => { if (note) note.hidden = false; };
+      (navigator.clipboard ? navigator.clipboard.writeText(ask.dataset.request) : Promise.reject()).then(
+        shown, () => { window.prompt('Copy this request for your assistant', ask.dataset.request); shown(); });
+      return;
+    }
     const copy = t.closest('[data-copy]');
     if (copy) {
       const text = copy.dataset.copy;

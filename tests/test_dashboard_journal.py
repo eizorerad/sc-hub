@@ -247,9 +247,41 @@ def test_running_now_comes_from_the_queue_not_from_a_stale_journal(settings: Set
     build(settings, cluster)
     index = (settings.view_dir / "index.html").read_text()
     running = index[index.index('data-group="running"'):index.index('data-group="working"')]
-    assert 'data-path="with-job"' in running and 'data-path="agent"' in running
+    assert 'data-path="with-job"' in running and 'data-path="agent"' not in running  # queued is not running
     opened = index[index.index('data-group="working"'):]
-    assert 'data-path="stale-cell"' in opened and 'data-path="idle-open"' in opened
+    assert 'data-path="stale-cell"' in opened and 'data-path="idle-open"' in opened and 'data-path="agent"' in opened
     assert "job 812 running" in page_of(settings, "with-job")
     assert "open, nothing running" in page_of(settings, "idle-open")
-    assert "the lab agent&#x27;s next turn is queued" in page_of(settings, "agent")
+    agent = page_of(settings, "agent")
+    assert "the lab agent&#x27;s next turn is queued" in agent and "open, waiting in the queue" in agent
+    assert re.search(r'data-path="agent"[^>]*><span class="jst run"[^>]*>◔', index)
+
+
+def test_a_step_offers_ready_requests_and_opens_its_files_in_vscode(settings: Settings, cluster: FakeCluster,
+                                                                    monkeypatch) -> None:
+    from schub.bench.models import FileChange
+
+    monkeypatch.setenv("SCHUB_SSH_ALIAS", "mbzuai")
+    ProjectStore(settings).create("gears", question="Does GEARS reproduce?")
+    journal = Journal(settings.projects_dir / "gears", "gears")
+    cid = journal.allocate("c")
+    journal.write_cell(CellEntry(ref=f"gears#{cid}", project="gears", cid=cid, why='the "ratio" table', expect="e",
+                                 code="x", created=journal.now(), status="ok",
+                                 files=(FileChange(path="work/ratios.csv", change="created"),)))
+    build(settings, cluster)
+    page = page_of(settings, "gears")
+    assert "make other plots of what step gears#c0001 (&quot;the &#x27;ratio&#x27; table&quot;) produced" in page
+    assert "start a variant gears/&lt;name&gt; that takes the work up to step gears#c0001" in page
+    path = settings.projects_dir / "gears"
+    assert f'href="vscode://vscode-remote/ssh-remote+mbzuai{path}/work/ratios.csv"' in page
+    assert f'href="vscode://vscode-remote/ssh-remote+mbzuai{path}"' in page
+
+
+def test_a_scheduled_turn_says_how_long_until_it_starts() -> None:
+    from datetime import datetime, timedelta
+
+    from schub.dashboard.collect_journal import _until
+
+    local = (datetime.now() + timedelta(hours=4, minutes=41)).strftime("%Y-%m-%dT%H:%M:%S")
+    assert _until(local) in ("in 4 h 40 min", "in 4 h 41 min")
+    assert _until("N/A") == "is queued" and _until("2000-01-01T00:00:00") == "is due"

@@ -54,7 +54,9 @@ class JournalCard(Frozen):
     figures: tuple[tuple[str, str], ...] = ()  # (source file, path inside the view)
     reports: tuple[dict[str, Any], ...] = ()  # published reports, oldest first, with their paths in the view
     group: str = "working"  # running (something runs now), working (open, nothing runs), blocked, done, idle, eval
-    live: str = ""  # what runs now: a cell, a Slurm job, the lab agent's next turn
+    live: str = ""  # what runs or waits in Slurm now: a cell, a job, the lab agent's next turn
+    running: bool = False  # something executes right now (not only queued)
+    path: str = ""  # the project's folder on the cluster (links that open its files in VS Code)
     updated: str = ""  # the newest entry or checkpoint change
     outcome: str = ""  # the latest report's summary, else the start of the hand-over
     outcome_from: str = ""  # "report" or "handoff"
@@ -119,28 +121,45 @@ def _updated(entries: list, checkpoint_updated: str) -> str:
     return max(times, default="")
 
 
-def _live(settings: Settings, name: str, entries: list, queue: tuple[QueueJob, ...] | None) -> str:
-    """What runs for the project right now, from Slurm's queue (the journal alone can be stale: a cell marked
-    running by a workbench that died). None for the queue: Slurm did not answer; the journal is all we have."""
+def _live(settings: Settings, name: str, entries: list, queue: tuple[QueueJob, ...] | None) -> tuple[str, bool]:
+    """(what runs or waits for the project in Slurm, whether it executes now), from Slurm's queue: the journal
+    alone can be stale (a cell marked running by a workbench that died). None for the queue: Slurm did not
+    answer; the journal is all we have."""
     from ..bench.goal import Goal
 
     cells = [e for e in entries if isinstance(e, CellEntry) and e.status in ACTIVE_CELLS]
     if queue is None:
-        return f"cell {cells[-1].cid} {cells[-1].status}" if cells else ""
+        return (f"cell {cells[-1].cid} {cells[-1].status}", cells[-1].status == "running") if cells else ("", False)
     states = {j.job_id: j.state for j in queue}
     names = {j.name: j for j in queue}
     workbench = names.get(f"{settings.job_prefix}-workbench")
     if cells and workbench is not None:
-        return f"cell {cells[-1].cid} {cells[-1].status}"
+        running = cells[-1].status == "running" and workbench.state == "RUNNING"
+        return f"cell {cells[-1].cid} {cells[-1].status}", running
     jobs = [(j.job_id, states[j.job_id]) for e in entries if isinstance(e, CellEntry) for j in e.jobs
             if j.job_id in states]
     if jobs:
         job_id, state = jobs[-1]
-        return f"job {job_id} {state.lower()}" + (f" (+{len(jobs) - 1} more)" if len(jobs) > 1 else "")
+        more = f" (+{len(jobs) - 1} more)" if len(jobs) > 1 else ""
+        return f"job {job_id} {state.lower()}{more}", any(s == "RUNNING" for _, s in jobs)
     slice_ = next((names[n] for n in Goal(settings, name).job_names if n in names), None)
-    if slice_ is not None:
-        return "the lab agent is working" if slice_.state == "RUNNING" else "the lab agent's next turn is queued"
-    return ""
+    if slice_ is None:
+        return "", False
+    if slice_.state == "RUNNING":
+        return "the lab agent is working", True
+    return f"the lab agent's next turn {_until(slice_.start)}", False
+
+
+def _until(start: str) -> str:
+    """squeue's %S is the cluster's local time without a zone; the page is rebuilt every minute, so say how long."""
+    try:
+        when = datetime.fromisoformat(start).astimezone()  # this runs on the cluster: its local zone
+    except ValueError:
+        return "is queued"
+    minutes = int((when - datetime.now().astimezone()).total_seconds() // 60)
+    if minutes <= 1:
+        return "is due"
+    return f"in {minutes // 60} h {minutes % 60} min" if minutes >= 60 else f"in {minutes} min"
 
 
 def _group(disposition: str, updated: str, evaluated: bool, now: datetime) -> str:
@@ -209,14 +228,14 @@ def journal_cards(settings: Settings, queue: tuple[QueueJob, ...] | None = ()) -
         outcome, source = _outcome(project_dir, reports, handoff)
         notes = journal.notes_dir
         total = len(numbers) + (sum(1 for p in notes.glob("n*.json")) if notes.is_dir() else 0)
-        live = _live(settings, name, entries, queue)
+        live, running = _live(settings, name, entries, queue)
         group = _group(state.disposition, updated, name in evaluated, now)
-        if live and group in ("working", "idle"):
+        if running and group in ("working", "idle"):
             group = "running"
         cards.append(JournalCard(
             project=name, question=meta.question, disposition=state.disposition, next_action=state.next_action,
             handoff=handoff, entries=data, cells=len(numbers), failed_checks=failed, notebook=f"jnb/{slug(name)}",
-            figures=figures, reports=reports, group=group, live=live,
+            figures=figures, reports=reports, group=group, live=live, running=running, path=str(project_dir),
             updated=updated, outcome=outcome, outcome_from=source, total_entries=total,
         ))
     return tuple(cards)

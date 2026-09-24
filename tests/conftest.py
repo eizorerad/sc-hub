@@ -145,7 +145,7 @@ class FakeCluster:
             return self._ok(args, "".join(rows))
         if "--me" in args:
             wide = args[args.index("-o") + 1].count("|") >= 5
-            extra = "|0:42|None|ws-ia|1:00:00" if wide else ""
+            extra = "|0:42|None|ws-ia|1:00:00|N/A" if wide else ""
             rows = [f"{i}|{self.names[i]}|{s}{extra}\n" for i, s in self.jobs.items() if s in self.ACTIVE]
             return self._ok(args, "".join(rows))
         ids = args[args.index("-j") + 1].split(",")

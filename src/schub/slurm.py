@@ -82,6 +82,7 @@ class QueueJob(Frozen):
     reason: str
     partition: str
     time_limit: str = ""
+    start: str = ""  # when it started, or is expected to (a --begin job's time); "N/A" when unknown
 
 
 def format_time(minutes: int) -> str:
@@ -223,10 +224,10 @@ class Slurm:
         return None
 
     def my_jobs(self) -> list[QueueJob]:
-        out = self._checked(["squeue", "--me", "-h", "-o", "%i|%j|%T|%M|%R|%P|%l"])
+        out = self._checked(["squeue", "--me", "-h", "-o", "%i|%j|%T|%M|%R|%P|%l|%S"])
         return [
             QueueJob(job_id=r[0], name=r[1], state=r[2], elapsed=r[3], reason=r[4], partition=r[5],
-                     time_limit=r[6] if len(r) > 6 else "")
+                     time_limit=r[6] if len(r) > 6 else "", start=r[7] if len(r) > 7 else "")
             for r in _rows(out)
             if len(r) >= 6
         ]

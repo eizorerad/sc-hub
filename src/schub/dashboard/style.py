@@ -210,7 +210,7 @@ JOURNAL_CSS = """
 .jkind{flex:none;width:76px;color:var(--muted);font-size:12px}.jcid{flex:none;color:var(--muted);font-size:11.5px}
 .jmarks{display:flex;gap:4px;flex:none}.jmark{font-size:11px;padding:0 5px;border:1px solid var(--line);border-radius:6px;color:var(--muted)}
 .jmark.ok{color:var(--ok)}.jmark.bad{color:var(--bad)}.jmark.run{color:var(--run)}.jwhen-abs{flex:none;color:var(--muted);font-size:11.5px}
-.jrow-body{padding:8px 6px 14px 28px;border-bottom:1px solid var(--line)}.jrow-d>summary::after{content:'›';flex:none;color:var(--muted);transition:transform .15s}.jrow-d[open]>summary::after{transform:rotate(90deg)}.note-text{white-space:pre-wrap;margin:4px 0}
+.jrow-body{padding:8px 6px 14px 28px;border-bottom:1px solid var(--line)}.jchange{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;margin:10px 0 2px}.jchange button{font-size:12px;padding:2px 9px}.jchange .jasked{flex-basis:100%;margin:2px 0 0}.jvscode{margin-left:4px}.jrow-d>summary::after{content:'›';flex:none;color:var(--muted);transition:transform .15s}.jrow-d[open]>summary::after{transform:rotate(90deg)}.note-text{white-space:pre-wrap;margin:4px 0}
 .badges{display:flex;flex-wrap:wrap;gap:4px;margin:4px 0}
 pre.out,pre.code{background:var(--soft);border-radius:8px;padding:8px 10px;margin:6px 0;white-space:pre;overflow:auto;font:12px ui-monospace,SFMono-Regular,Menlo,monospace;max-height:420px}
 pre.out.err{color:var(--bad,#b3261e)}
