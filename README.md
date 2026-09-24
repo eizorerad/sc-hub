@@ -148,6 +148,13 @@ When a step gets stuck, the assistant finds the cause and fixes it:
   3. Without push access, it writes patch files for the student to send.
   4. Without git, it installs git or copies the changed files.
 
+This routine is for the setup. Afterwards the assistant works in
+`~/sc-hub-workspace` on research. If sc-hub's plumbing fails there, it tells the
+student in one line, works around the problem and notes it in
+`sc-hub-issues.md`. It fixes sc-hub only when the problem blocks the research or
+the student asks. The goal is a working tool for the biologist, not a perfect
+sc-hub.
+
 GitHub Actions (`.github/workflows/tests.yml`) runs the tests on every pull
 request: all of them on Linux, the helper's portable ones on Windows. The pilot
 owner merges what is green and correct, and every student's assistant picks it

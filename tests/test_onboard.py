@@ -124,6 +124,8 @@ def test_the_whole_onboarding_from_the_page(helper) -> None:
     codex = (paths.home / ".codex" / "config.toml").read_text()
     assert "[mcp_servers.schub]" in codex and "/l/users/test.user/schub/bin/schub-mcp" in codex and str(paths.ssh_config) in codex
     assert (paths.workspace / "AGENTS.md").exists() and (paths.workspace / "schub-view").exists()
+    # research there; the way back to fixing sc-hub names the folder the setup ran from
+    assert f"(sc-hub setup folder: {ONBOARD.parent})" in (paths.workspace / "AGENTS.md").read_text()
     # the cluster: the key limited to the gate at the end, sc-hub uploaded, bootstrap and a first run
     authorized = json.loads((cluster / "authorized.json").read_text())
     assert authorized["options"] == 'restrict,port-forwarding,command="/l/users/test.user/schub/bin/schub-gate"'

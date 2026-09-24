@@ -5,6 +5,11 @@ The student uses the page. Your job is to start the page, watch it, and unblock 
 when something gets stuck: find the cause, fix it, check the fix, and send code
 fixes for review so the next student does not hit the same problem.
 
+This guide is for the setup only. When the page says Ready, the work is research in
+`~/sc-hub-workspace`, under that folder's own `AGENTS.md`. There, sc-hub problems
+are worked around and noted in `sc-hub-issues.md`. Come back to this guide when one
+blocks the research or the student asks for a fix.
+
 ## The commands you have
 
 Run these from the root of the sc-hub checkout. `start.sh` / `start.ps1` find a

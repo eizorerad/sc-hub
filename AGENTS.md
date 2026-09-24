@@ -1,5 +1,10 @@
 # sc-hub
 
+This folder is sc-hub's own code, and this file is about **setting sc-hub up**
+(and fixing sc-hub). The student's research happens in `~/sc-hub-workspace`, whose
+own `AGENTS.md` applies there. Once the setup is done, come back here only when the
+student asks to update sc-hub or something in sc-hub blocks their research.
+
 ## A student asks you to set up sc-hub
 
 Read `onboard/AGENT_GUIDE.md` first. It says what every step does, how to see
