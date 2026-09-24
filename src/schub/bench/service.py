@@ -5,6 +5,7 @@ writes small files or calls Slurm; cells run in the workbench job.
 
 from __future__ import annotations
 
+import difflib
 import time
 from typing import Callable, Sequence
 
@@ -262,8 +263,11 @@ def _validate_checks(checks: Sequence[CheckSpec]) -> None:
     known = registry()
     for spec in checks:
         check = known.get(spec.name)
-        if check is None:
-            raise BenchError(f"no check {spec.name!r}; skills('checks') lists them")
+        if check is None:  # agents guess names like file_exists: answer with the right one at once
+            close = difflib.get_close_matches(spec.name, known, n=1, cutoff=0.4)
+            hint = f" Did you mean {close[0]!r}?" if close else ""
+            raise BenchError(f"no check {spec.name!r}.{hint} Checks: {', '.join(sorted(known))} "
+                             "(skills('checks') has their parameters)")
         try:
             check.params.model_validate(spec.params)
         except ValidationError as exc:

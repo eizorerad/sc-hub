@@ -151,3 +151,12 @@ def test_wait_also_waits_for_the_cells_slurm_jobs(bench: Settings, cluster: Fake
     done = timed.wait(ref, wait_s=30)
     assert clock["t"] < 1 and done.jobs[0].state == "COMPLETED" and "still" not in done.hint
     assert svc.wait(ref, wait_s=0, for_jobs=False).status == "ok"
+
+
+def test_a_guessed_check_name_gets_the_right_one(bench: Settings, cluster: FakeCluster) -> None:
+    from schub.bench.models import CheckSpec
+
+    with pytest.raises(BenchError, match="Did you mean 'file'") as info:
+        service(bench, cluster).run("demo", "x = 1", "w", "e", wait_s=0,
+                                    checks=[CheckSpec(name="file_exists", params={"path": "work/x"})])
+    assert "table_columns" in str(info.value)

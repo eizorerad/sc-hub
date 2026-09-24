@@ -65,10 +65,13 @@ requests:
 
   - id: kang-mito-threshold
     source: course-style
+    # The library's Kang 2018 matrix has no mitochondrial genes (found in the first live run, where the
+    # agent went on to plan a 46.5 GB BAM download): the request now tests noticing that and stopping.
     prompt: >-
-      For Kang 2018, choose a mitochondrial-fraction threshold per donor with the median absolute
-      deviation rule and show how many cells each donor loses compared with a fixed 10% cut.
-    expect: {notes: [finding], files: ["work/*.csv"]}
+      For Kang 2018 from the shared library, choose a mitochondrial-fraction threshold per donor with the
+      median absolute deviation rule and show how many cells each donor loses compared with a fixed 10% cut.
+      If the matrix cannot answer this, say why and what it would take, without downloading more than 1 GB.
+    expect: {notes: [finding]}
 
   - id: kang-doublets
     source: course-style
