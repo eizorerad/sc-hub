@@ -1,0 +1,43 @@
+# Every pull request (fixes sent by students' assistants included) and every push to main or a
+# feature branch runs the tests; the pilot owner merges a fix only when this is green.
+name: tests
+
+on:
+  pull_request:
+  push:
+    branches: [main, "feat/**"]
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+      - name: All tests
+        run: python -m pytest -q -p no:cacheprovider
+
+  setup-helper-windows:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install pytest
+        run: python -m pip install pytest
+      - name: The setup helper's portable tests
+        working-directory: onboard
+        run: python -m sc_hub_onboard check

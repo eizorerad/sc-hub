@@ -39,3 +39,16 @@ file only repeats what matters most.
   tell the student.
 - `stop("workbench")` frees the student's job slot when you are done for the day
   (it also stops by itself after a while without cells).
+
+## When sc-hub itself gets in the way
+
+This folder is for research. sc-hub is only the tool, so a problem with the tool
+must not take over the session.
+
+- **Keep going.** When an sc-hub tool fails (not the science):
+  - Tell the student in one line.
+  - Try once more, or a simpler way (a plain cell instead of a helper, a `%%slurm` job instead of the kernel).
+  - Carry on with the research.
+- **Write it down.** Add one line to `sc-hub-issues.md` in this folder: the date, the tool, the error, and what you did instead. Then move on.
+- **Fixing sc-hub is a separate job.** Do it only when a problem blocks the research with no way around it, or when the student asks. The folder the student set sc-hub up from has the instructions for it (`onboard/AGENT_GUIDE.md`, "Sending a code fix for review"). (sc-hub setup folder: unknown, ask the student)
+- **No setup routine here.** Do not re-run the setup, update sc-hub or send fixes during research unless the student asks.

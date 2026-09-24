@@ -93,7 +93,8 @@ def workspace(paths: Paths, repo: Path) -> Path:
     """~/sc-hub-workspace: the assistants' instructions and the dashboard mirror."""
     folder = paths.workspace
     folder.mkdir(parents=True, exist_ok=True)
-    template = (repo / "templates" / "AGENTS.workspace.md").read_text()
+    template = (repo / "templates" / "AGENTS.workspace.md").read_text().replace(
+        "(sc-hub setup folder: unknown, ask the student)", f"(sc-hub setup folder: {repo})")
     for name in ("AGENTS.md", "CLAUDE.md"):
         (folder / name).write_text(template)
     names = ("schub-view.cmd", "schub-view.ps1", "schub-lab.cmd", "schub-lab.ps1") if os.name == "nt" else \

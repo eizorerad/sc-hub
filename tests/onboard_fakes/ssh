@@ -99,7 +99,8 @@ elif "ide-setup" in command:
 elif "bench-run" in command:
     slurm = "%%slurm" in stdin.decode()
     answer = {"ref": "hello#c0002", "status": "ok", "jobs": [{"job_id": "812", "state": "COMPLETED"}],
-              "checks": [{"name": "table_columns", "status": "pass"}], "outputs": []} if slurm else \
+              "checks": [{"name": "table_columns", "status": os.environ.get("FAKE_CHECK_STATUS", "pass")}],
+              "outputs": []} if slurm else \
              {"ref": "hello#c0001", "status": "ok", "outputs": [{"text": "gpu-03 8 CPUs"}]}
     print(json.dumps(answer))
 elif "chatgpt.com/codex/install.sh" in command:

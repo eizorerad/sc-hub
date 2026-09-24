@@ -2,7 +2,8 @@
 #   powershell -ExecutionPolicy Bypass -File onboard\start.ps1
 $ErrorActionPreference = "Stop"
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
-Set-Location $here
+# Run from the caller's folder (a relative --home is theirs), with the helper's package on PYTHONPATH.
+$env:PYTHONPATH = if ($env:PYTHONPATH) { "$here;$env:PYTHONPATH" } else { $here }
 foreach ($candidate in @("py -3", "python", "python3")) {
     $exe, $rest = $candidate.Split(" ", 2)
     if (Get-Command $exe -ErrorAction SilentlyContinue) {

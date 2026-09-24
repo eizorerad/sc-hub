@@ -20,7 +20,7 @@ from sc_hub_onboard.cluster_agents import CLAUDE_URL, DEVICE, clean  # noqa: E40
 from sc_hub_onboard.engine import Engine  # noqa: E402
 from sc_hub_onboard.server import OnboardServer  # noqa: E402
 from sc_hub_onboard.sshkit import Paths, check_login, strip_block, write_block  # noqa: E402
-from sc_hub_onboard.steps import Setup, build  # noqa: E402
+from sc_hub_onboard.steps import REMOTE_ROOT, Setup, build  # noqa: E402
 
 
 @pytest.fixture
@@ -124,6 +124,8 @@ def test_the_whole_onboarding_from_the_page(helper) -> None:
     codex = (paths.home / ".codex" / "config.toml").read_text()
     assert "[mcp_servers.schub]" in codex and "/l/users/test.user/schub/bin/schub-mcp" in codex and str(paths.ssh_config) in codex
     assert (paths.workspace / "AGENTS.md").exists() and (paths.workspace / "schub-view").exists()
+    # research there; the way back to fixing sc-hub names the folder the setup ran from
+    assert f"(sc-hub setup folder: {ONBOARD.parent})" in (paths.workspace / "AGENTS.md").read_text()
     # the cluster: the key limited to the gate at the end, sc-hub uploaded, bootstrap and a first run
     authorized = json.loads((cluster / "authorized.json").read_text())
     assert authorized["options"] == 'restrict,port-forwarding,command="/l/users/test.user/schub/bin/schub-gate"'
@@ -209,6 +211,31 @@ def test_a_rerun_needing_the_password_says_to_update_an_old_ssh(helper, monkeypa
     assert engine.states["cluster"].status == "failed" and "Update OpenSSH" in engine.states["cluster"].hint
 
 
+def test_the_first_job_passes_only_when_its_check_passes(helper, monkeypatch) -> None:
+    """The cluster reports a check as "pass" (CheckResult.status); anything else stops the setup at `hello`."""
+    server, _, _ = helper
+    monkeypatch.setenv("FAKE_CHECK_STATUS", "fail")
+    to_the_agents(server, typo_first=False)
+    state = until(server, lambda s: any(x["status"] == "failed" for x in s["steps"]), timeout=60)
+    hello = next(x for x in state["steps"] if x["id"] == "hello")
+    assert hello["status"] == "failed" and "checks ['fail']" in hello["detail"], hello
+
+
+def test_the_assistant_commands_take_their_arguments_in_any_order(tmp_path, monkeypatch, capsys) -> None:
+    from sc_hub_onboard.__main__ import main
+
+    monkeypatch.chdir(tmp_path)  # a relative --home is the caller's, not the onboard/ folder's
+    (tmp_path / "home" / ".sc-hub").mkdir(parents=True)
+    (tmp_path / "home" / ".sc-hub" / "onboard.json").write_text(json.dumps(
+        {"values": {}, "steps": {"computer": {"id": "computer", "title": "Check this computer", "status": "done"}}}))
+    assert main(["--home", "home", "status"]) == 0
+    assert "[done] computer" in capsys.readouterr().out
+    assert main(["review-prompt", "hello: the job ended as ['COMPLETED'] with checks ['pass']"]) == 0
+    prompt = capsys.readouterr().out
+    assert prompt.startswith("# Review of a fix to sc-hub") and "checks ['pass']" in prompt
+    assert str(ONBOARD.parent) in prompt  # the reviewer is told where the checkout is
+
+
 def test_only_an_answer_to_the_form_on_the_page_counts(helper) -> None:
     server, _, cluster = helper
     to_the_agents(server)
@@ -230,6 +257,54 @@ def test_only_an_answer_to_the_form_on_the_page_counts(helper) -> None:
     reply(server, {"ok": True})
     state = until(server, lambda s: s["finished"] or any(x["status"] == "failed" for x in s["steps"]), timeout=60)
     assert state["finished"]
+
+
+def test_the_assistant_follows_and_retries_without_seeing_secrets(helper, capsys) -> None:
+    from sc_hub_onboard import agent_cli
+    from sc_hub_onboard.__main__ import main
+
+    server, paths, _ = helper
+    page = agent_cli.write_page_file(paths, server.port, server.token)
+    assert page.stat().st_mode & 0o077 == 0  # the page's token: this account only
+    to_the_agents(server)
+    form(server, "Sign in to Codex")
+    assert main(["status", "--home", str(paths.home)]) == 0
+    shown = capsys.readouterr().out
+    assert "page: running" in shown and "waiting for the student on the page: Sign in to Codex" in shown
+    assert "FAKE-C0DE1" not in shown and server.token not in shown and "right horse battery" not in shown
+    reply(server, {"cancel": True})  # the student pressed Stop: the step fails and waits for a retry
+    until(server, lambda s: any(x["id"] == "agents" and x["status"] == "failed" for x in s["steps"]))
+    agent_cli.status(paths, as_json=True)
+    report = json.loads(capsys.readouterr().out)
+    agents = next(x for x in report["steps"] if x["id"] == "agents")
+    assert agents["detail"] == "stopped on the page" and "Retry" in agents["hint"]
+    assert main(["retry", "agents", "--home", str(paths.home)]) == 0
+    form(server, "Sign in to Codex")  # asked again
+    page.unlink()  # the page stopped: the saved state is still there
+    assert agent_cli.status(paths) == 0 and "not running (saved state)" in capsys.readouterr().out
+    assert agent_cli.retry(paths, "") == 1 and "not running" in capsys.readouterr().out
+
+
+def test_stop_ends_the_page_and_the_saved_state_says_finished(helper, capsys) -> None:
+    from sc_hub_onboard import agent_cli
+
+    server, paths, cluster = helper
+    agent_cli.write_page_file(paths, server.port, server.token)
+    test_the_whole_onboarding_from_the_page(helper)
+    assert agent_cli.stop(paths) == 0
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        try:
+            api(server, "/api/state")
+        except (urllib.error.URLError, ConnectionError, OSError):
+            break
+        time.sleep(0.1)
+    else:
+        raise AssertionError("the page is still answering after stop")
+    capsys.readouterr()
+    agent_cli.status(paths, as_json=True)
+    report = json.loads(capsys.readouterr().out)
+    assert report["page"] == "not running (saved state)" and report["finished"] is True
 
 
 def test_the_sign_in_output_is_read_through_colours_and_links() -> None:
@@ -274,6 +349,10 @@ def test_logins_and_the_config_block() -> None:
         with pytest.raises(Exception):
             check_login(bad)
     assert strip_block("a\n# >>> sc-hub >>>\nHost x\n# <<< sc-hub <<<\nb\n") == "a\nb\n"
+    # sc-hub's folder on the cluster: the default one of a firstname.lastname login, nothing that breaks quoting
+    assert REMOTE_ROOT.fullmatch("/l/users/test.user/schub") and REMOTE_ROOT.fullmatch("/l/users/a-b_c/schub-2")
+    for bad in ("", "l/users/x/schub", "/l/users/x/it's", "/l/users/$USER/schub", "/l/a b", '/l/"x"', "/l/x\n"):
+        assert not REMOTE_ROOT.fullmatch(bad), bad
 
 
 def test_writing_the_block_twice_keeps_one(tmp_path: Path) -> None:

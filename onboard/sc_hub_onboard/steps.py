@@ -20,6 +20,9 @@ from .sshkit import ALIAS, HOST, IDE_ALIAS, AskpassUnsupported, Paths, Ssh, SshE
 
 GATE_OPTIONS = 'restrict,port-forwarding,command="{root}/bin/schub-gate"'
 HELLO = "hello"
+# sc-hub's folder on the cluster goes into later commands between single quotes: a plain path only.
+# Logins look like firstname.lastname, so the default /l/users/<login>/schub has a dot in it.
+REMOTE_ROOT = re.compile(r"/[\w./-]+")
 
 
 class Setup:
@@ -154,7 +157,7 @@ class Setup:
                              "In ~/.bashrc on the cluster, put this line before any echo: [[ $- == *i* ]] || return")
         ctx.say("copying sc-hub to the cluster")
         root = cluster.upload(ssh, self.remote_root_wanted or "/l/users/$USER/schub")
-        if not re.fullmatch(r"/[\w./-]+", root):  # it goes into later commands between single quotes
+        if not REMOTE_ROOT.fullmatch(root):
             raise StepFailed(f"unexpected sc-hub folder on the cluster: {root[:80]}", "Use a plain --remote-root path.")
         ctx.values["remote_root"] = root
         ctx.say("setting up your workspace in a Slurm job: its own environment and starter datasets "

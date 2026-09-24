@@ -1,4 +1,5 @@
 """python -m sc_hub_onboard [--home DIR] [--remote-root PATH] [--no-browser]
+python -m sc_hub_onboard status | retry [STEP] | stop | check     (for the assistant: see onboard/AGENT_GUIDE.md)
 
 Starts the local page (127.0.0.1) and opens it in the browser; the steps run from the page.
 --home writes everything (ssh config, key, assistants' configs, workspace) under DIR instead of
@@ -14,6 +15,7 @@ import time
 import webbrowser
 from pathlib import Path
 
+from . import agent_cli
 from .engine import Engine
 from .server import OnboardServer
 from .sshkit import HOST, Paths
@@ -23,6 +25,12 @@ IDLE_EXIT_S = 15 * 60  # finished and nobody looked at the page for this long: t
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    command = next((a for a in argv if a in agent_cli.COMMANDS), None)
+    if command is not None:  # `status --home DIR` and `--home DIR status` alike
+        rest = list(argv)
+        rest.remove(command)
+        return agent_cli.main([command, *rest])
     parser = argparse.ArgumentParser(prog="sc_hub_onboard", description="Set up sc-hub for a student, in one go.")
     parser.add_argument("--home", type=Path, default=None, help="write under this folder instead of the real home")
     parser.add_argument("--remote-root", default="", help="sc-hub's folder on the cluster (default /l/users/<login>/schub)")
@@ -37,6 +45,8 @@ def main(argv: list[str] | None = None) -> int:
     open_url = (lambda url: None) if args.no_browser else webbrowser.open  # the page shows every link anyway
     engine = Engine(build(Setup(paths, args.host, args.remote_root, open_url=open_url)), paths.state)
     server = OnboardServer(engine, args.port)
+    page = agent_cli.write_page_file(paths, server.port, server.token)  # for `status`, `retry` and `stop`
+    engine.start()  # the steps run whether or not the page is open yet; forms wait for the student
     print(f"sc-hub setup: open {server.url}", flush=True)
     if not args.no_browser:
         webbrowser.open(server.url)
@@ -49,6 +59,8 @@ def main(argv: list[str] | None = None) -> int:
                 server.shutdown()
     except KeyboardInterrupt:
         server.shutdown()
+    finally:
+        page.unlink(missing_ok=True)
     return 0
 
 
