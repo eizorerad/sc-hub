@@ -31,6 +31,7 @@ ALLOW_EXACT = frozenset({
 ALLOW_PREFIXES = ("LC_", "SLURM_", "SCHUB_")
 SECRET = re.compile(r"TOKEN|SECRET|PASSW|CREDENTIAL|API_?KEY|_KEY$|COOKIE|AUTH", re.IGNORECASE)
 PROXIES = frozenset({"http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"})
+GPU_ALLOCATED = ("SLURM_JOB_GPUS", "SLURM_GPUS_ON_NODE", "SLURM_STEP_GPUS", "SLURM_GPUS")  # set only with --gres
 DEFAULT_KERNEL = "python3"
 RUNNER_CLEAN = "SCHUB_RUNNER_CLEAN"
 
@@ -54,6 +55,9 @@ def kernel_env(base: Mapping[str, str], extra: Mapping[str, str] | None = None) 
         key: _without_credentials(value) if key in PROXIES else value for key, value in base.items()
         if (key in ALLOW_EXACT or key.startswith(ALLOW_PREFIXES)) and not SECRET.search(key)
     }
+    if base.get("SLURM_JOB_ID") and not any(base.get(k) for k in GPU_ALLOCATED):
+        # a job that asked for no GPU: on a gpu node without device limits it would still see them all
+        env["CUDA_VISIBLE_DEVICES"] = ""
     for key, value in (extra or {}).items():
         if SECRET.search(key):
             raise ValueError(f"refusing to pass {key} into a kernel")

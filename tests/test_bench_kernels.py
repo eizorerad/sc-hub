@@ -18,7 +18,7 @@ def test_env_keeps_allowlisted_names_and_drops_secrets() -> None:
             "AWS_SECRET_ACCESS_KEY": "k", "GH_TOKEN": "t", "RANDOM_THING": "x", "MPLBACKEND": "Agg"}
     env = kernel_env(base, {"SCHUB_PROJECT": "demo"})
     assert env == {"PATH": "/bin", "HOME": "/h", "SLURM_JOB_ID": "7", "SCHUB_ROOT": "/r", "LC_ALL": "C",
-                   "SCHUB_PROJECT": "demo"}
+                   "SCHUB_PROJECT": "demo", "CUDA_VISIBLE_DEVICES": ""}  # a job without GPUs sees none
     with pytest.raises(ValueError):
         kernel_env(base, {"MY_TOKEN": "x"})
 
@@ -110,3 +110,13 @@ def test_kernel_uses_private_unix_sockets(kernel: ProjectKernel) -> None:
     assert folder is not None and stat.S_IMODE(os.stat(folder).st_mode) == 0o700
     kernel.shutdown()
     assert not folder.exists()
+
+
+def test_a_kernel_in_a_job_without_gpus_sees_none() -> None:
+    """Found in the evaluation: on a gpu node, a workbench job without --gres saw the node's GPUs, and a brick
+    trained on one nobody had allocated. Slurm sets the GPU variables only for jobs that asked for GPUs."""
+    cpu_job = kernel_env({"PATH": "/bin", "SLURM_JOB_ID": "7"})
+    assert cpu_job["CUDA_VISIBLE_DEVICES"] == ""
+    gpu_job = kernel_env({"PATH": "/bin", "SLURM_JOB_ID": "8", "SLURM_GPUS_ON_NODE": "1", "CUDA_VISIBLE_DEVICES": "0"})
+    assert gpu_job["CUDA_VISIBLE_DEVICES"] == "0"
+    assert "CUDA_VISIBLE_DEVICES" not in kernel_env({"PATH": "/bin"})  # a laptop: not a Slurm job

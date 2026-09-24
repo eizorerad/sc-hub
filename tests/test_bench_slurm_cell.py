@@ -284,3 +284,10 @@ def test_jobs_draw_with_agg_not_the_kernels_inline_backend(settings: Settings, c
                             parse_line("--python /usr/bin/python3", "ws-ia"), [])
     script = (Path(submitted.job_dir) / "job.sbatch").read_text()
     assert "export MPLBACKEND=Agg" in script and "matplotlib_inline" not in script
+
+
+def test_a_cpu_job_hides_the_nodes_gpus(settings: Settings, cluster: FakeCluster, project: Path) -> None:
+    cpu = submit_cell(settings, Slurm(cluster), "demo", project, "demo#c0001", "x = 1", parse_line("", "gpu"), [])
+    assert "export CUDA_VISIBLE_DEVICES=''" in (Path(cpu.job_dir) / "job.sbatch").read_text()
+    gpu = submit_cell(settings, Slurm(cluster), "demo", project, "demo#c0002", "x = 1", parse_line("--gpus 1", "gpu"), [])
+    assert "CUDA_VISIBLE_DEVICES" not in (Path(gpu.job_dir) / "job.sbatch").read_text()  # Slurm sets it
