@@ -12,6 +12,9 @@ path = bench.fetch("https://.../file.h5ad", md5="<if the source publishes one>")
   resumes an interrupted download, checks the HTTP status and the size, and records
   url, path, size and sha256 in the cell's journal entry. With `md5=` or `sha256=`
   (Zenodo and figshare publish md5) a mismatch deletes the file.
+- With a checksum, a file is downloaded once per student into `$SCHUB_ROOT/cache/fetch/`
+  and linked into each project that asks for it (projects fetching it at the same time
+  wait for the first download). Delete a folder there to free its space.
 - Large files (tens of GB): fetch inside a `%%slurm` cell so the kernel stays free.
 - First check the shared library with `datasets()`: Kang 2018, PBMC 3k and PBMC 1k
   FASTQ are already there, with checksums.

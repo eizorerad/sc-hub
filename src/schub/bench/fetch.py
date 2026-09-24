@@ -15,6 +15,7 @@ import hashlib
 import http.client
 import os
 import re
+import shutil
 import time
 import urllib.error
 import urllib.request
@@ -151,13 +152,64 @@ def fetch(url: str, dest: str | os.PathLike | None = None, sha256: str | None = 
         raise FetchError("a URL with a user or password would put it in the journal; use a public link")
     target = _target(url, dest)
     target.parent.mkdir(parents=True, exist_ok=True)
+    cache = _cache_path(target.name, sha256, md5)
+    if cache is not None:
+        return _via_cache(url, target, cache, sha256, md5, attempts, pause_s)
     with open(target.with_name(target.name + ".lock"), "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)  # jobs fetching the same file take turns; the second finds it done
         return _fetch_locked(url, target, sha256, md5, attempts, pause_s)
 
 
+def _cache_path(name: str, sha256: str | None, md5: str | None) -> Path | None:
+    """With a published checksum, one copy per student: $SCHUB_ROOT/cache/fetch/<checksum>/<name>."""
+    root = os.environ.get("SCHUB_ROOT")
+    if not root or not (sha256 or md5):
+        return None
+    key = f"sha256-{sha256.lower()}" if sha256 else f"md5-{md5.lower().removeprefix('md5:')}"
+    if not re.fullmatch(r"(sha256-[0-9a-f]{64}|md5-[0-9a-f]{32})", key):
+        raise FetchError(f"{key.split('-')[0]}: not a hexadecimal checksum")
+    return Path(root) / "cache" / "fetch" / key / name
+
+
+def _via_cache(url: str, target: Path, cache: Path, sha256: str | None, md5: str | None, attempts: int,
+               pause_s: float) -> Path:
+    """Projects asking for the same checksummed file share one download (the first fetches, the others wait
+    on the lock and link it); every project's journal still records its own copy."""
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    record_path = cache.parent / "record.json"
+    with open(cache.parent / ".lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        record = read_json(record_path) or {}
+        fresh = not (cache.exists() and record.get("size") == cache.stat().st_size)
+        if fresh:
+            _fetch_locked(url, cache, sha256, md5, attempts, pause_s, record=False)
+            digest = digests_of(cache)[0]
+            write_json_atomic(record_path, {"url": public(url), "size": cache.stat().st_size, "sha256": digest})
+            record = read_json(record_path) or {}
+        _link(cache, target)
+    size, digest = int(record["size"]), str(record["sha256"])
+    note = "" if fresh else "from the student's download cache (the same checksum was fetched before)"
+    ledger.record("download", url=public(url), path=str(target), size=size, sha256=digest, status="ok",
+                  message=note)
+    print(f"fetched {public(url)}\n  -> {target} ({size / 1e6:.1f} MB, sha256 {digest[:12]}...)"
+          + ("\n  (from the download cache)" if note else ""))
+    return target
+
+
+def _link(cache: Path, target: Path) -> None:
+    if target.exists() and target.stat().st_ino == cache.stat().st_ino:
+        return
+    temp = target.with_name(f".{target.name}.link")
+    temp.unlink(missing_ok=True)
+    try:
+        os.link(cache, temp)  # same file system: no second copy
+    except OSError:
+        shutil.copy2(cache, temp)
+    temp.replace(target)
+
+
 def _fetch_locked(url: str, target: Path, sha256: str | None, md5: str | None, attempts: int,
-                  pause_s: float) -> Path:
+                  pause_s: float, record: bool = True) -> Path:
     shown = public(url)
     if target.exists() and (sha256 or md5):
         digest, md5_digest = digests_of(target)
@@ -183,9 +235,10 @@ def _fetch_locked(url: str, target: Path, sha256: str | None, md5: str | None, a
     _sidecar(part).unlink(missing_ok=True)
     unverified = total is None and not (sha256 or md5)
     note = "the server sent no length and no checksum was given: the size is not verified" if unverified else ""
-    ledger.record("download", url=shown, path=str(target), size=size, sha256=digest, status="ok", message=note)
-    print(f"fetched {shown}\n  -> {target} ({size / 1e6:.1f} MB, sha256 {digest[:12]}...)"
-          + (f"\n  warning: {note}" if note else ""))
+    if record:
+        ledger.record("download", url=shown, path=str(target), size=size, sha256=digest, status="ok", message=note)
+        print(f"fetched {shown}\n  -> {target} ({size / 1e6:.1f} MB, sha256 {digest[:12]}...)"
+              + (f"\n  warning: {note}" if note else ""))
     return target
 
 

@@ -70,6 +70,7 @@ def test_a_run_is_scored_from_its_journal(settings: Settings, cluster: FakeClust
     first = score(settings, project, request)
     assert not first["complete"] and first["missing"] == ["notes"] and first["checks_failing"] == []
     journal.add_note("finding", "done", because=[f"{project}#c0002"])
+    journal.add_note("incident", "The kernel stopped: nothing ran for 10 minutes, so the workbench stopped.")
     CheckpointStore(folder).write("complete")
     [row] = matrix(settings, [request])
     assert row["complete"] and row["expectations_met"] == 5 and row["turns"] == 1 and row["cost_usd"] == 0.5

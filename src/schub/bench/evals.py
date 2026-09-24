@@ -34,6 +34,7 @@ from .journal import Journal
 from .models import CellEntry, NoteEntry
 
 ENGINES = ("claude", "codex")
+KERNEL_NOTICE = "The kernel stopped"  # the workbench's lifecycle notice to the agent, not a problem of the run
 SUFFIX = ("\n\nWork in this project only, through the sc-hub MCP tools. Resources for this request: at most "
           "{gpu_minutes} GPU-minutes and {download_gb} GB of downloads in total; if the request needs more, say what it "
           "would take and hand over as \"blocked\" instead. When the request is answered, record the findings with the "
@@ -133,7 +134,8 @@ def score(settings: Settings, project: str, request: EvalRequest) -> dict:
         "cells": len(cells), "cell_errors": sum(c.status == "error" for c in cells),
         "lost_cells": sum(c.status in ("lost", "retired") for c in cells),
         "checks_failing": sorted(k for k, v in latest.items() if v in ("fail", "error")),
-        "incidents": sum(n.kind == "incident" for n in notes), "own_errors": sum(n.kind == "error" for n in notes),
+        "incidents": sum(n.kind == "incident" and not n.text.startswith(KERNEL_NOTICE) for n in notes),
+        "own_errors": sum(n.kind == "error" for n in notes),
         "human_steps": sum(e.actor.kind == "human" for e in entries),
         "engines": sorted({e["engine"] for e in finished}),
         "turns": sum(_worked(e) for e in finished),

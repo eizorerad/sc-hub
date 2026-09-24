@@ -199,3 +199,27 @@ def test_a_file_already_there_is_not_fetched_again_and_fetches_take_turns(server
     assert Handler.requests == 1  # the others found it done under the lock
     events = ledger.drain()
     assert sum("already there" in e.get("message", "") for e in events) == 2
+
+
+def test_projects_share_one_download_of_a_checksummed_file(server: str, project: Path, tmp_path: Path,
+                                                           monkeypatch) -> None:
+    """Found in the evaluation: four K562 projects fetched the same 1.55 GB file at once, each into its own
+    data/, at 0.7 MB/s. With a checksum the file is fetched once into the student's cache and linked."""
+    import threading
+
+    root = tmp_path / "root"
+    monkeypatch.setenv("SCHUB_ROOT", str(root))
+    targets = [tmp_path / f"p{i}" / "data" / "data.bin" for i in range(3)]
+    threads = [threading.Thread(target=fetch, args=(f"{server}/data.bin",), kwargs={"dest": t, "sha256": SHA,
+                                                                                      "pause_s": 0})
+               for t in targets]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert Handler.requests == 1 and all(t.read_bytes() == PAYLOAD for t in targets)
+    cached = list((root / "cache" / "fetch").rglob("data.bin"))
+    assert len(cached) == 1 and cached[0].stat().st_ino == targets[0].stat().st_ino  # a link, not a copy
+    events = ledger.drain()
+    assert len(events) == 3 and {e["path"] for e in events} == {str(t) for t in targets}
+    assert sum("download cache" in e.get("message", "") for e in events) == 2
