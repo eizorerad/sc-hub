@@ -82,7 +82,7 @@ def runs_path(settings: Settings) -> Path:
 
 def launch(settings: Settings, slurm: Slurm, requests: Sequence[EvalRequest], engines: Sequence[str],
            slice_minutes: int = 45, max_turns: int | None = None, gpu_minutes: int = 30,
-           download_gb: int = 5) -> list[dict]:
+           download_gb: int = 5, report: bool = False) -> list[dict]:
     unknown = set(engines) - set(ENGINES)
     if unknown:
         raise EvalError(f"unknown engines {sorted(unknown)}")
@@ -95,7 +95,7 @@ def launch(settings: Settings, slurm: Slurm, requests: Sequence[EvalRequest], en
             turns = min(request.max_turns, max_turns) if max_turns else request.max_turns
             suffix = SUFFIX.format(gpu_minutes=gpu_minutes, download_gb=download_gb)
             goal = (f"---\nengine: {engine}\nmax_turns: {turns}\nslice_minutes: {slice_minutes}\n"
-                    f"pace_minutes: 5\n---\n{request.prompt}{suffix}\n")
+                    f"pace_minutes: 5\nreport: {'yes' if report else 'no'}\n---\n{request.prompt}{suffix}\n")
             job = goal_agent.start(settings, slurm, project, goal)
             record = {"request": request.id, "engine": engine, "project": project, "job": job,
                       "started": datetime.now(timezone.utc).isoformat(timespec="seconds")}
@@ -126,7 +126,8 @@ def score(settings: Settings, project: str, request: EvalRequest) -> dict:
         "files": all(any(folder.glob(pattern)) for pattern in expect.files),
     }
     events = Goal(settings, project).events(limit=10_000)
-    finished = [e for e in events if e.get("event") == "turn_finished"]
+    ended = [e for e in events if e.get("event") == "turn_finished"]
+    finished = [e for e in ended if e.get("role", "research") != "writer"]  # the report is not the request's work
     disposition = CheckpointStore(folder).read().disposition
     return {
         "request": request.id, "project": project, "complete": disposition == "complete", "disposition": disposition,
@@ -143,6 +144,7 @@ def score(settings: Settings, project: str, request: EvalRequest) -> dict:
         "usage_limits": sum(e.get("status") == "usage_limited" for e in finished),
         "cost_usd": round(sum(e.get("cost_usd") or 0 for e in finished), 2),
         "tool_errors": _tool_errors(settings, project),
+        "report_turns": sum(_worked(e) for e in ended if e.get("role") == "writer"),
     }
 
 

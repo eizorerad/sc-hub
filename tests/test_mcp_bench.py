@@ -221,3 +221,29 @@ def test_the_cluster_answer_names_the_engines(server, bench: Settings) -> None:
     Cooldown(bench.bench_dir / "engine-cooldown.json").mark("codex", "You hit your spend cap")
     engines = ok(call(server, "cluster"))["engines"]
     assert any(line.startswith("codex: paused until") for line in engines)
+
+
+def test_a_report_through_mcp(server, bench: Settings, monkeypatch) -> None:
+    from schub.bench.journal import Journal
+    from schub.bench.models import CellEntry, OutputItem
+
+    ok(call(server, "create_project", {"project": "ifn", "question": "How do PBMCs answer IFN-beta?"}))
+    journal = Journal(bench.projects_dir / "ifn", "ifn")
+    cid = journal.allocate("c")
+    journal.write_cell(CellEntry(ref=f"ifn#{cid}", project="ifn", cid=cid, why="count cells", expect="~24k",
+                                 code="adata.n_obs", created=journal.now(), status="ok",
+                                 outputs=(OutputItem(kind="result", text="24673"),)))
+    spec = {"title": "IFN response", "summary": "24673 cells were read.",
+            "blocks": [{"text": "## Data"}, {"cell": "c0001", "show": "outputs"}]}
+    draft = ok(call(server, "report", {"project": "ifn", "spec": spec}))
+    assert draft["status"] == "draft" and draft["notebook"] == "reports/draft/report.ipynb"
+    published = ok(call(server, "report", {"project": "ifn", "spec": spec, "publish": True}))
+    assert published["folder"] == "reports/01-ifn-response"
+    assert ok(call(server, "report", {"project": "ifn"}))["reports"][0]["title"] == "IFN response"
+    bad = call(server, "report", {"project": "ifn", "spec": {**spec, "blocks": [{"cell": "c0009"}]}})
+    assert bad.is_error and "c0009 is not a cell of ifn" in bad.content[0].text
+    monkeypatch.setenv("SCHUB_LAB_AGENT_ENGINE", "claude")
+    monkeypatch.setenv("SCHUB_LAB_AGENT_ROLE", "writer")
+    refused = call(server, "handoff", {"project": "ifn", "text": "more to do", "disposition": "active",
+                                       "next_action": "x"})
+    assert refused.is_error and "does not change the hand-over" in refused.content[0].text

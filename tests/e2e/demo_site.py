@@ -125,6 +125,19 @@ def _bench_project(hub: Hub) -> None:
         store = CheckpointStore(hub.settings.projects_dir / name)
         store.write("active", next_action="full QC, then pseudobulk")
         store.write_handoff("# Where we are\n- twin QC done (c0002)\n- full QC job 812 done")
+    _report(hub, "k562-qc")
+
+
+def _report(hub: Hub, name: str) -> None:
+    """A published report of the first project (the line under its question)."""
+    from schub.bench.report_spec import Block, ReportSpec
+    from schub.bench.service import BenchService
+
+    spec = ReportSpec(title="K562 essential screen: good enough to model?",
+                      summary="Yes on the twin: knockdown in 41 of 50 targets; the full QC job 812 finished.",
+                      blocks=(Block(text="## Data"), Block(cell="c0001", show="outputs"),
+                              Block(figure="c0002", caption="QC on the twin"), Block(note="n0003")))
+    BenchService(hub.settings, hub.slurm).report(name, spec, publish=True)
 
 
 if __name__ == "__main__":

@@ -5,16 +5,19 @@
     max_turns: 30         # model turns before the goal stops as "blocked: budget"
     slice_minutes: 80     # one turn's time in its Slurm job
     pace_minutes: 60      # the next slice starts this long after the last one
+    report: yes           # once complete, a writer turn publishes the study as a report notebook
     ---
     The objective, in the student's words.
 
     goal/STOP                 the student's stop: the next slice ends the chain
+    goal/report-only          a goal `schub goal-report` made for a chat project: reports, never research
     goal/state/owner.lock     one slice at a time
     goal/state/sessions.json  each engine's session id, which engine took the last turn
     goal/state/turns.json     turns taken (the budget)
     goal/state/intent.json    a successor's comment before its sbatch (no blind resubmission)
     goal/state/events.jsonl   what each slice did
     goal/state/runs/<job>/    each turn's prompt, stdout, stderr and outcome
+    goal/state/report.json    the report due after a completion: its status, the writer's turns and sessions
 
 Progress lives in the journal: the hand-over (journal/handoff.md) and the checkpoint
 (journal/checkpoint.json) are what a new session, or the other engine, starts from.
@@ -33,7 +36,17 @@ from ..hashing import stable_hash
 from .clock import stamp
 from .fsio import read_json, write_json_atomic
 
-KEYS = {"engine": str, "max_turns": int, "slice_minutes": int, "pace_minutes": int}
+
+def _yes_no(raw: str) -> bool:
+    value = raw.strip().lower()
+    if value in ("yes", "true", "on"):
+        return True
+    if value in ("no", "false", "off"):
+        return False
+    raise ValueError(raw)
+
+
+KEYS = {"engine": str, "max_turns": int, "slice_minutes": int, "pace_minutes": int, "report": _yes_no}
 LIMITS = {"max_turns": (1, 500), "slice_minutes": (20, 460), "pace_minutes": (5, 24 * 60)}
 FRONT = re.compile(r"\A---\n(.*?)\n---\n?(.*)\Z", re.S)
 
@@ -49,6 +62,7 @@ class GoalConfig:
     max_turns: int = 30
     slice_minutes: int = 80
     pace_minutes: int = 60
+    report: bool = True
 
 
 def parse_goal(text: str) -> GoalConfig:
@@ -66,7 +80,8 @@ def parse_goal(text: str) -> GoalConfig:
         try:
             values[key] = KEYS[key](raw)
         except ValueError as exc:
-            raise GoalError(f"goal.md: {key} must be a whole number, got {raw!r}") from exc
+            kind = "yes or no" if key == "report" else "a whole number"
+            raise GoalError(f"goal.md: {key} must be {kind}, got {raw!r}") from exc
     for key, (low, high) in LIMITS.items():
         if key in values and not low <= int(values[key]) <= high:  # type: ignore[arg-type]
             raise GoalError(f"goal.md: {key} must be from {low} to {high}")
@@ -111,6 +126,14 @@ class Goal:
         temp.replace(self.folder / "goal.md")
         return config
 
+    @property
+    def report_only_marker(self) -> Path:
+        return self.folder / "report-only"
+
+    @property
+    def report_only(self) -> bool:
+        return self.report_only_marker.exists()
+
     def stopped(self) -> bool:
         return any(p.exists() for p in (self.folder / "STOP", self.project_dir / "STOP", self.settings.bench_dir / "STOP"))
 
@@ -148,6 +171,12 @@ class Goal:
         for path in moved:
             path.replace(folder / path.name)
         return folder
+
+    def report_state(self) -> dict:
+        return read_json(self.state / "report.json") or {}
+
+    def save_report_state(self, state: dict) -> None:
+        write_json_atomic(self.state / "report.json", state)
 
     def turns(self) -> int:
         return int((read_json(self.state / "turns.json") or {}).get("turns", 0))

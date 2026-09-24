@@ -210,9 +210,9 @@ def test_a_limit_after_real_work_counts_and_the_other_engine_gets_what_is_left(l
     slice_ = Slice(lab, Slurm(cluster), "p", first, clock=lambda: clock["t"])
     real_turn = slice_.turn
 
-    def turn(engine, config, policy, rotated=False):
+    def turn(engine, config, policy, rotated=False, role="research"):
         clock["t"] += 22 * 60  # claude worked 22 of the slice's 30 minutes before its limit
-        return real_turn(engine, config, policy, rotated)
+        return real_turn(engine, config, policy, rotated, role)
 
     slice_.turn = turn
     assert slice_.run() == "usage_limited"  # 8 minutes left: less than a turn needs, codex waits
@@ -297,3 +297,146 @@ def test_when_every_engine_is_paused_the_next_slice_waits_for_the_reset(lab: Set
     successor = successor_of(cluster, first)
     minutes = int(update["StartTime"].removeprefix("now+").removesuffix("minutes"))
     assert update["JobId"] == successor and 4 * 60 < minutes <= 5 * 60 + 2
+
+
+# ---- the report after a completion -----------------------------------------------------------------
+
+HOOK = '''
+import json as _json
+from pathlib import Path as _Path
+_args = sys.argv[1:]
+_prompt = _args[_args.index("-p") + 1] if "-p" in _args else _args[-1]
+_project = _Path(os.environ["HOOK_PROJECT_DIR"])
+if "This turn is not research" in _prompt:
+    if os.environ.get("HOOK_PUBLISH") == "1":
+        _folder = _project / "reports" / "01-study"
+        _folder.mkdir(parents=True, exist_ok=True)
+        (_folder / "report.json").write_text(_json.dumps({"title": "Study", "built": "2999-01-01T00:00:00.000+00:00"}))
+elif os.environ.get("HOOK_COMPLETE") == "1":
+    (_project / "journal" / "checkpoint.json").write_text(_json.dumps(
+        {"disposition": "complete", "updated": "2026-09-24T10:00:00.000+00:00", "reason": "table done"}))
+'''
+
+
+@pytest.fixture
+def hooked(lab: Settings, tmp_path: Path, monkeypatch) -> Settings:
+    hook = tmp_path / "hook.py"
+    hook.write_text(HOOK)
+    for key, value in {"FAKE_HOOK": str(hook), "HOOK_PROJECT_DIR": str(lab.projects_dir / "p"),
+                       "HOOK_COMPLETE": "1"}.items():
+        monkeypatch.setenv(key, value)
+    return lab
+
+
+def roles() -> list[str]:
+    return ["writer" if "This turn is not research" in c["argv"][c["argv"].index("-p") + 1] else "research"
+            for c in engine_calls()]
+
+
+def test_a_completed_goal_writes_its_report_in_the_same_slice(hooked: Settings, cluster: FakeCluster,
+                                                               monkeypatch) -> None:
+    monkeypatch.setenv("HOOK_PUBLISH", "1")
+    first, result = start_and_run(hooked, cluster)
+    assert result == "ok" and roles() == ["research", "writer"]
+    research, writer = [c["argv"] for c in engine_calls()]
+    assert writer[writer.index("--session-id") + 1] != research[research.index("--session-id") + 1]  # a fresh session
+    server = json.loads(writer[writer.index("--mcp-config") + 1])["mcpServers"]["schub"]
+    assert server["env"]["SCHUB_LAB_AGENT_ROLE"] == "writer"
+    assert "SCHUB_LAB_AGENT_ROLE" not in json.loads(research[research.index("--mcp-config") + 1])["mcpServers"][
+        "schub"]["env"]
+    state = Goal(hooked, "p").report_state()
+    assert state["status"] == "published" and state["folder"] == "reports/01-study" and state["writer_turns"] == 1
+    assert Goal(hooked, "p").turns() == 1  # the writer's turn is not taken from the research budget
+    _, again = next_slice(hooked, cluster, first)
+    assert again == "done" and len(engine_calls()) == 2
+
+
+def test_a_report_not_published_in_two_turns_ends_the_goal_anyway(hooked: Settings, cluster: FakeCluster) -> None:
+    first, _ = start_and_run(hooked, cluster)
+    assert roles() == ["research", "writer"] and Goal(hooked, "p").report_state()["status"] == "writing"
+    assert goal_agent.active_goals(hooked) == ["p"]  # the watchdog keeps a chain alive while the report is due
+    second, result = next_slice(hooked, cluster, first)
+    assert roles() == ["research", "writer", "writer"]
+    writers = [c["argv"] for c in engine_calls()][1:]
+    assert writers[1][writers[1].index("--resume") + 1] == writers[0][writers[0].index("--session-id") + 1]
+    assert Goal(hooked, "p").report_state()["status"] == "gave_up"
+    assert any("could not write the report: it was not published in 2 turns" in text for text in incidents(hooked))
+    assert goal_agent.active_goals(hooked) == []
+    _, last = next_slice(hooked, cluster, second)
+    assert last == "done" and len(engine_calls()) == 3
+
+
+def test_report_no_and_old_completions_write_nothing(hooked: Settings, cluster: FakeCluster) -> None:
+    first = goal_agent.start(hooked, Slurm(cluster), "p", GOAL.replace("pace_minutes: 60", "pace_minutes: 60\nreport: no"))
+    cluster.jobs[first] = "RUNNING"
+    Slice(hooked, Slurm(cluster), "p", first).run()
+    assert roles() == ["research"] and Goal(hooked, "p").report_state() == {}
+    _, result = next_slice(hooked, cluster, first)
+    assert result == "done"
+    with pytest.raises(GoalError, match="report must be yes or no"):
+        parse_goal("---\nreport: maybe\n---\nx")
+
+
+def test_goal_report_writes_one_for_a_finished_project(hooked: Settings, cluster: FakeCluster, monkeypatch) -> None:
+    ProjectStore(hooked).create("chat", question="Which cells answer IFN?")
+    with pytest.raises(GoalError, match="not complete"):
+        goal_agent.request_report(hooked, Slurm(cluster), "chat")
+    CheckpointStore(hooked.projects_dir / "chat").write("complete", reason="done in chat")
+    job = goal_agent.request_report(hooked, Slurm(cluster), "chat")
+    goal = Goal(hooked, "chat")
+    assert "only its report is" in goal.config().objective and "Which cells answer IFN?" in goal.config().objective
+    assert goal.report_state()["status"] == "requested"
+    cluster.jobs[job] = "RUNNING"
+    monkeypatch.setenv("HOOK_PROJECT_DIR", str(hooked.projects_dir / "chat"))
+    monkeypatch.setenv("HOOK_PUBLISH", "1")
+    assert Slice(hooked, Slurm(cluster), "chat", job).run() == "ok"
+    assert roles() == ["writer"] and goal.report_state()["status"] == "published"
+
+
+def test_a_report_only_goal_never_does_research(hooked: Settings, cluster: FakeCluster, monkeypatch) -> None:
+    ProjectStore(hooked).create("chat", question="Which cells answer IFN?")
+    store = CheckpointStore(hooked.projects_dir / "chat")
+    store.write("complete", reason="done in chat")
+    monkeypatch.setenv("HOOK_PROJECT_DIR", str(hooked.projects_dir / "chat"))
+    monkeypatch.setenv("HOOK_PUBLISH", "1")
+    job = goal_agent.request_report(hooked, Slurm(cluster), "chat")
+    cluster.jobs[job] = "RUNNING"
+    Slice(hooked, Slurm(cluster), "chat", job).run()
+    store.write("active", next_action="the student goes on in chat")
+    assert goal_agent.active_goals(hooked) == []  # the watchdog does not revive it into research
+    cluster.jobs = {k: "COMPLETED" for k in cluster.jobs}
+    assert Slice(hooked, Slurm(cluster), "chat", "999").run() == "done" and roles() == ["writer"]
+    assert store.read().disposition == "active"  # the student's checkpoint is left alone
+    goal_agent.start(hooked, Slurm(cluster), "chat", GOAL)  # a real goal now
+    assert not Goal(hooked, "chat").report_only and goal_agent.active_goals(hooked) == ["chat"]
+
+
+def test_a_policy_without_engines_gives_up_the_report_not_the_study(hooked: Settings, cluster: FakeCluster) -> None:
+    first, _ = start_and_run(hooked, cluster)  # research completes; the writer turn does not publish
+    engine_policy.set_mode(hooked.bench_dir / "engine-policy.json", "codex-only")
+    Goal(hooked, "p").write(GOAL.replace("engine: auto", "engine: claude"))
+    _, result = next_slice(hooked, cluster, first)
+    assert result == "refused" and CheckpointStore(hooked.projects_dir / "p").read().disposition == "complete"
+    assert Goal(hooked, "p").report_state()["status"] == "gave_up"
+    assert any("could not write the report: the engine policy" in t for t in incidents(hooked))
+
+
+def test_a_report_published_before_a_limit_is_not_written_twice(hooked: Settings, cluster: FakeCluster,
+                                                               tmp_path: Path, monkeypatch) -> None:
+    engine_policy.set_mode(hooked.bench_dir / "engine-policy.json", "mixed", primary="claude")
+    script = tmp_path / "claude-modes"
+    script.write_text("ok\nlimitwork\n")  # research, then a writer turn that publishes and hits the limit
+    monkeypatch.setenv("FAKE_CLAUDE_SCRIPT", str(script))
+    monkeypatch.setenv("HOOK_PUBLISH", "1")
+    start_and_run(hooked, cluster)
+    assert [c["engine"] for c in engine_calls()] == ["claude", "claude"]  # codex is not asked to write it again
+    assert Goal(hooked, "p").report_state()["status"] == "published"
+
+
+def test_the_writer_sends_no_slurm_jobs(lab: Settings, cluster: FakeCluster) -> None:
+    from schub.bench.service import BenchError, BenchService
+
+    writer = actor_for("claude-code", "2", env={"SCHUB_LAB_AGENT_ENGINE": "claude", "SCHUB_LAB_AGENT_ROLE": "writer"})
+    assert writer.role == "writer"
+    with pytest.raises(BenchError, match="does not send Slurm jobs"):
+        BenchService(lab, Slurm(cluster)).run("p", "%%slurm --gpus 1\ntrain()", "more", "a model", actor=writer)

@@ -2,7 +2,8 @@
 
 Each fake appends its argv (one JSON line) to $FAKE_LOG and answers by $FAKE_<ENGINE>:
 ok, limit, missing (session not found), slow (sleeps), garbage. A file $FAKE_<ENGINE>_SCRIPT
-may hold one mode per line, consumed in order (a turn per line).
+may hold one mode per line, consumed in order (a turn per line). $FAKE_HOOK names a Python
+file run first: a test's stand-in for what the agent does through the MCP tools.
 """
 
 from __future__ import annotations
@@ -61,6 +62,9 @@ from pathlib import Path
 with open(os.environ["FAKE_LOG"], "a") as log:
     log.write(json.dumps({"engine": ENGINE, "argv": sys.argv[1:], "pid": os.getpid(),
                           "env": {k: v for k, v in os.environ.items() if k.startswith("SCHUB_LAB")}}) + "\n")
+
+if os.environ.get("FAKE_HOOK") and Path(os.environ["FAKE_HOOK"]).exists():
+    exec(Path(os.environ["FAKE_HOOK"]).read_text())  # a test's stand-in for what the agent does through MCP
 
 def next_mode(name):
     script = os.environ.get(f"FAKE_{name}_SCRIPT")

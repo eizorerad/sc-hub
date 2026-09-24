@@ -21,6 +21,9 @@ from .jobs import FINAL_JOB_STATES, lookup
 from .journal import Journal, JournalError, parse_ref
 from .models import Actor, CellEntry, CellRequest, Checkpoint, CheckSpec, NoteEntry, WaitingJob
 from .numbers import unresolved
+from .report_build import ReportError, build as build_report
+from .report_spec import ReportAnswer, ReportSpec
+from .report_store import ReportStore
 from .results import CellResult, cell_result, waiting_result
 from .slots import slot_usage
 from .views import JournalView, ProjectCard, journal_view, project_cards
@@ -88,6 +91,8 @@ class BenchService:
             raise BenchError(f"project '{project}' has a STOP file; the student removes it to continue")
         if self.workbench.stopped():
             raise BenchError("the bench is stopped (bench/STOP exists); the student removes it to continue")
+        if actor is not None and actor.role == "writer" and code.lstrip().startswith("%%slurm"):
+            raise BenchError("the report writer does not send Slurm jobs: the report shows what the study already ran")
         request = self._request(journal, project, code, why, expect, checks, setup, data_scope, actor)
         self.inbox.submit(request)
         try:
@@ -215,6 +220,9 @@ class BenchService:
     def handoff(self, project: str, text: str, disposition: str, next_action: str = "",
                 waiting_jobs: Sequence[str] = (), actor: Actor | None = None) -> Checkpoint:
         journal = self.journal(project)
+        if actor is not None and actor.role == "writer":
+            raise BenchError("the report writer does not change the hand-over: the research stays complete. Publish "
+                             "the report with report(project, spec, publish=true)")
         store = CheckpointStore(self.projects.path_of(project), now=self.now)
         try:
             check_handoff(text)  # both or neither: a bad text must not leave a new checkpoint behind
@@ -226,6 +234,21 @@ class BenchService:
         first = text.strip().splitlines()[0][:300]
         journal.add_note("handoff", f"{disposition}: {first}", actor=actor)
         return checkpoint
+
+    def report(self, project: str, spec: ReportSpec | None = None, publish: bool = False,
+               actor: Actor | None = None) -> ReportAnswer:
+        """Build a report from `spec` (a draft, or published), or list the published ones."""
+        journal = self.journal(project)
+        store = ReportStore(self.projects.path_of(project))
+        if spec is None:
+            return ReportAnswer(status="listed", reports=tuple(store.published()),
+                                hint="Write one with report(project, spec); skills('report_writing') explains how.")
+        question = self.projects.meta(project).question
+        try:
+            built = build_report(journal, project, question, spec, actor or Actor(), self.now())
+        except ReportError as exc:
+            raise BenchError(f"the report was not built: {exc}") from exc
+        return (store.publish if publish else store.draft)(built, spec, actor or Actor(), self.now())
 
     # ---- the workbench ------------------------------------------------------------------
 

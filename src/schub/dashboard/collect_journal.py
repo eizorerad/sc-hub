@@ -15,6 +15,7 @@ from ..bench.fsio import read_json
 from ..bench.inbox import Inbox, slug
 from ..bench.journal import Journal
 from ..bench.models import CellEntry, NoteEntry
+from ..bench.report_store import ReportStore
 from ..config import Settings
 from ..overview import Overview
 from ..projects import ProjectError, ProjectStore
@@ -38,6 +39,7 @@ class JournalCard(Frozen):
     failed_checks: tuple[str, ...] = ()  # checks whose latest result fails (a later pass resolves one)
     notebook: str = ""  # the rendered notebook inside the view folder, without extension (.js, .ipynb)
     figures: tuple[tuple[str, str], ...] = ()  # (source file, path inside the view)
+    reports: tuple[dict[str, Any], ...] = ()  # published reports, oldest first, with their paths in the view
 
 
 class BenchPanel(Frozen):
@@ -97,13 +99,28 @@ def journal_cards(settings: Settings) -> tuple[JournalCard, ...]:
                         for e in entries if isinstance(e, CellEntry) for o in e.outputs if o.image)
         failed = _failing_checks(data)
         ids = journal.folder / "ids"
+        numbers = [int(p.name[1:]) for p in ids.iterdir() if p.name[:1] == "c" and p.name[1:].isdigit()] \
+            if ids.is_dir() else []
         cards.append(JournalCard(
             project=name, question=meta.question, disposition=checkpoint.read().disposition,
             next_action=checkpoint.read().next_action, handoff=checkpoint.read_handoff(), entries=data,
-            cells=sum(1 for p in ids.iterdir() if p.name.startswith("c")) if ids.is_dir() else 0,
-            failed_checks=failed, notebook=f"jnb/{slug(name)}", figures=figures,
+            cells=len(numbers), failed_checks=failed, notebook=f"jnb/{slug(name)}", figures=figures,
+            reports=_reports(project_dir, name, numbers),
         ))
     return tuple(cards)
+
+
+def _reports(project_dir: Any, name: str, numbers: list[int]) -> tuple[dict[str, Any], ...]:
+    """Each published report, its files and where the view keeps them, and how many cells came after it."""
+    found = []
+    for info in ReportStore(project_dir).published():
+        covered = int(info.covers[1:]) if info.covers[1:].isdigit() else 0
+        view = f"jrep/{slug(name)}/{info.folder.removeprefix('reports/')}"
+        found.append({"title": info.title, "built": info.built, "warnings": info.warnings, "folder": info.folder,
+                      "newer": sum(1 for n in numbers if n > covered), "view": view,
+                      "notebook": str(project_dir / info.notebook),
+                      "html": str(project_dir / info.html) if info.html else ""})
+    return tuple(found)
 
 
 def _failing_checks(data: tuple[dict, ...]) -> tuple[str, ...]:

@@ -103,3 +103,29 @@ def test_the_brick_era_tabs_are_gone_even_with_the_legacy_flag(settings: Setting
     page = build(dataclasses.replace(settings, legacy_tools=True), cluster)
     assert re.findall(r'data-tab="([a-z]+)"', page) == ["journal"]
     assert "No bench work yet" in page
+
+
+def test_a_published_report_is_one_line_on_the_journal_page(settings: Settings, cluster: FakeCluster) -> None:
+    from schub.bench.report_spec import Block, ReportSpec
+    from schub.bench.service import BenchService
+
+    journal = bench_project(settings)
+    bench = BenchService(settings, Slurm(cluster))
+    spec = ReportSpec(title="IFN answer", summary="24673 cells.", blocks=(Block(cell="c0001", show="outputs"),))
+    published = bench.report("ifn", spec, publish=True)
+    cid = journal.allocate("c")
+    journal.write_cell(CellEntry(ref=f"ifn#{cid}", project="ifn", cid=cid, why="later", expect="x", code="x",
+                                 created=journal.now(), status="ok"))
+    page = build(settings, cluster)
+    section = page[page.index('data-journal="ifn"'):]
+    assert 'Report: <a href="jrep/ifn/01-ifn-answer/report.html"' in section and "1 newer cell since" in section
+    assert 'data-jnb="report:ifn:reports/01-ifn-answer"' in section and 'data-name="ifn.01-ifn-answer"' in section
+    folder = settings.view_dir / "jrep" / "ifn" / "01-ifn-answer"
+    assert (folder / "report.html").read_bytes() == (settings.projects_dir / "ifn" / published.html).read_bytes()
+    script = (folder / "report.js").read_text()
+    assert script.startswith("window.SCHUB_JNB=") and '"report:ifn:reports/01-ifn-answer"' in script
+    stale = settings.view_dir / "jrep" / "gone" / "old.html"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("x")
+    build(settings, cluster)
+    assert not stale.exists() and (folder / "report.js").exists()

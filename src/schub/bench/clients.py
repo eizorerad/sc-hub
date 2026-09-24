@@ -63,4 +63,4 @@ def actor_for(client_name: str, client_version: str, env: Mapping[str, str] | No
         return Actor(kind="chat", client=client, client_version=version)
     return Actor(kind="lab_agent", client=client, client_version=version, engine=engine[:200],
                  model=env.get("SCHUB_LAB_AGENT_MODEL", "")[:200], effort=env.get("SCHUB_LAB_AGENT_EFFORT", "")[:200],
-                 session_id=env.get("SCHUB_LAB_AGENT_SESSION", "")[:200])
+                 session_id=env.get("SCHUB_LAB_AGENT_SESSION", "")[:200], role=env.get("SCHUB_LAB_AGENT_ROLE", "")[:200])

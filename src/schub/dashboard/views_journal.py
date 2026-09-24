@@ -135,6 +135,27 @@ def _mistakes(card: JournalCard) -> str:
     return f'<ul class="small">{"".join(items)}</ul>' if items else '<p class="muted small">Nothing went wrong yet.</p>'
 
 
+def _report_line(card: JournalCard) -> str:
+    """The newest published report: its page, its notebook, and whether the journal went on since."""
+    if not card.reports:
+        return ""
+    latest = card.reports[-1]
+    title = esc(latest["title"])
+    page = (f'<a href="{esc(latest["view"])}/report.html" target="_blank" rel="noopener">{title}</a>'
+            if latest["html"] else f"<span>{title}</span>")
+    name = f'{card.project.replace("/", ".")}.{latest["folder"].removeprefix("reports/")}'
+    notebook = (f'<button type="button" class="link" data-jnb="{esc(report_key(card.project, latest["folder"]))}" '
+                f'data-src="{esc(latest["view"])}/report.js" data-name="{esc(name)}">notebook</button>')
+    newer = latest["newer"]
+    after = f' <span class="muted">· {newer} newer cell{"" if newer == 1 else "s"} since</span>' if newer else ""
+    earlier = f' <span class="muted">· {len(card.reports) - 1} earlier</span>' if len(card.reports) > 1 else ""
+    return f'<p class="jreport small">Report: {page} · {notebook}{after}{earlier}</p>'
+
+
+def report_key(project: str, folder: str) -> str:
+    return f"report:{project}:{folder}"
+
+
 def _project(card: JournalCard) -> str:
     entries = "".join(_cell_card(e) if e["kind"] == "cell" else _note_card(e) for e in reversed(card.entries))
     handoff = (f'<details class="fold handoff"><summary>Hand-over</summary><pre class="out">{esc(card.handoff)}</pre>'
@@ -148,7 +169,7 @@ def _project(card: JournalCard) -> str:
     return (
         f'<section class="journal" data-journal="{esc(card.project)}" hidden>'
         f'<div class="jtitle"><h2>{esc(card.project)}</h2>{more}</div>'
-        f'<p class="question">{esc(card.question)}</p>'
+        f'<p class="question">{esc(card.question)}</p>{_report_line(card)}'
         f'<div class="jstate">{pill("RUNNING" if card.disposition == "active" else "PENDING", card.disposition)}{nxt}</div>'
         f'{handoff}<div class="jcards">{entries or "<p class=empty>No cells yet.</p>"}</div></section>'
     )
@@ -177,7 +198,7 @@ JOURNAL_SCRIPT = r"""
       if (!data) { button.textContent = 'Notebook unavailable'; return; }
       const blob = new Blob([JSON.stringify(data, null, 1)], {type: 'application/x-ipynb+json'});
       const url = URL.createObjectURL(blob), link = document.createElement('a');
-      link.href = url; link.download = name.replace(/\//g, '.') + '.ipynb';
+      link.href = url; link.download = (button.dataset.name || name.replace(/\//g, '.')) + '.ipynb';
       document.body.appendChild(link); link.click(); link.remove();
       setTimeout(() => URL.revokeObjectURL(url), 10000);
     };

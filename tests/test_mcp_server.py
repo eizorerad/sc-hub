@@ -48,8 +48,8 @@ EXPECTED_TOOLS = {
 }
 
 
-BENCH_TOOLS = {"projects", "create_project", "run", "wait", "journal", "note", "handoff", "datasets", "files",
-               "skills", "cluster", "stop"}
+BENCH_TOOLS = {"projects", "create_project", "run", "wait", "journal", "note", "handoff", "report", "datasets",
+               "files", "skills", "cluster", "stop"}
 
 
 @pytest.fixture

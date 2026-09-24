@@ -45,6 +45,7 @@ def test_each_run_is_a_goal_with_its_engine(settings: Settings, cluster: FakeClu
         config = Goal(settings, run["project"]).config()
         assert config.engine == run["engine"] and config.max_turns == 3 and "hand over" in config.objective
         assert "at most 20 GPU-minutes and 5 GB of downloads" in config.objective
+        assert config.report is False  # a report would add turns the other column never had
         assert len(run["project"]) <= 41
     assert len(runs_path(settings).read_text().splitlines()) == 2
     with pytest.raises(EvalError):
@@ -67,7 +68,9 @@ def test_a_run_is_scored_from_its_journal(settings: Settings, cluster: FakeClust
             check_results=(CheckResult(name="perturbation", status=checks, message="m"),)))
     (folder / "work" / "table.csv").write_text("a\n1\n")
     Goal(settings, project).event("turn_finished", engine="claude", status="ok", cost_usd=0.5)
+    Goal(settings, project).event("turn_finished", engine="claude", status="ok", cost_usd=2.0, role="writer")
     first = score(settings, project, request)
+    assert first["report_turns"] == 1 and first["turns"] == 1 and first["cost_usd"] == 0.5
     assert not first["complete"] and first["missing"] == ["notes"] and first["checks_failing"] == []
     journal.add_note("finding", "done", because=[f"{project}#c0002"])
     journal.add_note("incident", "The kernel stopped: nothing ran for 10 minutes, so the workbench stopped.")

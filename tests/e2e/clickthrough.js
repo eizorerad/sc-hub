@@ -180,6 +180,17 @@ async function main() {
     assert(text.includes('genome-wide fits in 90 GB') && text.includes('a failing cell'), text.slice(0, 200));
   });
   await check('the notebook downloads', () => download('.journal:not([hidden]) .jtitle details[open] [data-jnb]'));
+  await check('the report opens without code and its notebook downloads', async () => {
+    const href = await page.getAttribute('.journal:not([hidden]) .jreport a', 'href');
+    assert(href && href.endsWith('/report.html'), `link ${href}`);
+    const report = await page.context().newPage();
+    await report.goto(new URL(href, page.url()).href);
+    const text = await report.textContent('body');
+    await report.close();
+    assert(text.includes('good enough to model') && text.includes('Notes on this report'), text.slice(0, 120));
+    assert(!text.includes("print('x')"), 'the report page shows code');
+    return download('.journal:not([hidden]) .jreport [data-jnb]');
+  });
   await check('the engine filter shows only the lab agent\'s entries, then all', async () => {
     const cards = () => page.$$eval('.journal:not([hidden]) .jcard', cs => cs.filter(c => !c.hidden).length);
     const all = await cards();

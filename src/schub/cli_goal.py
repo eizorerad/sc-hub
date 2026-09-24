@@ -3,9 +3,10 @@
     schub goal-start <project> --goal goal.md     schub engine-policy show
     schub goal-stop <project>                     schub engine-policy set mixed|codex-only|claude-only
     schub goal-status <project>                       [--primary claude] [--claude-model M] [--reason TEXT]
+    schub goal-report <project>
     schub engine-probe                            schub engine-policy grant <project> claude [codex]
                                                   schub engine-policy revoke <project>
-    schub eval-run evals/requests.yaml [--engines claude,codex] [--only id,...]
+    schub eval-run evals/requests.yaml [--engines claude,codex] [--only id,...] [--report]
     schub eval-score evals/requests.yaml [--markdown]
 """
 
@@ -37,6 +38,7 @@ def add_eval_parsers(sub: Any) -> None:
     run.add_argument("--max-turns", type=int, default=None, help="cap each request's turn budget")
     run.add_argument("--gpu-minutes", type=int, default=30, help="GPU-minutes a request may use in total")
     run.add_argument("--download-gb", type=int, default=5, help="GB a request may download in total")
+    run.add_argument("--report", action="store_true", help="let each finished request write its report (more turns)")
     score = sub.add_parser("eval-score", help="score the latest run of each request x engine")
     score.add_argument("requests")
     score.add_argument("--markdown", action="store_true")
@@ -49,6 +51,7 @@ def add_goal_parsers(sub: Any) -> None:
     start.add_argument("--goal", required=True, help="goal.md text or its path (front matter: engine, max_turns, ...)")
     sub.add_parser("goal-stop", help="stop a project's lab agent (the next slice ends the chain)").add_argument("project")
     sub.add_parser("goal-status", help="a lab agent's goal, turns, sessions, slices and events").add_argument("project")
+    sub.add_parser("goal-report", help="a writer turn for a complete project: its report notebook").add_argument("project")
     sub.add_parser("engine-probe", help="ask each allowed engine to reply OK (the watchdog does this)")
     policy = sub.add_parser("engine-policy", help="the owner's engine policy for lab agents")
     action = policy.add_subparsers(dest="policy_action", required=True)
@@ -85,7 +88,7 @@ def goal_handlers(hub: Hub, args: argparse.Namespace) -> dict[str, Callable[[], 
         chosen = [r for r in requests if not args.only or r.id in args.only.split(",")]
         return launch(hub.settings, hub.slurm, chosen, [e for e in args.engines.split(",") if e],
                       slice_minutes=args.slice_minutes, max_turns=args.max_turns, gpu_minutes=args.gpu_minutes,
-                      download_gb=args.download_gb)
+                      download_gb=args.download_gb, report=args.report)
 
     def eval_score() -> Any:
         rows = matrix(hub.settings, load_requests(Path(args.requests)))
@@ -97,6 +100,7 @@ def goal_handlers(hub: Hub, args: argparse.Namespace) -> dict[str, Callable[[], 
         "goal-start": lambda: {"job_id": goal_agent.start(hub.settings, hub.slurm, args.project, read_arg(args.goal))},
         "goal-stop": lambda: goal_agent.stop(hub.settings, args.project),
         "goal-status": lambda: goal_agent.status(hub.settings, hub.slurm, args.project),
+        "goal-report": lambda: {"job_id": goal_agent.request_report(hub.settings, hub.slurm, args.project)},
         "engine-probe": lambda: probe(hub.settings),
         "engine-policy": policy_action,
     }

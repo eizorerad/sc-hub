@@ -1,4 +1,4 @@
-"""MCP tools of the bench: a dozen general tools instead of forty brick-specific ones."""
+"""MCP tools of the bench: thirteen general tools instead of forty brick-specific ones."""
 
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ from .bench.engines.probe import summary as engine_summary
 from .bench.files import FileView, view
 from .bench.models import Actor, Checkpoint, CheckSpec, NoteEntry
 from .bench.results import CellResult, trimmed
+from .bench.report_spec import ReportAnswer, ReportSpec
 from .bench.service import BenchService
 from .bench.skills import SkillInfo, get_skill, list_skills
 from .bench.views import JournalView, ProjectCard
@@ -233,6 +234,18 @@ def _register_journal(mcp: MCPServer, bench: BenchService, call: Calls) -> None:
         actor, _ = _client(ctx)
         return call("handoff", {"project": project, "disposition": disposition},
                     lambda: bench.handoff(project, text, disposition, next_action, waiting_jobs or [], actor))
+
+    @mcp.tool(annotations=WRITE)
+    def report(project: str, spec: ReportSpec | None = None, publish: bool = False,
+               ctx: Context = None) -> ReportAnswer:  # type: ignore[assignment]
+        """The project's report: a notebook that tells the study to a reader (skills('report_writing')). `spec`:
+        title, summary, blocks — {"text": markdown}, {"cell": "c0012", "show": "all|outputs|code"},
+        {"figure": "c0015"}, {"note": "n0007"} — and left_out ({ref: why it is not shown}). Code, outputs and
+        figures come verbatim from the journal. Without `publish`: a draft (reports/draft) and its warnings,
+        which are advice; with it: kept as reports/NN-<title>. Without `spec`: the published reports."""
+        actor, _ = _client(ctx)
+        return call("report", {"project": project, "publish": publish, "blocks": len(spec.blocks) if spec else 0},
+                    lambda: bench.report(project, spec, publish, actor))
 
 
 

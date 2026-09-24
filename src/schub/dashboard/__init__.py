@@ -125,10 +125,33 @@ def _journal_files(settings: Any, view: Path, snapshot: Any) -> None:
             _write(journal.folder / "notebook.ipynb", text)
         except OSError:
             pass  # the view copy is what the page links to
-    root = view / "jfig"
-    for path in root.rglob("*") if root.is_dir() else []:
-        if path.is_file() and path not in used:
-            path.unlink(missing_ok=True)
+        used |= _report_files(view, card)
+    for root in (view / "jfig", view / "jrep"):
+        for path in root.rglob("*") if root.is_dir() else []:
+            if path.is_file() and path not in used:
+                path.unlink(missing_ok=True)
+
+
+def _report_files(view: Path, card: Any) -> set[Path]:
+    """Each published report's page, and its notebook as a script (scripts load on file:// pages, fetch does not)."""
+    from .views_journal import report_key
+
+    used: set[Path] = set()
+    for report in card.reports[-1:]:  # the page links only the newest
+        folder = view / report["view"]
+        try:
+            if report["html"]:
+                _copy(Path(report["html"]), folder / "report.html")
+                used.add(folder / "report.html")
+            # Parsed and dumped again: the file is data from the project folder, never script.
+            notebook = json.dumps(json.loads(Path(report["notebook"]).read_text()))
+            key = report_key(card.project, report["folder"])
+            _write(folder / "report.js", f"window.SCHUB_JNB=window.SCHUB_JNB||{{}};"
+                                         f"window.SCHUB_JNB[{json.dumps(key)}]={notebook};\n")
+            used.add(folder / "report.js")
+        except (OSError, ValueError):
+            continue  # the page links only what was copied
+    return used
 
 
 def build_dashboard(hub: Any, out: Path | None = None) -> DashboardInfo:

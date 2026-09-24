@@ -13,7 +13,8 @@ only, on a compute node). Each cell becomes an entry in the project's journal
 with its outputs, figures, the files it wrote, its downloads, the Slurm jobs it
 sent and the checks it passed or failed. The journal is the source of truth: the
 dashboard's Journal tab shows it, a new chat starts from its hand-over, and a
-notebook of the project can be downloaded from it.
+notebook of the project can be downloaded from it. Once the study is done, a
+**report** tells it to a reader: a notebook assembled from the journal (below).
 
 ```
 chat (Claude Code / Codex / Claude Desktop)
@@ -23,7 +24,7 @@ chat (Claude Code / Codex / Claude Desktop)
 ```
 
 MCP tools: `projects`, `create_project`, `run`, `wait`, `journal`, `note`,
-`handoff`, `datasets`, `files`, `skills`, `cluster`, `stop`. Each answer comes
+`handoff`, `report`, `datasets`, `files`, `skills`, `cluster`, `stop`. Each answer comes
 back within the client's time limit (35 s for Claude clients, 45 s for Codex);
 a longer cell answers "running" and `wait(ref)` picks it up, never re-running it.
 
@@ -48,7 +49,19 @@ the cells they cite; untraced ones are flagged.
 
 **Skills** (`skills()`): resume, rigor, mbzuai_slurm, slurm_jobs, checks,
 fetching_data, dataset_sources, perturbseq, twins, paper_reproduction,
-bricks_library.
+report_writing, bricks_library.
+
+**Reports.** The journal is the protocol (every step, dead ends included); a
+report is the story for a student or a professor, like the VCC2026 education
+notebooks. The author writes a spec: title, summary and blocks (`{"text"}`,
+`{"cell": "c0012", "show": "outputs"}`, `{"figure": "c0015"}`, `{"note": "n0007"}`).
+sc-hub assembles the notebook with code, recorded outputs, figures and notes taken
+verbatim from the journal, adds where the data came from and an appendix of the
+findings, verdicts, decisions and mistakes the text leaves out, and writes an HTML
+copy without code. Checks are lenient: only a block pointing at nothing refuses the
+report; untraced numbers, failed checks, twin data and files overwritten later are
+warnings the reader sees at the end. `report(project, spec)` builds
+`reports/draft/`, `publish=true` keeps `reports/NN-<title>/` unchanged for good.
 
 **The lab agent.** A standing goal (`goal/goal.md`) can be worked on without a
 chat open: `schub goal-start <project> --goal goal.md` queues Slurm slices; each
@@ -59,6 +72,11 @@ are journal entries too, marked with the engine). The owner's engine policy
 pinned models) decides which engine may run; a usage limit pauses that engine
 until its reset and, in `mixed`, the other takes the turn, starting from the
 journal's hand-over. The watchdog re-arms a broken chain and probes the engines.
+When a turn hands the work over as complete, a writer turn (a fresh session that
+reads only the journal and cannot reopen the work) publishes the report; after two
+turns without one the goal ends anyway and a note says so. `report: no` in
+goal.md turns this off; `schub goal-report <project>` writes one for a project
+finished earlier or in chat.
 
 **Breadth evaluation.** `evals/requests.yaml` holds 18 requests (the two
 acceptance requests, VCC-style perturbation work, course-style tasks);
@@ -151,6 +169,7 @@ exist as a CLI on the cluster:
 | Install Cell Ranger (10x license; link from the 10x downloads page) | `bash scripts/install_cellranger.sh '<link>' human` on the cluster |
 | Choose the lab agents' engines (owner only) | `schub engine-policy set mixed --primary claude`, `... grant <project> codex`, `schub engine-probe` |
 | Give a project a lab agent | `schub goal-start <project> --goal goal.md`; `schub goal-status` / `goal-stop` |
+| Write the report of a finished project | `schub goal-report <project>` (a writer turn in a Slurm slice) |
 | Run the breadth evaluation | `schub eval-run evals/requests.yaml --engines claude,codex`, later `schub eval-score evals/requests.yaml --markdown` |
 | Run the tests | `.venv/bin/python -m pytest --cov=schub`, then `tests/e2e/run.sh` for the dashboard |
 
@@ -233,6 +252,8 @@ projects/<project>/
   journal/handoff.md      where the work stands (at most 120 lines); checkpoint.json
   jobs/<cell>-<key>/      %%slurm snapshots, logs and results
   goal/                   a lab agent's goal.md and state
+  reports/draft/          the latest report draft (replaced by each build)
+  reports/NN-<title>/     a published report: report.ipynb, report.html, spec.json, report.json
 ```
 
 Brick-era projects also have:
@@ -257,7 +278,8 @@ branches share their common prefix: `latent-10` (from `main` with
 `index.html` plus small images. It opens on the Journal: each project's cells,
 newest first, with why, expected, the result and its checks; code, files and
 logs fold away; decisions, mistakes, the engine filter and the notebook download
-sit behind the project's '⋯'. Alerts say when the workbench cannot start, both
+sit behind the project's '⋯'; a published report is one line under the question
+(its page, its notebook, and how many cells came after it). Alerts say when the workbench cannot start, both
 job slots are taken, a check failed or a quota is nearly full. Runs of brick
 pipelines, the library and the cluster overview are in the menu; open a run for
 its step timeline, each step's params, code, job, log tail, figures, top DE genes

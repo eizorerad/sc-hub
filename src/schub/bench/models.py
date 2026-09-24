@@ -34,6 +34,7 @@ class Actor(Frozen):
     model: str = Short
     effort: str = Short
     session_id: str = Short
+    role: str = Short  # the lab agent's role in this turn: "" (research) or "writer" (the report)
 
 
 class CheckSpec(Frozen):

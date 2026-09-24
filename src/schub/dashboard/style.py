@@ -189,6 +189,7 @@ JOURNAL_CSS = """
 .journal-tree button.active{background:var(--text);color:var(--card);border-color:var(--text)}
 .jtitle{display:flex;align-items:center;gap:8px}.jtitle h2{margin:6px 0}.question{margin:0 0 6px;color:var(--muted)}
 .jstate{display:flex;gap:10px;align-items:center;margin:4px 0 12px;font-size:13px}
+.jreport{margin:0 0 8px}
 .jcards{display:flex;flex-direction:column;gap:10px}
 .jcard{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 14px;box-shadow:var(--shadow)}
 .jhead{display:flex;align-items:center;gap:8px}.jhead .why{font-weight:500}.expect{margin:2px 0 6px}
