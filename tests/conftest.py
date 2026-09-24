@@ -103,6 +103,7 @@ class FakeCluster:
         self.recently_finished: dict[str, str] = {}
         self.calls: list[list[str]] = []
         self.comments: dict[str, str] = {}
+        self.updates: list[dict[str, str]] = []
 
     def _ok(self, args: Sequence[str], out: str = "") -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(list(args), 0, out, "")
@@ -149,6 +150,10 @@ class FakeCluster:
         return subprocess.CompletedProcess(args, 0 if rows else 1, "".join(rows), "")
 
     def _scontrol(self, args: list[str]) -> subprocess.CompletedProcess[str]:
+        if args[1] == "update":
+            fields = dict(a.split("=", 1) for a in args[2:])
+            self.updates.append(fields)
+            return self._ok(args)
         job_id = args[-1]
         if job_id in self.recently_finished:
             return self._ok(args, f"JobId={job_id} JobName=x JobState={self.recently_finished[job_id]} Reason=None\n")

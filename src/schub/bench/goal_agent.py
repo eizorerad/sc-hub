@@ -133,6 +133,7 @@ class Slice:
     def _locked(self, config: GoalConfig, checkpoint) -> str:
         goal = self.goal
         successor, created = self.arm_successor(config)
+        self.successor = successor
         goal.event("successor", job=self.job, successor=successor, created=created)
         if not created:
             return "deferred"  # another slice of this goal is already queued: it does the work
@@ -162,8 +163,9 @@ class Slice:
             goal.event("weekly_ceiling", job=self.job, ceiling=policy.weekly_turns)
             return "weekly_ceiling"
         if not engines:
-            paused = {e: self.cooldown.until(e) for e in policy.allowed(self.project)}
+            paused = {e: self._paused_until(e, policy) for e in policy.allowed(self.project)}
             goal.event("all_paused", job=self.job, until={k: str(v) for k, v in paused.items()})
+            self._sleep_until(min((v for v in paused.values() if v is not None), default=None))
             return "paused"
         status = "usage_limited"
         for index, engine in enumerate(engines[:2]):  # mixed: when one engine hits its limit, the other goes on
@@ -230,6 +232,26 @@ class Slice:
                                 ceiling=policy.claude_weekly_ceiling, resets=full[1].isoformat(timespec="minutes"))
                 return False
         return True
+
+    def _paused_until(self, engine: str, policy) -> datetime | None:
+        until = self.cooldown.until(engine)
+        full = window.above_ceiling(self.settings.bench_dir, policy.claude_weekly_ceiling) if engine == "claude" else None
+        return max((d for d in (until, full[1] if full else None) if d is not None), default=None)
+
+    def _sleep_until(self, when: datetime | None) -> None:
+        """Every engine is paused: the armed successor starts at the earliest reset, not every few minutes
+        on the owner's gpu budget."""
+        successor = getattr(self, "successor", None)
+        if when is None or not successor:
+            return
+        minutes = int((when - datetime.now(timezone.utc)).total_seconds() // 60) + 1
+        if minutes <= 1:
+            return
+        try:
+            self.slurm.delay(successor, minutes)
+            self.goal.event("successor_delayed", job=self.job, successor=successor, minutes=minutes)
+        except SlurmError as exc:
+            self.goal.event("successor_delay_failed", job=self.job, error=str(exc)[:300])
 
     def remaining_s(self, config: GoalConfig) -> int:
         """What is left of this slice's time for a turn (one deadline per slice, not per engine)."""

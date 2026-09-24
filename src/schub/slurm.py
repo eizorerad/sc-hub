@@ -181,6 +181,12 @@ class Slurm:
             return {}  # accounting database unreachable from this node
         return {row[0]: row[1].split()[0] for row in _rows(out) if len(row) >= 2 and row[1]}
 
+    def delay(self, job_id: str, minutes: int) -> None:
+        """A pending job starts no earlier than `minutes` from now (scontrol update StartTime)."""
+        if not str(job_id).isdigit() or minutes < 1:
+            raise SlurmError(f"cannot delay job {job_id!r} by {minutes} minutes")
+        self._checked(["scontrol", "update", f"JobId={job_id}", f"StartTime=now+{int(minutes)}minutes"])
+
     def cancel(self, job_ids: Sequence[str]) -> None:
         if job_ids:
             self._checked(["scancel", *job_ids])

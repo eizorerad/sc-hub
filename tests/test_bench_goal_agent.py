@@ -284,3 +284,16 @@ def test_claude_stands_down_above_the_owners_weekly_ceiling(lab: Settings, clust
     assert result == "ok" and engine_calls()[-1]["engine"] == "codex"  # mixed: the other engine carries the work
     events = [e["event"] for e in Goal(lab, "p").events(100)]
     assert "claude_above_weekly_ceiling" in events
+
+
+def test_when_every_engine_is_paused_the_next_slice_waits_for_the_reset(lab: Settings, cluster: FakeCluster) -> None:
+    """Paused engines must not wake a slice every few minutes on the owner's gpu budget until the reset."""
+    cooldown = Cooldown(lab.bench_dir / "engine-cooldown.json")
+    cooldown.mark("claude", "usage limit reached")  # five hours
+    cooldown.mark("codex", "You hit your spend cap")
+    first, result = start_and_run(lab, cluster)
+    assert result == "paused" and not engine_calls()
+    [update] = cluster.updates
+    successor = successor_of(cluster, first)
+    minutes = int(update["StartTime"].removeprefix("now+").removesuffix("minutes"))
+    assert update["JobId"] == successor and 4 * 60 < minutes <= 5 * 60 + 2
