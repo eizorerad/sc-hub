@@ -212,7 +212,7 @@ class Assembler:
         about = (f"*This report was assembled by sc-hub from the journal of **{self.project}** up to {upto} "
                  f"({when[:10]}). Its code cells show what ran on the cluster, with the outputs recorded then; "
                  "they are not re-run here. Every step, dead ends included, is in the project's protocol notebook "
-                 "(the dashboard's Journal ⋯ Download as a notebook).*")
+                 "(the dashboard's Journal ⋯ Download the protocol notebook).*")
         return [_markdown(_id(self.project, "title"), top), _markdown(_id(self.project, "about"), about)]
 
     def appendix(self, warnings: Sequence[str], actor: Actor, when: str, covers: str) -> list[dict[str, Any]]:

@@ -145,7 +145,7 @@ def _report_line(card: JournalCard) -> str:
             if latest["html"] else f"<span>{title}</span>")
     name = f'{card.project.replace("/", ".")}.{latest["folder"].removeprefix("reports/")}'
     notebook = (f'<button type="button" class="link" data-jnb="{esc(report_key(card.project, latest["folder"]))}" '
-                f'data-src="{esc(latest["view"])}/report.js" data-name="{esc(name)}">notebook</button>')
+                f'data-src="{esc(latest["view"])}/report.js" data-name="{esc(name)}">download notebook</button>')
     newer = latest["newer"]
     after = f' <span class="muted">· {newer} newer cell{"" if newer == 1 else "s"} since</span>' if newer else ""
     earlier = f' <span class="muted">· {len(card.reports) - 1} earlier</span>' if len(card.reports) > 1 else ""
@@ -164,7 +164,7 @@ def _project(card: JournalCard) -> str:
     more = menu(f'{_engine_filter(card)}<p class="pop-label">Decisions</p>{_decisions(card)}'
                 f'<p class="pop-label">What went wrong</p>'
                 f'{_mistakes(card)}<button type="button" data-jnb="{esc(card.project)}" '
-                f'data-src="{esc(card.notebook)}.js">Download as a notebook</button>',
+                f'data-src="{esc(card.notebook)}.js">Download the protocol notebook (every step)</button>',
                 "Decisions, mistakes, notebook", end=False)  # the ⋯ sits left, after the title: open rightwards
     return (
         f'<section class="journal" data-journal="{esc(card.project)}" hidden>'
