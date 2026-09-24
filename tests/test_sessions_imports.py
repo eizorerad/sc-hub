@@ -200,8 +200,8 @@ def test_sessions_and_imports_do_not_count_as_pipelines(hub, settings, cluster):
         plan = hub.plan(str(library_datasets(settings) / "one.h5ad"), [{"brick": "qc_filter", "params": {"min_genes": n}}])
         hub.submit(plan.plan_id)
     # The cap counts only the pipelines: the next plan waits in sc-hub's queue.
-    extra = hub.submit(hub.plan(str(library_datasets(settings) / "one.h5ad"), [{"brick": "qc_filter", "params": {"min_genes": 99}}]).plan_id)
-    assert extra.status == "queued" and extra.position == 1
+    with pytest.raises(HubError, match="already active"):  # at the cap: refused with the reason, nothing queued
+        hub.submit(hub.plan(str(library_datasets(settings) / "one.h5ad"), [{"brick": "qc_filter", "params": {"min_genes": 99}}]).plan_id)
 
 
 def test_the_token_never_reaches_tool_output(hub, settings, cluster):

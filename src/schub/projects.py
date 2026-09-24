@@ -67,7 +67,7 @@ class BranchSpec(Frozen):
     saved: str = ""
     reason: str = ""  # why this revision (or fork) was made
     forked_from: str | None = None  # "<branch>@r<N>#<step>" for forks
-    # A member of a sweep: one parameter of one step over several values (schub.sweeps).
+    # Written by brick-era sweeps (removed); kept so their branch files still read.
     sweep: str | None = None
     sweep_step: int | None = None
     sweep_param: str | None = None

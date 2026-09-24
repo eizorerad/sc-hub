@@ -10,7 +10,6 @@ import pytest
 
 from schub.dashboard import build_dashboard
 from schub.dashboard.collect import NodeView, RunView, Snapshot, StepView, collect, run_state, step_state
-from schub.dashboard.lineage import pipeline_views, render_lineage, view_id
 from schub.dashboard.steps import StepExtras, duration, slurm_seconds, step_extras
 from schub.dashboard.views_activity import render_queue, status_chip
 from schub.dashboard.views_runs import run_detail
@@ -21,7 +20,6 @@ from schub.slurm import QueueJob, Slurm
 from schub.stepfile import ERROR_FILE, SUCCESS, SUMMARY_FILE
 
 from .conftest import library_datasets, make_adata
-from .dashboard_helpers import graph_of, templates_of, view_files
 
 MAIN = BranchSpec(dataset="kang2018", steps=({"brick": "qc_filter"}, {"brick": "normalize_embed"}))
 
@@ -69,34 +67,23 @@ def test_snapshot_merges_runs_and_planned_branches(hub, two_branches):
     assert qc_node.labels == ("ifn/main", "ifn/res-2") and qc_node.headline == "55 cells kept"
     step = snap.steps_by_key[qc_node.key]
     assert step.extras.seconds == 125 and step.extras.log_tail[-1] == "red" and step.extras.resources["cpus"] == "8"
-    views = {v.view_id: v for v in pipeline_views(snap.nodes, ["ifn"])}
-    assert {"p-ifn", "v-ifn-main", "v-ifn-res-2"} == set(views) and views["v-ifn-main"].group == "ifn"
-    assert views["p-ifn"].kind == "project" and set(views["p-ifn"].keys) >= set(views["v-ifn-main"].keys)
 
 
-def test_page_has_every_view_selectors_and_step_templates(hub, two_branches, settings):
+def test_page_has_the_journal_the_menu_views_and_run_details(hub, two_branches, settings):
     info = build_dashboard(hub)
     page = Path(info.path).read_text()
-    for view in ("projects", "pipelines", "runs", "library", "cluster"):
+    for view in ("journal", "runs", "library", "cluster"):
         assert f'data-view="{view}"' in page
-    tabs = re.findall(r'data-tab="([a-z]+)"', page)
-    assert tabs == ["journal", "projects", "pipelines", "experiments"]  # the bench's journal first, then the brick era
+    assert re.findall(r'data-tab="([a-z]+)"', page) == ["journal"]  # the brick-era tabs are gone
+    for gone in ('data-view="projects"', 'data-view="pipelines"', 'data-view="experiments"', "br/"):
+        assert gone not in page
     menu = page[page.index('class="account"'):page.index('class="tabs"')]  # the sc-hub square holds the rest
     assert all(f'href="#{v}"' in menu for v in ("runs", "library", "runs/sessions", "cluster"))
     assert '<h1 class="view-title">Runs</h1>' in page  # a page opened from the menu says where you are
     assert 'class="account"' in page and 'id="autorefresh"' in page and 'data-ago="' in page
     assert page.index('class="account"') < page.index('class="tabs"')  # the sc-hub square is the menu
-    files = view_files(settings.view_dir)
-    assert 'data-pipe="p-ifn"' in page and 'id="exp-data"' in page  # graphs load on demand, rows are in the page
-    assert {"br/p-ifn.js", "br/v-ifn-main.js", "br/v-ifn-res-2.js"} == set(files)
-    assert 'data-pipe-view="v-ifn-res-2"' in graph_of(files, "v-ifn-res-2")
     assert f'data-run="{two_branches.run_id}"' in page and 'id="run-search"' in page
-    qc_key = two_branches.steps[0].step_key
-    assert f'<template data-node="{qc_key}">' in templates_of(files, "v-ifn-main") and f'data-node="{qc_key}"' not in page
-    assert "55 cells kept" in page and "line 39" in page
-    assert "Is clustering resolution-sensitive?" in page and "st-PLANNED" in graph_of(files, "v-ifn-res-2")
-    assert (settings.view_dir / "img" / qc_key / "umap_leiden_thumb.png").read_bytes() == b"thumb"
-    assert (settings.view_dir / "img" / qc_key / "umap_leiden.png").exists()  # recent run: full size too
+    assert "55 cells kept" in page
     assert info.bytes < 200_000 and "<script>" in page and "http" not in re.sub(r"https?://[a-z./]*sc-hub", "", page.split("<script>")[1])
 
 
@@ -181,28 +168,6 @@ def test_broken_step_files_do_not_break_the_run_page(tmp_path, monkeypatch):
     html = run_detail(run, unreadable)
     assert "Could not read de_all.csv (ValueError)" in html
     assert "Could not show this step (PermissionError)" in html and "1. pseudobulk_de" in html
-
-
-def test_similar_labels_get_distinct_pipeline_ids():
-    nodes = tuple(
-        NodeView(key=k, parent="ds:d", dataset="d", brick="qc_filter", state="COMPLETED", labels=(label,))
-        for k, label in (("a", "Proj_1/main"), ("b", "proj-1/main"), ("c", "PROJ 1/main"))
-    )
-    ids = [v.view_id for v in pipeline_views(nodes)]
-    assert len(set(ids)) == len(ids) == 3 and "v-proj-1-main-2" in ids and "v-proj-1-main-3" in ids
-
-
-def test_branch_points_show_the_differing_param():
-    def node(key, parent, latent):
-        return NodeView(key=key, parent=parent, dataset="d", brick="integrate_scvi", state="COMPLETED",
-                        headline="326 epochs, GPU", params={"batch_key": "donor", "n_latent": latent})
-
-    svg = render_lineage((
-        NodeView(key="q", parent="ds:d", dataset="d", brick="qc_filter", state="COMPLETED", headline="10 cells kept"),
-        node("a", "q", 30), node("b", "q", 10),
-    ))
-    assert "n_latent=30" in svg and "n_latent=10" in svg and "10 cells kept" in svg
-    assert 'data-path="a q ds:d"' in svg and view_id("Proj_1/main") == "v-proj-1-main"
 
 
 def test_jobs_view_shows_progress_and_plain_reasons():
@@ -292,30 +257,6 @@ def test_overview_lists_sessions_with_how_to_open(hub, settings, cluster):
     assert snap.sessions[0].node == "ws-l1-004"
     html = render_sessions(snap)
     assert "JupyterLab" in html and "./schub-lab jupyter" in html and "token" not in html
-
-
-def test_revisions_forks_subprojects_and_merges_are_visible(hub, two_branches, settings, write_h5ad):
-    from schub.dashboard.page import render_site
-    from schub.dashboard.views_projects import render_projects
-
-    write_h5ad(make_adata(n_obs=30, seed=2), directory=library_datasets(settings) / "atlas")
-    hub.revise_branch("ifn", "main", 1, "stricter QC", params={"min_genes": 20})
-    hub.fork_branch("ifn", "main", 2, "coarse", "fewer clusters", params={"leiden_resolution": 0.4})
-    hub.create_project("ifn/atlas", question="Does the atlas agree?")
-    hub.save_branch("ifn/atlas", "joint", BranchSpec(dataset="kang2018", steps=(
-        {"brick": "merge_datasets", "params": {"others": ["atlas"]}}, {"brick": "qc_filter", "params": {"min_genes": 5}})))
-    snap = collect(hub)
-    assert snap.branches["ifn/main"].revision == 2 and snap.branches["ifn/coarse"].forked_from == "main@r2#2"
-    assert snap.branches["ifn/atlas/joint"].datasets == ("kang2018", "atlas")
-    merge = next(n for n in snap.nodes if n.brick == "merge_datasets")
-    assert merge.inputs == ("ds:atlas",) and "ifn/atlas/joint#1" in merge.refs
-    projects = render_projects(snap)
-    assert 'data-project="ifn/atlas"' in projects and "fork</span> of <code>main@r2</code> at step 2" in projects
-    assert "stricter QC" in projects and "step 1 qc_filter: min_genes default → 20" in projects
-    site = render_site(snap, lambda *_: None)
-    page = site.index + "".join(site.files.values())
-    assert "+ atlas" in page and 'data-ref=\\"ifn/atlas/joint#1\\"' in page and 'data-ask=\\"fork\\"' in page
-    assert "revise_branch" in page and "fork_branch" in page and 'href="#cluster"' in page
 
 
 def test_long_lists_get_a_filter_and_show_all(settings):

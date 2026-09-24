@@ -19,15 +19,7 @@ from .planner import DatasetOverrides, Plan, StepRequest, build_plan
 from .project_env import EnvError, EnvJob, built, check_packages, remove_env, slug, submit_env_build
 from .projects import BranchSpec, Idea, ProjectError, ProjectMeta, ProjectStore, ProjectSummary
 from .provenance import code_id, env_id
-from .labels import BranchLabel, LabelStore
-from .queue import PumpResult, QueuedSubmission, QueueFailure, SubmitQueue
-from .sweeps import SweepError, SweepResult, create_sweep, members, submit_sweep
-from .recipes import Recipe, fill_recipe, list_recipes
-from .revisions import Revision, forked_spec, history, parse_step_ref, revised_spec
-from .step_detail import StepDetail, step_detail
-from .locking import LockTimeout
 from .runs import LimitExceeded, PlanRejected, RunManifest, RunResults, RunStatus, RunStore
-from .stepfile import SUCCESS
 from .sessions import SessionError, SessionInfo, SessionStore
 from .seurat import ImportJob, SeuratImportError, submit_import
 from .slurm import ActiveJob, JobSpec, PartitionInfo, Slurm, SlurmError, render_script
@@ -73,8 +65,6 @@ class Hub:
         self.store = RunStore(settings, self.slurm)
         self.projects = ProjectStore(settings)
         self.sessions = SessionStore(settings, self.slurm)
-        self.queue = SubmitQueue(settings, self.slurm, self._submit_now, permanent=(HubError, PlanRejected))
-        self.labels = LabelStore(self.projects)
         self._profiles: dict[tuple[str, int, int], DatasetProfile] = {}
 
     # ---- discovery ------------------------------------------------------
@@ -221,34 +211,18 @@ class Hub:
             raise HubError(f"plan '{plan_id}' not found; call plan_pipeline first")
         return Plan.model_validate_json(path.read_text())
 
-    def submit(self, plan_id: str, force_new: bool = False) -> RunManifest | QueuedSubmission:
-        """Submit now, or wait in sc-hub's queue when the student is at the cap of
-        active pipelines (sc-hub submits it when one ends; see schub.queue)."""
-        plan = self._current(self.load_plan(_check_id(plan_id, PLAN_ID, "plan_id")))
+    def submit(self, plan_id: str, force_new: bool = False) -> RunManifest:
+        """Submit now. At the cap of active pipelines nothing is queued: the answer says to wait."""
         try:
-            return self._submit_or_queue(plan, force_new)
-        except LockTimeout as exc:
-            raise HubError("sc-hub's queue is busy right now; submit again in a minute") from exc
-
-    def _submit_or_queue(self, plan: Plan, force_new: bool) -> RunManifest | QueuedSubmission:
-        if self.queue.entries():  # others wait: first in, first out
-            done = next((m for m in self.pump().submitted if m.plan_id == plan.plan_id), None)
-            if done is not None:
-                return done
-            if (queued := self.queue.find_plan(plan)) is not None:
-                return queued
-            if self.queue.entries() and not self._fully_cached(plan):
-                return self.queue.enqueue(plan, force_new)
-        try:
-            return self._submit_now(plan.plan_id, force_new)
-        except LimitExceeded:
-            return self.queue.enqueue(plan, force_new)
+            return self._submit_now(_check_id(plan_id, PLAN_ID, "plan_id"), force_new)
+        except LimitExceeded as exc:
+            raise HubError(str(exc)) from exc
 
     def _current(self, plan: Plan) -> Plan:
         """What to submit for `plan`. A branch goes as it is now: planned again if it changed
-        since (a revision, new sc-hub code or package versions, new data), so a plan that
-        waited in the queue never runs stale. A one-off plan made with other brick code is
-        refused (its jobs would stop at once with "code changed")."""
+        since (a new version of the branch, new sc-hub code or package versions, new data). A
+        one-off plan made with other brick code is refused (its jobs would stop at once with
+        "code changed")."""
         if plan.project and plan.branch:
             try:
                 exists = self.projects.branch_exists(plan.project, plan.branch)
@@ -264,30 +238,6 @@ class Hub:
         if stale:
             raise PlanRejected(f"sc-hub changed the code of {', '.join(stale)} after this plan was made; plan it again")
         return plan
-
-    def _fully_cached(self, plan: Plan) -> bool:
-        return all((self.settings.steps_dir / s.step_key / SUCCESS).exists() for s in plan.steps)
-
-    def queued(self) -> list[QueuedSubmission]:
-        return self.queue.entries()
-
-    def queue_failures(self) -> list[QueueFailure]:
-        return self.queue.failed()
-
-    def cancel_queued(self, plan_id: str) -> bool:
-        return self.queue.cancel(_check_id(plan_id, PLAN_ID, "plan_id"))
-
-    def pump(self) -> PumpResult:
-        return self.queue.pump()
-
-    def pump_quietly(self) -> None:
-        """Submit queued plans that fit now (at most every PUMP_EVERY_S s: agents poll
-        run_status in loops); never let the queue break the caller."""
-        try:
-            if self.queue.due():
-                self.queue.pump()
-        except (OSError, ValueError, SlurmError, RuntimeError):
-            pass
 
     def _submit_now(self, plan_id: str, force_new: bool = False) -> RunManifest:
         plan = self._current(self.load_plan(plan_id))
@@ -308,7 +258,6 @@ class Hub:
         return manifest
 
     def status(self, run_id: str) -> RunStatus:
-        self.pump_quietly()  # an agent polling a run also moves the queue along
         return self.store.status(_check_id(run_id, RUN_ID, "run_id"))
 
     def runs(self, limit: int = 10) -> list[RunManifest]:
@@ -357,16 +306,7 @@ class Hub:
         )
         return NotebookInfo(path=str(path), how_to_open=how)
 
-    # ---- recipes, sessions, imports ------------------------------------------
-
-    def recipes(self) -> list[Recipe]:
-        return list_recipes()
-
-    def recipe_steps(self, name: str, values: dict[str, str]) -> list[dict[str, Any]]:
-        try:
-            return fill_recipe(name, values)
-        except KeyError as exc:
-            raise HubError(str(exc.args[0])) from exc
+    # ---- sessions, imports -----------------------------------------------------
 
     def start_session(self, kind: str, hours: int = 4, gpu: bool = False, target: str = "") -> SessionInfo:
         try:
@@ -485,8 +425,9 @@ class Hub:
         """Validate a branch in memory; save it only if its dry-run plan is clean.
         Replacing an existing branch (overwrite) saves a new revision of it."""
         if self.projects.branch_exists(project, name) and not overwrite:
-            raise HubError(f"branch '{name}' already exists in '{project}'; to fix it use revise_branch "
-                           "(new revision), for an alternative use fork_branch (new branch)")
+            raise HubError(f"branch '{name}' already exists in '{project}'; pass overwrite=True to replace it "
+                           "(the previous version is kept in the branch's history), or save an alternative under "
+                           "another name")
         return self._save_checked(project, name, spec, reason)
 
     def dry_run_errors(self, project: str, name: str, spec: BranchSpec) -> str:
@@ -506,74 +447,11 @@ class Hub:
     def save_checked_branch(self, project: str, name: str, spec: BranchSpec, reason: str) -> Plan:
         return self._save_checked(project, name, spec, reason)
 
-    # ---- many experiments: sweeps and labels ------------------------------
-
-    def sweep_branch(self, project: str, branch: str, step: int, param: str, values: Sequence[Any],
-                     sweep: str, reason: str) -> SweepResult:
-        try:
-            return create_sweep(self, project, branch, step, param, values, sweep, reason)
-        except (SweepError, ProjectError) as exc:
-            raise HubError(str(exc)) from exc
-
-    def sweep_members(self, project: str, sweep: str) -> list[str]:
-        return members(self, project, sweep)
-
-    def submit_sweep(self, project: str, sweep: str) -> list[RunManifest | QueuedSubmission]:
-        try:
-            return submit_sweep(self, project, sweep)
-        except SweepError as exc:
-            raise HubError(str(exc)) from exc
-
-    def label_branch(self, project: str, branch: str, add_tags: Sequence[str] = (), remove_tags: Sequence[str] = (),
-                     pinned: bool | None = None, archived: bool | None = None) -> BranchLabel:
-        try:
-            return self.labels.update(project, branch, tuple(add_tags), tuple(remove_tags), pinned, archived)
-        except ProjectError as exc:
-            raise HubError(str(exc)) from exc
-        except LockTimeout as exc:
-            raise HubError("labels are being changed by another call; try again") from exc
-
-    def branch_labels(self, project: str) -> dict[str, BranchLabel]:
-        return self.labels.all(project)
-
     def plan_branch(self, project: str, branch: str) -> Plan:
         resolved = self.projects.resolve(project, branch)
         overrides = DatasetOverrides(species=resolved.species, gene_ids=resolved.gene_ids)
         revision = self.projects.load_branch(project, branch).revision
         return self.plan(resolved.dataset, resolved.steps, overrides, project=project, branch=branch, revision=revision)
-
-    def revise_branch(self, project: str, branch: str, step: int, reason: str,
-                      params: dict[str, Any] | None = None, brick: str | None = None) -> Plan:
-        """Fix step `step` of a branch: same branch, next revision (history kept)."""
-        if not reason.strip():
-            raise HubError("give a reason: it is kept in the branch history")
-        spec = revised_spec(self.projects, project, branch, step, params, brick)
-        before = self.projects.resolve(project, branch)
-        after = self.projects.resolve(project, branch, spec)
-        if (after.dataset, after.steps, after.species, after.gene_ids) == (before.dataset, before.steps, before.species, before.gene_ids):
-            raise HubError(f"that change leaves {project}/{branch} as it is (nothing to revise)")
-        return self._save_checked(project, branch, spec, reason.strip())
-
-    def fork_branch(self, project: str, branch: str, step: int, new_branch: str, reason: str,
-                    params: dict[str, Any] | None = None, brick: str | None = None,
-                    then: Sequence[StepRequest | dict[str, Any]] | None = None) -> Plan:
-        """An alternative from step `step` on, as a new branch; `branch` stays as it is."""
-        if self.projects.branch_exists(project, new_branch):
-            raise HubError(f"branch '{new_branch}' already exists in '{project}'")
-        rest = None if then is None else tuple(s if isinstance(s, StepRequest) else StepRequest.model_validate(s) for s in then)
-        spec = forked_spec(self.projects, project, branch, step, params, brick, rest, reason.strip())
-        return self._save_checked(project, new_branch, spec, reason.strip())
-
-    def branch_history(self, project: str, branch: str) -> list[Revision]:
-        return history(self.projects, project, branch)
-
-    def inspect_step(self, ref: str) -> StepDetail:
-        """What one step of a branch is and did: '<project>/<branch>#<step>'."""
-        project, branch, index = parse_step_ref(ref)
-        plan = self.preview_branch(project, branch)
-        if not any(s.index == index for s in plan.steps):
-            raise HubError(f"{ref}: the branch has steps 1-{max((s.index for s in plan.steps), default=0)}")
-        return step_detail(self, ref, plan, index)
 
     def add_idea(self, project: str, slug: str, title: str, hypothesis: str = "", reverses_if: str = "") -> Idea:
         return self.projects.add_idea(project, slug, title, hypothesis, reverses_if)

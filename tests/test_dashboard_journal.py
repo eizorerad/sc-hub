@@ -99,7 +99,7 @@ def test_alerts_for_a_stopped_bench(settings: Settings, cluster: FakeCluster) ->
     assert "The bench is stopped" in build(settings, cluster)
 
 
-def test_legacy_tabs_with_the_flag(settings: Settings, cluster: FakeCluster) -> None:
+def test_the_brick_era_tabs_are_gone_even_with_the_legacy_flag(settings: Settings, cluster: FakeCluster) -> None:
     page = build(dataclasses.replace(settings, legacy_tools=True), cluster)
-    assert re.findall(r'data-tab="([a-z]+)"', page) == ["journal", "projects", "pipelines", "experiments"]
+    assert re.findall(r'data-tab="([a-z]+)"', page) == ["journal"]
     assert "No bench work yet" in page

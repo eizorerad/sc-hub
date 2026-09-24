@@ -18,8 +18,9 @@ SCRIPT = r"""
     '#1f77b4','#ff7f0e','#2ca02c','#d62728','#9467bd','#8c564b','#e377c2','#7f7f7f','#bcbd22','#17becf'];
   const decode = s => { try { return decodeURIComponent(s); } catch (e) { return s; } };
 
-  // Old addresses keep working: the overview became Projects, Jobs a part of Runs.
-  const ALIASES = {overview: 'projects', jobs: 'runs/queue'};
+  // Old addresses keep working: the brick-era tabs lead to the Journal, Jobs to a part of Runs.
+  const ALIASES = {overview: 'journal', projects: 'journal', pipelines: 'journal', experiments: 'journal',
+                   jobs: 'runs/queue'};
   const RUN_SECTIONS = ['history', 'queue', 'sessions'];
   const pickers = {};
 
@@ -37,24 +38,12 @@ SCRIPT = r"""
     closeMenus();
     if (name === 'runs' && RUN_SECTIONS.includes(arg)) { pickers.runs?.(arg); showRun(null); }
     else if (name === 'runs') showRun(arg ? decode(arg) : null);
-    if (name === 'pipelines') selectPipe(arg || keep.get('pipe') || $('[data-pipe]')?.dataset.pipe || '');
-    if (name === 'experiments' && window.SCHUB_EXPERIMENTS) window.SCHUB_EXPERIMENTS.route(decode(arg));
-    if (name === 'projects') selectProject(arg ? decode(arg) : keep.get('project'));
     if (name === 'journal' && window.SCHUB_JOURNAL) window.SCHUB_JOURNAL.select(arg ? decode(arg) : null);
     if (!restoring) window.scrollTo(0, 0);
   }
 
   function closeMenus(except) {
     $$('details.account[open], details.menu-pop[open]').forEach(d => { if (d !== except) d.open = false; });
-  }
-
-  function selectProject(path) {
-    const cards = $$('.project[data-project]');
-    if (!cards.length) return;
-    if (!cards.some(c => c.dataset.project === path)) path = cards[0].dataset.project;
-    cards.forEach(c => { c.hidden = c.dataset.project !== path; });
-    $$('.project-tree [data-project-link]').forEach(b => b.classList.toggle('active', b.dataset.projectLink === path));
-    keep.set('project', path);
   }
 
   async function copyText(text) {
@@ -79,17 +68,12 @@ SCRIPT = r"""
       return `In sc-hub, open run ${run} as a notebook: write it with make_notebook("${run}"), start a JupyterLab `
         + `session${gpu} with that notebook as the target, and tell me when I can run ./schub-lab jupyter on my laptop.`;
     }
-    if (kind === 'pin') return `In sc-hub, pin branch ${ref} with label_branch (pinned=true).`;
-    if (kind === 'archive') return `In sc-hub, archive branch ${ref} with label_branch (archived=true): `
-      + 'it stays on disk and in the history, and leaves the Compare table unless I ask for archived ones.';
-    if (kind === 'sweep') return `In sc-hub, from branch ${ref}, try step <N> with <parameter> = <values> as a sweep: `
-      + 'use sweep_branch with a short name and reason, show me the plans, and submit them with submit_sweep when I confirm.';
     if (kind === 'fix') return `In sc-hub, fix step ${ref} (${brick}): <what is wrong and what it should do>. `
-      + `Look at it with inspect_step("${ref}"), then use revise_branch (same branch, new revision) with a short reason, `
-      + 'show me the plan, and submit it when I confirm.';
+      + `Change that step of branch ${branch} and save it again with save_branch (overwrite=true; the previous `
+      + 'revision is kept), show me the plan, and submit it when I confirm.';
     return `In sc-hub, from step ${ref} (${brick}) on, try this instead: <the alternative>. `
-      + `Look at it with inspect_step("${ref}"), then use fork_branch into a new branch (keep ${branch} as it is), `
-      + 'show me the plan, and submit it when I confirm.';
+      + `Save it as a new branch with save_branch (from_branch="${branch}" and overrides for that step), keep `
+      + `${branch} as it is, show me the plan, and submit it when I confirm.`;
   }
 
   // Long lists: a filter box and 'Show all N' instead of one endless table.
@@ -193,80 +177,6 @@ SCRIPT = r"""
     });
   }
 
-  // One graph at a time: br/<view>.js (a script: file:// pages cannot fetch) registers it.
-  function selectPipe(id) {
-    const slot = $('#pipe-slot');
-    if (!slot || !/^[a-z0-9-]+$/.test(id)) return;
-    $$('[data-pipe]').forEach(b => b.classList.toggle('active', b.dataset.pipe === id));
-    keep.set('pipe', id);
-    const show = data => {
-      if (keep.get('pipe') !== id) return;  // the student opened another graph meanwhile
-      if (!data) { slot.textContent = 'This graph is not in this copy of the dashboard; it appears after the next refresh.'; clearNode(false); return; }
-      slot.innerHTML = data.graph;  // written by sc-hub itself; every text in it was escaped when it was built
-      const templates = $('#node-templates');
-      if (templates) templates.innerHTML = data.templates;
-      showHistory(keep.get('history') === '1');
-      const node = keep.get('node');
-      if (node) selectNode(node, false); else clearNode(false);
-    };
-    const have = () => window.SCHUB_BR && window.SCHUB_BR[id];
-    if (have()) return show(have());
-    slot.textContent = 'Loading…';
-    loadScript(`br/${id}.js`, have, show);
-  }
-
-  // Older versions of steps (history) sit in a second graph per view, shown on request.
-  function showHistory(on) {
-    keep.set('history', on ? '1' : '0');
-    $$('.graph').forEach(g => {
-      const older = $('[data-history="1"]', g), now = $('[data-history="0"]', g), button = $('[data-history-toggle]', g);
-      if (!older) return;
-      older.hidden = !on; now.hidden = on;
-      const n = Number(button.dataset.count);
-      button.textContent = on ? 'Hide older steps' : `Show ${n} older step${n === 1 ? '' : 's'}`;
-    });
-  }
-
-  function clearNode(forget = true) {
-    const panel = $('#node-panel');
-    if (panel) panel.replaceChildren(Object.assign(document.createElement('p'), {className: 'muted', textContent: 'Select a step in the graph.'}));
-    $$('.pipes').forEach(p => p.classList.add('no-node'));
-    $$('.lineage').forEach(svg => svg.classList.remove('focused'));
-    $$('.node.selected, .node.on-path').forEach(n => n.classList.remove('selected', 'on-path'));
-    if (forget) keep.set('node', '');  // a pipe without this step keeps it for when the student returns
-  }
-
-  function selectNode(key, remember = true) {
-    const tpl = $(sel('data-node', key));
-    const panel = $('#node-panel');
-    const graph = $('[data-pipe-view]:not([hidden]) [data-history]:not([hidden])');
-    const hit = graph && $('.node' + sel('data-key', key), graph);
-    if (!tpl || !panel || !hit) { clearNode(remember); return; }  // not a step of the graph on screen
-    const close = Object.assign(document.createElement('button'), {type: 'button', className: 'panel-close', textContent: '×'});
-    close.dataset.closeNode = ''; close.setAttribute('aria-label', 'Close the step panel');
-    panel.replaceChildren(close, tpl.content.cloneNode(true));
-    panel.classList.remove('filled'); void panel.offsetWidth; panel.classList.add('filled');
-    $$('.pipes').forEach(p => p.classList.remove('no-node'));
-    $$('.node', graph).forEach(n => n.classList.remove('selected', 'on-path'));
-    $('svg', graph)?.classList.add('focused');
-    hit.classList.add('selected');
-    (hit.dataset.path || '').split(' ').forEach(k => {
-      const n = k && $('.node' + sel('data-key', k), graph);
-      if (n) n.classList.add('on-path');
-    });
-    // The panel narrows the graph: bring a clicked step into view once the layout settled
-    // (not on restore after an auto-refresh, which keeps the student's scroll position).
-    if (remember) requestAnimationFrame(() => hit.scrollIntoView({block: 'nearest', inline: 'center'}));
-    // The request is about the branch the student picked for this step, else the graph's branch.
-    const label = graph.closest('[data-label]')?.dataset.label, pick = $('select.ask-ref', panel);
-    const options = pick ? [...pick.options].map(o => o.value) : [];
-    const chosen = options.find(v => v === keep.get('ask-ref-' + key)) || options.find(v => label && v.startsWith(label + '#'));
-    if (chosen) pick.value = chosen;
-    $$('.cellmap:not(.drawn)', panel).forEach(drawMap);
-    $$('details.code[open]', panel).forEach(fillCode);
-    if (remember) keep.set('node', key);
-  }
-
   function loadPoints(src, key, done) {
     loadScript(src, () => window.SCHUB_PTS && window.SCHUB_PTS[key], done);
   }
@@ -354,51 +264,15 @@ SCRIPT = r"""
       return;
     }
     if (e.target.id === 'runs-more') { runsExpanded = true; keep.set('runs-all', '1'); filterRuns(); return; }
-    const project = e.target.closest('[data-project-link]');
-    if (project) { location.hash = 'projects/' + project.dataset.projectLink; return; }
-    if (e.target.closest('[data-history-toggle]')) {
-      showHistory(keep.get('history') !== '1');
-      const kept = keep.get('node');
-      if (kept) selectNode(kept, false); else clearNode(false);  // keep the step if the other graph has it
-      return;
-    }
-    const stub = e.target.closest('.node.stub[data-href]');
-    if (stub) { location.hash = stub.dataset.href.replace(/^#/, ''); return; }
-    const older = e.target.closest('[data-select-node]');
-    if (older) { showHistory(true); selectNode(older.dataset.selectNode); return; }
-    if (e.target.closest('[data-close-node]')) { clearNode(); return; }
-    const node = e.target.closest('.node[data-key]');
-    if (node && !node.classList.contains('ds')) return selectNode(node.dataset.key);
-    const pipe = e.target.closest('[data-pipe]');
-    if (pipe) { location.hash = 'pipelines/' + pipe.dataset.pipe; return; }
     // A whole row opens what it names (not when a link, button or menu inside it was used).
     const row = e.target.closest('tr[data-href], .row-link[data-href]');
     if (row && !inMenu && !e.target.closest('a, button, select, input, summary')) location.hash = row.dataset.href;
   });
   document.addEventListener('keydown', e => {
     const open = e.key === 'Escape' && $('details.account[open], details.menu-pop[open]');
-    if (open) { closeMenus(); $('summary', open)?.focus(); return; }
-    const node = e.key === 'Enter' && e.target.closest && e.target.closest('.node[data-key]');
-    if (node && node.dataset.href) location.hash = node.dataset.href.replace(/^#/, '');
-    else if (node && !node.classList.contains('ds')) selectNode(node.dataset.key);
+    if (open) { closeMenus(); $('summary', open)?.focus(); }
   });
   ['input', 'change'].forEach(t => document.addEventListener(t, e => { if (e.target.closest('#run-filters')) filterRuns(); }));
-  document.addEventListener('change', e => {
-    if (e.target.matches('#node-panel select.ask-ref')) {
-      e.target.classList.toggle('need', !e.target.value);
-      keep.set('ask-ref-' + keep.get('node'), e.target.value);
-    }
-  });
-  const filterTree = input => {
-    const q = input.value.toLowerCase();
-    keep.set('tree-' + (input.closest('[data-tree]')?.dataset.tree || input.placeholder), q);
-    $$('button[data-text]', input.parentElement).forEach(b => { b.hidden = !!q && !b.dataset.text.includes(q); });
-  };
-  document.addEventListener('input', e => { if (e.target.matches('.tree-filter')) filterTree(e.target); });
-  $$('.tree-filter').forEach(input => {
-    input.value = keep.get('tree-' + (input.closest('[data-tree]')?.dataset.tree || input.placeholder)) || '';
-    if (input.value) filterTree(input);
-  });
   window.addEventListener('hashchange', route);
   document.addEventListener('toggle', e => {
     if (!e.target.open) return;

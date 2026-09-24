@@ -58,7 +58,7 @@ class Settings:
     limits: Limits = field(default_factory=Limits)
     extra_roots: tuple[Path, ...] = ()
     bench: BenchConfig = field(default_factory=BenchConfig)
-    legacy_tools: bool = False  # the brick-era MCP tools (recipes, branches, sweeps...)
+    legacy_tools: bool = False  # the brick-era MCP tools (plans, branches, runs, sessions)
 
     @property
     def local_library(self) -> Path:

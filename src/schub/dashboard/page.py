@@ -1,6 +1,6 @@
 """The single-page shell: the header (the sc-hub square is the menu with everything
-besides research: runs, library, sessions, cluster; then three tabs, then a one-line
-status), the views, inline CSS and JS."""
+besides research: runs, library, sessions, cluster; then the Journal tab, then a
+one-line status), the views, inline CSS and JS."""
 
 from __future__ import annotations
 
@@ -12,29 +12,17 @@ from .style import CSS, JOURNAL_CSS
 from .views_activity import status_chip
 from .views_cluster import render_cluster
 from .views_library import render_library
-from .views_projects import render_projects
 from ..state import Frozen
-from .script_experiments import EXPERIMENTS_SCRIPT
-from .views_experiments import render_experiments
-from .views_pipelines import render_pipelines
 from .views_journal import JOURNAL_SCRIPT, render_journal
 from .views_runs import ImageUrl, render_runs
 
-# What a researcher needs sits in three tabs: Projects are the root (a question, its
-# datasets and branches), Pipelines show one graph at a time with each step's result,
-# Compare lists every branch to filter and compare. Runs, Library, sessions and the
-# cluster are one click away in the menu under the sc-hub square.
-TABS = (
-    ("projects", "Projects"),
-    ("pipelines", "Pipelines"),
-    ("experiments", "Compare"),
-)
+# What a researcher needs is the Journal. Runs of brick pipelines, the Library, sessions
+# and the cluster are one click away in the menu under the sc-hub square.
 MENU_VIEWS = {"runs": "Runs", "library": "Library"}  # the cluster overview has its own title
 
 
 class Site(Frozen):
     index: str  # index.html
-    files: dict[str, str]  # other text files of the view folder (br/<view>.js), by relative path
 
 
 def _initials(user: str) -> str:
@@ -80,18 +68,8 @@ def _titled(key: str, html: str) -> str:
 
 
 def render_site(snap: Snapshot, image_url: ImageUrl) -> Site:
-    tab_list = (("journal", "Journal"),) + (TABS if snap.legacy else ())
-    tabs = "".join(f'<a href="#{key}" data-tab="{key}">{esc(label)}</a>' for key, label in tab_list)
+    tabs = '<a href="#journal" data-tab="journal">Journal</a>'
     views = {"journal": render_journal(snap.journals, snap.bench)}
-    files: dict[str, str] = {}
-    if snap.legacy:
-        pipelines = render_pipelines(snap, image_url)
-        files = pipelines.files
-        views.update({
-            "projects": render_projects(snap, pipelines.views, pipelines.project_views),
-            "experiments": render_experiments(snap, pipelines.views, image_url),
-            "pipelines": pipelines.shell,
-        })
     views.update({
         "runs": render_runs(snap, image_url),
         "library": render_library(snap),
@@ -103,7 +81,7 @@ def render_site(snap: Snapshot, image_url: ImageUrl) -> Site:
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
         f"<title>sc-hub · {esc(snap.user)}</title><style>{CSS}{JOURNAL_CSS}</style></head><body>"
         f'<header class="top">{_account(snap)}<nav class="tabs">{tabs}</nav>{status_chip(snap)}</header>'
-        f"<main>{sections}</main>{code_templates(snap)}<script>{EXPERIMENTS_SCRIPT}</script>"
+        f"<main>{sections}</main>{code_templates(snap)}"
         f"<script>{JOURNAL_SCRIPT}</script><script>{SCRIPT}</script></body></html>"
     )
-    return Site(index=index, files=files)
+    return Site(index=index)

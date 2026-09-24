@@ -92,8 +92,8 @@ def subtabs(group: str, sections: list[tuple[str, str, int | None, str]]) -> str
 
 
 ASK_HINT = ("The button copies a ready request: paste it into Codex or Claude and replace the part in <…>. "
-            "A fix makes a new revision of the same branch (r2, r3…); an alternative from this step on is a "
-            "new branch, the old one stays as it is.")
+            "A fix saves the branch again as a new revision (r2, r3…; the previous one is kept); an alternative "
+            "from this step on is a new branch, the old one stays as it is.")
 
 
 def ask_block(ref: str, brick: str, branch: str, note: str = "", refs: tuple[str, ...] = ()) -> str:

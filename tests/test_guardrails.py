@@ -61,19 +61,6 @@ def test_default_mito_threshold_follows_the_data():
     assert mito_threshold(QcParams(max_pct_mt=5), measurable=False) == 5
 
 
-def test_every_recipe_plans_on_data_without_mito_genes(write_h5ad, ctx):
-    from schub.recipes import fill_recipe, list_recipes
-
-    profile = profile_h5ad(write_h5ad(with_cell_types(make_adata(n_obs=90, genes=NO_MT))))
-    values = {"batch_key": "donor", "celltypist_model": "Immune_All_Low.pkl", "labels_key": "cell_type",
-              "group_key": "cell_type", "other_dataset": "x", **DESIGN, "condition_key": "label"}
-    for recipe in list_recipes():
-        if recipe.input.startswith(("FASTQ", "two or more")):
-            continue
-        result = build_plan(profile, "fp", [StepRequest.model_validate(s) for s in fill_recipe(recipe.name, values)], ctx)
-        assert result.ok, (recipe.name, result.issues)
-
-
 def _hub(settings, write_h5ad, datasets):
     for name, genes in datasets.items():
         write_h5ad(make_adata(n_obs=40, genes=genes), directory=library_datasets(settings) / name)

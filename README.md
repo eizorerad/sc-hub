@@ -258,11 +258,10 @@ branches share their common prefix: `latent-10` (from `main` with
 newest first, with why, expected, the result and its checks; code, files and
 logs fold away; decisions, mistakes, the engine filter and the notebook download
 sit behind the project's '⋯'. Alerts say when the workbench cannot start, both
-job slots are taken, a check failed or a quota is nearly full. Brick-era data
-adds the Projects, Pipelines and Compare tabs (one file per graph, `br/<view>.js`,
-loaded when opened); runs, library and the cluster overview are in the menu. Pick a branch to see its graph, click a step to see its params, code, job, resources,
-timing, log tail, figures and results; open a run for its step timeline, top DE
-genes and its notebook. Plain HTML, CSS and a few KB of vanilla JS:
+job slots are taken, a check failed or a quota is nearly full. Runs of brick
+pipelines, the library and the cluster overview are in the menu; open a run for
+its step timeline, each step's params, code, job, log tail, figures, top DE genes
+and its notebook. Plain HTML, CSS and a few KB of vanilla JS:
 no server, no framework, no external requests. `./schub-view` mirrors it every
 60 s over ssh + rsync (`schub-view.cmd` with scp on Windows, skipping the
 download when nothing changed); the page refreshes itself, keeps your place and
@@ -283,14 +282,15 @@ filters, and waits while you read an opened section.
 ## Brick pipelines (legacy, `SCHUB_LEGACY_TOOLS=1`)
 
 Before the bench, sc-hub assembled whole pipelines from checked bricks. Their MCP
-tools (plans, recipes, branches, revisions, sweeps, labels, the plan queue) and
-the Projects, Pipelines and Compare tabs appear only with `SCHUB_LEGACY_TOOLS=1` or
-when a project already has brick-era data; the bricks themselves stay available
-in cells through `bench.run_brick`. What that surface does:
-
-Pilot scope: scRNA-seq, from 10x FASTQ reads or a count matrix (`.h5ad`). The
-defaults follow the MBZUAI single-cell course (CB703/803): Python, the scverse
-ecosystem and scvi-tools; AnnData with raw counts as the working format.
+tools (`plan_pipeline`, `save_branch`, `plan_branch`, `submit_plan`, `run_status`,
+`run_results`, `make_notebook`, sessions, FASTQ registration, Seurat import) appear
+only with `SCHUB_LEGACY_TOOLS=1`; the bricks themselves stay available in cells
+through `bench.run_brick`. Recipes, sweeps, branch revisions and forks as tools,
+labels, sc-hub's own plan queue and the Projects, Pipelines and Compare tabs were
+removed once the bench took over (tag `v0.5-bricks` has them). At the cap of active
+pipelines `submit_plan` now refuses with the reason instead of queueing. Runs of
+brick pipelines, with their steps, figures and notebooks, stay under Runs in the
+menu.
 
 | Brick | What it does | Resources |
 |---|---|---|
@@ -304,63 +304,6 @@ ecosystem and scvi-tools; AnnData with raw counts as the working format.
 | `pseudobulk_de` | Sum counts per replicate x condition (x cell type), PyDESeq2 | CPU |
 | `memento_de` | memento: differential mean and variability (method of moments) | CPU |
 | `export_cellxgene` | Subsampled, normalized `.h5ad` for cellxgene | CPU |
-
-Recipes (`list_recipes`) name the course's standard paths: `standard_analysis`,
-`scvi_integration`, `scanvi_labels`, `condition_de`, `fastq_kallisto`,
-`fastq_cellranger`. The assistant fills in the metadata columns, the student
-confirms them, and sc-hub validates the plan before anything is queued.
-
-Branches are versioned. Fixing a step (`revise_branch`) makes a new revision of
-the same branch (r2, r3…, with the reason and the changes kept); an alternative
-from some step on (`fork_branch`) is a new branch. Every step in the dashboard
-has buttons that copy a ready request for the assistant with the step's
-reference (`project/branch#step`). A project can start from several datasets
-(`merge_datasets`, recipe `multi_dataset`), and subprojects may add datasets.
-
-Interactive work runs on compute nodes: `start_session` opens JupyterLab
-(optionally with a GPU, for scvi-tools model work) or cellxgene on a dataset,
-and `./schub-lab` on the laptop tunnels to it. A project can add its own
-software for notebook work (`add_project_packages`: pip packages layered on the
-shared environment with uv, conda-forge/bioconda tools with micromamba), which
-appears as the Jupyter kernel "sc-hub: <project>".
-
-Every step's code is visible: the dashboard shows the brick's implementation
-next to its parameters, and any run downloads as a notebook (`make_notebook`
-on the cluster) with each step's exact code and parameters. In JupyterLab on
-the cluster a step can be changed and re-run; the steps after it read the new
-result, earlier ones come from the pipeline's cache, and nothing is written
-into the cache.
-
-Graphs show each branch as it is now. After a change of a brick's code or a
-scientific package (new step keys) or a revision, a finished branch shows
-"needs re-run" and each such step names what it gave before and why; older
-results stay behind "Show older steps". A branch the planner now refuses shows
-"can't plan". An sc-hub release alone (dashboard, tools) keeps every result.
-
-For many experiments a day: `sweep_branch` tries one parameter over several
-values as one experiment (one branch per value; shared steps computed once),
-and above the cap of active pipelines plans wait in sc-hub's own queue instead
-of failing: a tiny Slurm job submits them, first in first out, when a pipeline
-ends (no daemon). A branch goes as it is at that moment: planned again if sc-hub
-or the branch changed while it waited. Slurm or Lustre hiccups are retried; a
-plan that can no longer run is set aside with the reason (`queue_status`).
-`label_branch` tags, pins and archives branches without new revisions.
-
-The dashboard shows only what research needs, in three tabs: Projects (the
-root: the question and its branches; click a branch for its pipeline),
-Pipelines (one graph at a time: a branch with the branches around it as links,
-or a project map; a step's panel leads with its result, then "ask your
-assistant", with parameters, code, log and job details folded) and Compare
-(every branch as one row with its numbers; filters, steps and the parameters
-that differ appear on request; sweeps fold into one row; tick 2-5 rows to
-compare steps, numbers and figures side by side). Explanations sit behind a
-'?' and secondary actions (latest run, notebook, revisions, sweep, pin,
-archive) behind a '⋯'. The sc-hub square at the top left is the menu for the
-rest: Runs (history, queue, interactive sessions), Library, the cluster
-overview (Lustre quota, home usage, per-user job limits and what is in use,
-your jobs with CPU/RAM/GPU, partition load, logins), the last update and
-auto-refresh. Seurat `.rds` objects are converted with `import_seurat`;
-Seurat is for compatibility, not the default.
 
 Starter assets fetched by bootstrap: 10x PBMC 3k, Kang 2018 (IFN-beta
 stimulated PBMCs, 8 donors), CellTypist immune models. The library also holds

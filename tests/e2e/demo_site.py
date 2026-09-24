@@ -1,7 +1,8 @@
 """Build a demo dashboard from synthetic runs, for the browser click-through.
 
-One project with a finished branch, a sweep (two runs done, one running, one queued,
-one waiting in sc-hub's queue), a variant never run, tags and a pin. Usage:
+One brick-era project with a finished branch, variants of one parameter (two runs done,
+others running or queued in Slurm), a variant never run, and two bench projects with
+journals. Usage:
     python tests/e2e/demo_site.py <out dir>   ->   <out dir>/view/index.html
 """
 
@@ -62,16 +63,16 @@ def main(out: Path) -> None:
     _finish(cluster, hub.submit(hub.plan_branch("ifn", "main").plan_id),
             [{"cells_final": 88}, {"n_clusters": 9}, {"n_labels": 7, "reference_key": "cell_type", "reference_purity": 0.91},
              {"groups_tested": 3, "significant_genes": 420, "groups": {}}])
-    hub.sweep_branch("ifn", "main", 2, "leiden_resolution", [0.3, 0.6, 1.2, 2.4, 4.8], "res", "how many clusters?")
+    for value in (0.3, 0.6, 1.2, 2.4):
+        hub.save_branch("ifn", f"res-{str(value).replace('.', '-')}",
+                        BranchSpec(from_branch="main", overrides={"normalize_embed": {"leiden_resolution": value}}))
     for i, name in enumerate(["res-0-3", "res-0-6"]):
         _finish(cluster, hub.submit(hub.plan_branch("ifn", name).plan_id),
                 [{"cells_final": 88}, {"n_clusters": 5 + 3 * i}, {"n_labels": 6 + i},
                  {"groups_tested": 3, "significant_genes": 420, "groups": {}}])
-    for name in ("res-1-2", "res-2-4", "res-4-8"):  # running, queued, waiting in sc-hub's queue
+    for name in ("res-1-2", "res-2-4"):  # running and queued in Slurm
         hub.submit(hub.plan_branch("ifn", name).plan_id)
     hub.save_branch("ifn", "strict", BranchSpec(from_branch="main", overrides={"qc_filter": {"min_genes": 5}}))
-    hub.label_branch("ifn", "main", add_tags=["baseline"], pinned=True)
-    hub.label_branch("ifn", "strict", add_tags=["qc"])
     _bench_project(hub)
     info = build_dashboard(hub, out / "view")
     print(info.path)

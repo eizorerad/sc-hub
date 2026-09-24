@@ -16,11 +16,6 @@ from schub.slurm import Slurm
 from .conftest import library_datasets, make_adata
 
 EXPECTED_TOOLS = {
-    "sweep_branch",
-    "submit_sweep",
-    "queue_status",
-    "cancel_queued",
-    "label_branch",
     "list_datasets",
     "inspect_dataset",
     "list_bricks",
@@ -43,17 +38,11 @@ EXPECTED_TOOLS = {
     "add_logbook_entry",
     "fetch_asset",
     "make_dashboard",
-    "list_recipes",
-    "recipe_steps",
     "register_fastq",
     "import_seurat",
     "start_session",
     "list_sessions",
     "stop_session",
-    "inspect_step",
-    "revise_branch",
-    "fork_branch",
-    "branch_history",
     "cluster_overview",
     "add_project_packages",
 }
@@ -102,8 +91,8 @@ def test_plan_and_submit_through_mcp(server, cluster, settings):
     summary = plan.structured_content
     assert summary["ok"] is True and summary["steps"][0]["brick"] == "qc_filter"
     run = call(server, "submit_plan", {"plan_id": summary["plan_id"]})
-    assert run.structured_content["plan_id"] == summary["plan_id"] and run.structured_content["status"] == "submitted"
-    assert run.structured_content["run_id"] == run.structured_content["run"]["run_id"]
+    assert run.structured_content["plan_id"] == summary["plan_id"] and run.structured_content["run_id"]
+    assert run.structured_content["steps"][0]["brick"] == "qc_filter"  # the run itself, not a queue receipt
     assert len(cluster.jobs) == 1
     log_lines = next(settings.logs_dir.glob("calls-*.jsonl")).read_text().splitlines()
     assert [json.loads(line)["tool"] for line in log_lines] == ["plan_pipeline", "submit_plan"]

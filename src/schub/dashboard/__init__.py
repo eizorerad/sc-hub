@@ -45,24 +45,6 @@ def _copy(source: Path, dest: Path) -> None:
     shutil.copyfile(source, dest)
 
 
-def _write_files(view: Path, files: dict[str, str]) -> None:
-    """Graph files (br/<view>.js): unchanged ones are left alone, so the laptop's
-    rsync copies only what changed; graphs that no longer exist are removed."""
-    for relative, text in files.items():
-        path = view / relative
-        try:
-            if path.read_text() == text:
-                continue
-        except OSError:
-            pass
-        _write(path, text)
-    folder = view / "br"
-    wanted = {view / r for r in files}
-    for path in folder.glob("*.js") if folder.is_dir() else []:
-        if path not in wanted:
-            path.unlink(missing_ok=True)
-
-
 class _Images:
     """Copies only what the page shows: thumbnails, and full images of recent runs."""
 
@@ -151,7 +133,6 @@ def _journal_files(settings: Any, view: Path, snapshot: Any) -> None:
 
 def build_dashboard(hub: Any, out: Path | None = None) -> DashboardInfo:
     view = out or hub.settings.view_dir
-    hub.pump_quietly()  # the viewer refreshes every minute: queued plans move on
     snapshot = collect(hub)
     snapshot = snapshot.model_copy(update={"notebooks": frozenset(write_notebooks(view, snapshot, _write))})
     full_keys = {s.key for run in snapshot.runs[:RECENT_FULL_IMAGES] for s in run.steps}
@@ -159,7 +140,7 @@ def build_dashboard(hub: Any, out: Path | None = None) -> DashboardInfo:
     images = _Images(view, full_keys, map_keys)
     site = render_site(snapshot, images)
     _write(view / "index.html", site.index)
-    _write_files(view, site.files)
+    shutil.rmtree(view / "br", ignore_errors=True)  # graph files of the brick-era Pipelines tab
     images.prune()
     _journal_files(hub.settings, view, snapshot)
     shutil.rmtree(view / "runs", ignore_errors=True)  # per-run pages of the previous layout
