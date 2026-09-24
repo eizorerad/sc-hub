@@ -19,6 +19,7 @@ from .base import Engine, Turn, credential_fingerprint, install_guards, version
 from .claude import Claude
 from .codex import Codex
 from .cooldown import Cooldown
+from . import window
 from .policy import load
 
 PROBE_EVERY_H = 6
@@ -43,6 +44,8 @@ def probe(settings: Settings, engines: tuple[str, ...] | None = None, timeout_s:
                                        timeout_s=timeout_s, model=policy.model(name), effort=policy.effort(name)),
                                   binary=str(guards / name))
         ok = outcome.status == "ok" and outcome.text.strip().strip(".").upper() == "OK"
+        if name == "claude":
+            window.record(settings.bench_dir, outcome.details.get("rate_limit"))
         if outcome.status == "usage_limited":
             cooldown.mark(name, outcome.error)
         results[name] = {"ok": ok, "status": outcome.status, "at": stamp(), "detail": (outcome.error or
@@ -72,4 +75,18 @@ def summary(settings: Settings) -> list[str]:
         elif record:
             state = "ok" if record.get("ok") else f"not answering ({record.get('status')}: {record.get('detail', '')[:80]})"
             lines.append(f"{name}: {state}, checked {record.get('at', '')[:16]}")
+    week = window.seven_day(settings.bench_dir)
+    if week is not None:
+        ceiling = load_safely(settings)
+        extra = f" (the lab agent stops at {ceiling:.0%})" if ceiling else ""
+        lines.append(f"claude weekly window: {week[0]:.0%} used{extra}, resets {week[1].isoformat(timespec='minutes')}")
     return lines
+
+
+def load_safely(settings: Settings) -> float:
+    from .policy import PolicyError
+
+    try:
+        return load(settings.bench_dir / "engine-policy.json").claude_weekly_ceiling
+    except PolicyError:
+        return 0.0

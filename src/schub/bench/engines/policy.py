@@ -9,6 +9,8 @@ error, never permission to call another engine.
     primary      in mixed, the engine tried first (the other takes over when it pauses)
     <engine>_model / <engine>_effort   pinned for every run ("" = the CLI's default)
     weekly_turns at most this many lab-agent turns per 7 days across projects (0 = no cap)
+    claude_weekly_ceiling  Claude stands down while its seven-day usage window is at least this full,
+                 as the last rate_limit_event reported (the owner's own work shares that window; 0 = off)
     grants       per project, engines allowed beyond the mode: {"engines": [...], "granted": ..., "note": ...}
 """
 
@@ -42,6 +44,7 @@ class EnginePolicy:
     codex_model: str = ""
     codex_effort: str = ""
     weekly_turns: int = 0
+    claude_weekly_ceiling: float = 0.0  # Claude stands down when its seven-day window is this full (0 = off)
     grants: dict = field(default_factory=dict)
     updated: str = ""
     reason: str = ""
@@ -56,6 +59,9 @@ class EnginePolicy:
                 raise PolicyError(f"{name} must be a model or effort name")
         if not isinstance(self.weekly_turns, int) or not 0 <= self.weekly_turns <= 10_000:
             raise PolicyError("weekly_turns must be a whole number from 0 to 10000")
+        ceiling = self.claude_weekly_ceiling
+        if isinstance(ceiling, bool) or not isinstance(ceiling, (int, float)) or not 0 <= ceiling <= 1:
+            raise PolicyError("claude_weekly_ceiling must be a number from 0 (off) to 1")
         if not isinstance(self.grants, dict):
             raise PolicyError("grants must map projects to {\"engines\": [...]}")
         for project, grant in self.grants.items():

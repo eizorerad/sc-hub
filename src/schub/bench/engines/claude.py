@@ -1,4 +1,4 @@
-"""Claude Code: `claude -p <prompt> --output-format json`, the sc-hub MCP server only.
+"""Claude Code: `claude -p <prompt> --output-format stream-json`, the sc-hub MCP server only.
 
 New session: --session-id <uuid> (the id is known before the turn, so the journal's
 actor can carry it); later turns: --resume <uuid>. Built-in tools are off
@@ -19,7 +19,8 @@ class Claude(Engine):
     name = "claude"
 
     def argv(self, binary: str, turn: Turn) -> list[str]:
-        argv = [binary, "-p", turn.prompt, "--output-format", "json", "--tools", ""]
+        # stream-json: the result line plus rate_limit_event, which says how full the weekly window is
+        argv = [binary, "-p", turn.prompt, "--output-format", "stream-json", "--verbose", "--tools", ""]
         if turn.mcp is not None:
             server = {"command": turn.mcp.command, "args": list(turn.mcp.args), "env": dict(turn.mcp.env)}
             argv += ["--mcp-config", json.dumps({"mcpServers": {"schub": server}}), "--strict-mcp-config",
@@ -46,7 +47,23 @@ class Claude(Engine):
         return Outcome(self.name, classify(ok, error, bool(MISSING.search(error))),
                        session_id=result.get("session_id"), text=text[-4000:] if ok else "", error=error,
                        cost_usd=result.get("total_cost_usd"), turns=result.get("num_turns"), returncode=returncode,
-                       details={"models": sorted((result.get("modelUsage") or {}).keys())})
+                       details={"models": sorted((result.get("modelUsage") or {}).keys()),
+                                "rate_limit": _rate_limit(stdout)})
+
+
+def _rate_limit(stdout: str) -> dict | None:
+    """The last rate_limit_event of the turn: status, the five-hour and seven-day windows' utilization."""
+    found = None
+    for line in stdout.splitlines():
+        if '"rate_limit_event"' not in line:
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict) and isinstance(event.get("rate_limit_info"), dict):
+            found = event["rate_limit_info"]
+    return found
 
 
 def _last_json(stdout: str) -> dict | None:

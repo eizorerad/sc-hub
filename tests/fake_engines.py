@@ -25,6 +25,10 @@ if mode == "missing":
 prompt = args[args.index("-p") + 1]
 text = "OK" if "exactly" in prompt else "did the step"
 error = mode in ("limit", "limitwork")  # refused at once, or after some work
+utilization = float(os.environ.get("FAKE_CLAUDE_WEEK", "0.5"))
+print(json.dumps({"type": "rate_limit_event", "rate_limit_info": {
+    "status": "allowed", "rateLimitType": "seven_day", "utilization": utilization, "resetsAt": 4102444800,
+    "unifiedWindows": {"seven_day": {"utilization": utilization, "resetsAt": 4102444800}}}}))
 print(json.dumps({"type": "result", "subtype": "success", "is_error": error,
                   "result": "You've hit your limit · resets 3pm (Asia/Dubai)" if error else text,
                   "session_id": session, "total_cost_usd": 0.0 if mode == "limit" else 0.01,

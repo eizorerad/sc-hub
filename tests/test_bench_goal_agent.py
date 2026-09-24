@@ -273,3 +273,14 @@ def test_a_second_copy_of_a_running_slice_leaves_quietly(lab: Settings, cluster:
     with held(Goal(lab, "p"), Slurm(cluster), first):
         assert Slice(lab, Slurm(cluster), "p", twin).run() == "busy"
     assert not engine_calls()
+
+
+def test_claude_stands_down_above_the_owners_weekly_ceiling(lab: Settings, cluster: FakeCluster, monkeypatch) -> None:
+    engine_policy.set_mode(lab.bench_dir / "engine-policy.json", "mixed", claude_weekly_ceiling=0.8)
+    monkeypatch.setenv("FAKE_CLAUDE_WEEK", "0.82")  # this turn is allowed; it reports the window above the ceiling
+    first, result = start_and_run(lab, cluster)
+    assert result == "ok" and [c["engine"] for c in engine_calls()] == ["claude"]
+    _, result = next_slice(lab, cluster, first)
+    assert result == "ok" and engine_calls()[-1]["engine"] == "codex"  # mixed: the other engine carries the work
+    events = [e["event"] for e in Goal(lab, "p").events(100)]
+    assert "claude_above_weekly_ceiling" in events

@@ -213,3 +213,11 @@ def test_png_size_guard() -> None:
     header = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
     assert png_size(header + (640).to_bytes(4, "big") + (480).to_bytes(4, "big")) == (640, 480)
     assert png_size(b"GIF89a....................") is None
+
+
+def test_the_cluster_answer_names_the_engines(server, bench: Settings) -> None:
+    from schub.bench.engines.cooldown import Cooldown
+
+    Cooldown(bench.bench_dir / "engine-cooldown.json").mark("codex", "You hit your spend cap")
+    engines = ok(call(server, "cluster"))["engines"]
+    assert any(line.startswith("codex: paused until") for line in engines)

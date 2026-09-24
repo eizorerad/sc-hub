@@ -23,7 +23,9 @@ from .bench.engines.probe import probe, summary
 from .cli_projects import read_arg
 from .service import Hub
 
-SETTINGS = ("primary", "claude_model", "claude_effort", "codex_model", "codex_effort", "weekly_turns")
+SETTINGS = ("primary", "claude_model", "claude_effort", "codex_model", "codex_effort", "weekly_turns",
+            "claude_weekly_ceiling")
+KINDS = {"weekly_turns": int, "claude_weekly_ceiling": float}
 
 
 def add_eval_parsers(sub: Any) -> None:
@@ -32,6 +34,9 @@ def add_eval_parsers(sub: Any) -> None:
     run.add_argument("--engines", default="claude,codex")
     run.add_argument("--only", default="", help="comma-separated request ids")
     run.add_argument("--slice-minutes", type=int, default=45)
+    run.add_argument("--max-turns", type=int, default=None, help="cap each request's turn budget")
+    run.add_argument("--gpu-minutes", type=int, default=30, help="GPU-minutes a request may use in total")
+    run.add_argument("--download-gb", type=int, default=5, help="GB a request may download in total")
     score = sub.add_parser("eval-score", help="score the latest run of each request x engine")
     score.add_argument("requests")
     score.add_argument("--markdown", action="store_true")
@@ -52,7 +57,7 @@ def add_goal_parsers(sub: Any) -> None:
     set_.add_argument("mode", choices=engine_policy.MODES)
     set_.add_argument("--reason", default="")
     for name in SETTINGS:
-        set_.add_argument(f"--{name.replace('_', '-')}", type=int if name == "weekly_turns" else str, default=None)
+        set_.add_argument(f"--{name.replace('_', '-')}", type=KINDS.get(name, str), default=None)
     grant = action.add_parser("grant")
     grant.add_argument("project")
     grant.add_argument("engines", nargs="+", choices=engine_policy.ENGINES)
@@ -79,7 +84,8 @@ def goal_handlers(hub: Hub, args: argparse.Namespace) -> dict[str, Callable[[], 
         requests = load_requests(Path(args.requests))
         chosen = [r for r in requests if not args.only or r.id in args.only.split(",")]
         return launch(hub.settings, hub.slurm, chosen, [e for e in args.engines.split(",") if e],
-                      slice_minutes=args.slice_minutes)
+                      slice_minutes=args.slice_minutes, max_turns=args.max_turns, gpu_minutes=args.gpu_minutes,
+                      download_gb=args.download_gb)
 
     def eval_score() -> Any:
         rows = matrix(hub.settings, load_requests(Path(args.requests)))

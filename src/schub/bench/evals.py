@@ -34,9 +34,11 @@ from .journal import Journal
 from .models import CellEntry, NoteEntry
 
 ENGINES = ("claude", "codex")
-SUFFIX = ("\n\nWork in this project only, through the sc-hub MCP tools. When the request is answered, record the "
-          "findings with the cells they come from and hand over with disposition \"complete\"; if you need the "
-          "student, hand over as \"blocked\" with the question.")
+SUFFIX = ("\n\nWork in this project only, through the sc-hub MCP tools. Resources for this request: at most "
+          "{gpu_minutes} GPU-minutes and {download_gb} GB of downloads in total; if the request needs more, say what it "
+          "would take and hand over as \"blocked\" instead. When the request is answered, record the findings with the "
+          "cells they come from and hand over with disposition \"complete\"; if you need the student, hand over as "
+          "\"blocked\" with the question.")
 
 
 class EvalError(ValueError):
@@ -78,7 +80,8 @@ def runs_path(settings: Settings) -> Path:
 
 
 def launch(settings: Settings, slurm: Slurm, requests: Sequence[EvalRequest], engines: Sequence[str],
-           slice_minutes: int = 45) -> list[dict]:
+           slice_minutes: int = 45, max_turns: int | None = None, gpu_minutes: int = 30,
+           download_gb: int = 5) -> list[dict]:
     unknown = set(engines) - set(ENGINES)
     if unknown:
         raise EvalError(f"unknown engines {sorted(unknown)}")
@@ -88,8 +91,10 @@ def launch(settings: Settings, slurm: Slurm, requests: Sequence[EvalRequest], en
         for engine in engines:
             project = f"ev-{request.id}"[:30].rstrip("-") + f"-{engine[:2]}{stamp}"
             ProjectStore(settings).create(project, question=request.prompt.split(". ")[0][:200])
-            goal = (f"---\nengine: {engine}\nmax_turns: {request.max_turns}\nslice_minutes: {slice_minutes}\n"
-                    f"pace_minutes: 5\n---\n{request.prompt}{SUFFIX}\n")
+            turns = min(request.max_turns, max_turns) if max_turns else request.max_turns
+            suffix = SUFFIX.format(gpu_minutes=gpu_minutes, download_gb=download_gb)
+            goal = (f"---\nengine: {engine}\nmax_turns: {turns}\nslice_minutes: {slice_minutes}\n"
+                    f"pace_minutes: 5\n---\n{request.prompt}{suffix}\n")
             job = goal_agent.start(settings, slurm, project, goal)
             record = {"request": request.id, "engine": engine, "project": project, "job": job,
                       "started": datetime.now(timezone.utc).isoformat(timespec="seconds")}

@@ -185,7 +185,7 @@ def test_the_guard_refuses_what_the_policy_forbids(settings: Settings, fakes, tm
     assert guard_main(["codex", "exec", "hi"]) == REFUSED
     done = subprocess.run([str(GUARD_DIR / "claude"), "-p", "Reply with exactly: OK", "--model", "cheap"],
                           env=guard_env(settings, tmp_path), capture_output=True, text=True, timeout=60)
-    assert done.returncode == 0 and json.loads(done.stdout)["result"] == "OK"
+    assert done.returncode == 0 and json.loads(done.stdout.splitlines()[-1])["result"] == "OK"
     argv = calls(Path(os.environ["FAKE_LOG"]))[-1]["argv"]
     assert argv[argv.index("--model") + 1] == "opus-x" and "cheap" not in argv
     (settings.bench_dir / "engine-policy.json").write_text("{broken")
@@ -201,6 +201,7 @@ def test_probe_records_each_engine(settings: Settings, fakes, tmp_path: Path, mo
     assert not results["codex"]["ok"] and results["codex"]["status"] == "usage_limited"
     lines = summary(settings)
     assert lines[0].startswith("claude: ok") and lines[1].startswith("codex: paused until")  # at most 8 days
+    assert lines[2].startswith("claude weekly window: 50% used")  # from the probe's rate_limit_event
     probes = [c["argv"] for c in calls(Path(os.environ["FAKE_LOG"]))]
     claude, codex = next(a for a in probes if "-p" in a), next(a for a in probes if a[:1] == ["exec"])
     assert json.loads(claude[claude.index("--mcp-config") + 1]) == {"mcpServers": {}} and "mcp_servers={}" in codex
@@ -243,3 +244,18 @@ def test_kernels_meet_the_guards_first(settings: Settings, monkeypatch) -> None:
     guard = settings.bench_dir / "guard"
     assert path[0] == str(guard) and path[1:] == ["/usr/bin", "/bin"]
     assert os.access(guard / "claude", os.X_OK) and os.access(guard / "codex", os.X_OK)
+
+
+def test_claude_reports_its_weekly_window(fakes, tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("FAKE_CLAUDE_WEEK", "0.83")
+    outcome = Claude().run(turn(tmp_path, new_session_id="s-4"))
+    argv = calls(Path(os.environ["FAKE_LOG"]))[-1]["argv"]
+    assert argv[argv.index("--output-format") + 1] == "stream-json" and "--verbose" in argv
+    assert outcome.status == "ok" and outcome.details["rate_limit"]["unifiedWindows"]["seven_day"]["utilization"] == 0.83
+
+
+def test_a_weekly_ceiling_is_a_policy_field() -> None:
+    assert EnginePolicy(claude_weekly_ceiling=0.8).claude_weekly_ceiling == 0.8
+    for bad in (1.5, -0.1, "high"):
+        with pytest.raises(PolicyError):
+            EnginePolicy(claude_weekly_ceiling=bad)

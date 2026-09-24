@@ -39,11 +39,12 @@ def test_bad_request_files_are_refused(tmp_path: Path) -> None:
 def test_each_run_is_a_goal_with_its_engine(settings: Settings, cluster: FakeCluster) -> None:
     request = EvalRequest(id="kang-pseudobulk-de", source="course-style", prompt="Test DE in Kang 2018 monocytes.",
                           max_turns=4)
-    runs = launch(settings, Slurm(cluster), [request], ["claude", "codex"])
+    runs = launch(settings, Slurm(cluster), [request], ["claude", "codex"], max_turns=3, gpu_minutes=20)
     assert [r["engine"] for r in runs] == ["claude", "codex"] and len(cluster.jobs) == 2
     for run in runs:
         config = Goal(settings, run["project"]).config()
-        assert config.engine == run["engine"] and config.max_turns == 4 and "hand over" in config.objective
+        assert config.engine == run["engine"] and config.max_turns == 3 and "hand over" in config.objective
+        assert "at most 20 GPU-minutes and 5 GB of downloads" in config.objective
         assert len(run["project"]) <= 41
     assert len(runs_path(settings).read_text().splitlines()) == 2
     with pytest.raises(EvalError):

@@ -40,6 +40,7 @@ from .checkpoint import CheckpointStore
 from .engines.base import Engine, McpServer, Outcome, Turn, credential_fingerprint, install_guards
 from .engines.claude import Claude
 from .engines.codex import Codex
+from .engines import window
 from .engines.cooldown import Cooldown
 from .engines.policy import PolicyError, load as load_policy, order
 from .fsio import read_json, write_json_atomic
@@ -151,7 +152,7 @@ class Slice:
             return "budget"
         try:
             policy = load_policy(self.settings.bench_dir / "engine-policy.json")
-            engines = order(policy, self.project, config.engine, self.cooldown.ready)
+            engines = order(policy, self.project, config.engine, lambda e: self._ready(e, policy))
         except PolicyError as exc:
             CheckpointStore(goal.project_dir).write("blocked", reason=f"engine policy: {exc}", actor=SYSTEM)
             self._incident(f"The lab agent cannot run: {exc} It stops here; fix goal.md or ask the owner, then "
@@ -199,6 +200,8 @@ class Slice:
                     mcp=self.mcp_server(engine, policy.model(engine), policy.effort(engine), resume or new_id or ""))
         guards = install_guards(self.settings.bench_dir)
         outcome = self.adapters[engine].run(turn, binary=str(guards / engine), env=self.engine_env(guards))
+        if engine == "claude":
+            window.record(self.settings.bench_dir, outcome.details.get("rate_limit"))
         write_json_atomic(run_dir / "outcome.json", dataclasses.asdict(outcome))
         goal.event("turn_finished", job=self.job, engine=engine, status=outcome.status,
                    session=outcome.session_id, cost_usd=outcome.cost_usd, turns=outcome.turns)
@@ -215,6 +218,18 @@ class Slice:
         if outcome.status == "failed":
             self._incident(f"The lab agent's {engine} turn failed: {outcome.error[-400:]}")
         return outcome
+
+    def _ready(self, engine: str, policy) -> bool:
+        """Not paused after a usage limit, and (Claude) not above the owner's weekly ceiling."""
+        if not self.cooldown.ready(engine):
+            return False
+        if engine == "claude":
+            full = window.above_ceiling(self.settings.bench_dir, policy.claude_weekly_ceiling)
+            if full is not None:
+                self.goal.event("claude_above_weekly_ceiling", job=self.job, utilization=full[0],
+                                ceiling=policy.claude_weekly_ceiling, resets=full[1].isoformat(timespec="minutes"))
+                return False
+        return True
 
     def remaining_s(self, config: GoalConfig) -> int:
         """What is left of this slice's time for a turn (one deadline per slice, not per engine)."""

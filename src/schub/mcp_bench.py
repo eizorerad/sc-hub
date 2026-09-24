@@ -16,6 +16,7 @@ from mcp.types import CallToolResult, ImageContent, TextContent, ToolAnnotations
 
 from .audit import audited
 from .bench.clients import ClientProfile, actor_for, profile_for
+from .bench.engines.probe import summary as engine_summary
 from .bench.files import FileView, view
 from .bench.models import Actor, Checkpoint, CheckSpec, NoteEntry
 from .bench.results import CellResult, trimmed
@@ -69,6 +70,7 @@ class SkillsAnswer(Frozen):
 
 class ClusterAnswer(Frozen):
     workbench: str
+    engines: tuple[str, ...] = ()  # the lab agents' engines: answering, paused, Claude's weekly window
     overview: Overview | None = None
     problem: str = ""
 
@@ -268,7 +270,8 @@ def _register_reference(mcp: MCPServer, hub: Hub, bench: BenchService, call: Cal
                 overview, problem = cached_overview(hub.settings), ""
             except (OSError, ValueError) as exc:
                 overview, problem = None, f"overview unavailable: {exc}"
-            return ClusterAnswer(workbench=bench.status(), overview=overview, problem=problem)
+            return ClusterAnswer(workbench=bench.status(), engines=tuple(engine_summary(hub.settings)),
+                                 overview=overview, problem=problem)
         return call("cluster", {}, answer)
 
     @mcp.tool(annotations=STOP)
