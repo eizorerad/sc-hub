@@ -4,7 +4,7 @@
     python -m schub.bench.goal_agent --project P --run     # inside a slice job
 
 Each slice, in order: the STOP files and a finished checkpoint end the chain; one
-slice holds the goal (flock); it arms its successor FIRST (afterany:self,
+slice holds the goal (an O_EXCL lock file with a heartbeat); it arms its successor FIRST (afterany:self,
 --begin=now+pace), with the intent written before sbatch so an ambiguous failure is
 recovered by comment, never resubmitted blind; while the checkpoint waits on Slurm
 jobs that are still queued or running it ends without calling a model; then the
@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
-import fcntl
 import json
 import os
 import secrets
@@ -40,6 +39,7 @@ from typing import Iterator, Mapping
 
 from ..bricks import Resources
 from ..config import Settings, load_settings
+from ..locking import LockTimeout, exclusive
 from ..projects import ProjectError, ProjectStore
 from ..slurm import JobSpec, Slurm, SlurmError, render_script
 from .checkpoint import CheckpointStore
@@ -93,33 +93,40 @@ class GoalBusy(GoalError):
     """Another slice of this goal runs: it arms its own successor, so this one just leaves."""
 
 
+OWNER_BEAT_S = 30  # the holding slice touches owner.lock this often
+OWNER_STALE_S = 180  # untouched this long: its holder is dead (node lost, killed), so the lock is broken
+
+
+def _take(path: Path, wait_s: float):
+    """The goal's lock, O_CREAT|O_EXCL with a heartbeat: flock would only exclude slices on the same node
+    (Lustre is mounted localflock), and the gpu partition puts slices on any node."""
+    lock = exclusive(path, wait_s=wait_s, stale_after_s=OWNER_STALE_S, heartbeat_s=OWNER_BEAT_S)
+    lock.__enter__()
+    return lock
+
+
 @contextmanager
 def held(goal: Goal, slurm: Slurm, job: str) -> Iterator[None]:
-    """One slice holds a goal. A lock whose holder cannot be alive (no other slice of this goal is
-    RUNNING: its node died, and the file server kept the lock) is set aside once."""
+    """One slice holds a goal. Another slice of it RUNNING means this one leaves (GoalBusy). With none running,
+    the holder has just ended or died: its lock stops being touched and is broken after OWNER_STALE_S."""
     goal.state.mkdir(parents=True, exist_ok=True)
     path = goal.state / "owner.lock"
-    for attempt in (1, 2):
-        handle = path.open("a")
+    try:
+        lock = _take(path, wait_s=1.0)
+    except LockTimeout:
+        running = [j.job_id for j in slurm.my_jobs() if j.name in goal.job_names and j.state == "RUNNING"
+                   and j.job_id != job]
+        if running:
+            raise GoalBusy(f"another slice holds the goal of {goal.project} (running: {running})") from None
         try:
-            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            break
-        except BlockingIOError:
-            handle.close()
-            running = [j.job_id for j in slurm.my_jobs() if j.name in goal.job_names and j.state == "RUNNING"
-                       and j.job_id != job]
-            if attempt == 2 or running:
-                raise GoalBusy(f"another slice holds the goal of {goal.project} (running: {running})")
-            path.rename(path.with_name(f"owner.lock.stale-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}"))
-            goal.event("stale_lock_set_aside", job=job)
-        except OSError as exc:
-            handle.close()
-            raise GoalError(f"cannot lock {path}: {exc}") from exc
+            lock = _take(path, wait_s=OWNER_STALE_S + 30)
+        except LockTimeout:
+            raise GoalBusy(f"the goal of {goal.project} stays locked with no slice running") from None
+        goal.event("stale_lock_broken", job=job)
     try:
         yield
     finally:
-        fcntl.flock(handle, fcntl.LOCK_UN)
-        handle.close()
+        lock.__exit__(None, None, None)
 
 
 class Slice:
@@ -450,6 +457,7 @@ class Slice:
         env += [("SCHUB_ROOT", str(s.root)), ("SCHUB_PYTHON", str(s.python)), ("PYTHONUNBUFFERED", "1")]
         if s.library:
             env.append(("SCHUB_LIBRARY", str(s.library)))
+        (self.goal.state / "logs").mkdir(parents=True, exist_ok=True)  # Slurm does not create --output folders
         return JobSpec(name=self.goal.job_name, partition=partition,
                        resources=Resources(cpus=1, mem_gb=4, time_min=config.slice_minutes + 10),
                        log_path=self.goal.state / "logs" / "slice-%j.log", workdir=self.goal.folder,

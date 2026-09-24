@@ -3,7 +3,7 @@
 This folder is sc-hub's own code, and this file is about **setting sc-hub up**
 (and fixing sc-hub). The student's research happens in `~/sc-hub-workspace`, whose
 own `AGENTS.md` applies there. Once the setup is done, come back here only when the
-student asks to update sc-hub or something in sc-hub blocks their research.
+student asks to update or fix sc-hub.
 
 ## A student asks you to set up sc-hub
 
@@ -12,17 +12,18 @@ where the setup stands, and what to do when a step gets stuck. In short:
 
 1. **Update and check.**
    - If this folder is a git checkout without local changes, run `git pull --ff-only`.
-   - Then run `sh onboard/start.sh check` (Windows: `onboard\start.ps1 check`). A failure is a bug to fix first.
+   - Then run `sh onboard/start.sh check` (Windows: `onboard\start.cmd check`). A failure is a bug to fix first.
    - No git? The guide says how to install it.
 2. **Start the setup page and hand it over.** The student does the rest in the browser.
-   - macOS, Linux: `(umask 077; mkdir -p ~/.sc-hub && nohup sh onboard/start.sh > ~/.sc-hub/onboard.log 2>&1 &)`, then read the line `sc-hub setup: open http://127.0.0.1:...` from that log. The log is private: the link's token lets whoever has it answer the page.
-   - Windows: `Start-Process powershell -ArgumentList '-ExecutionPolicy','Bypass','-File','onboard\start.ps1'`. It opens its own window and prints the same line there.
+   - macOS, Linux: `(umask 077; mkdir -p ~/.sc-hub && nohup sh onboard/start.sh > ~/.sc-hub/onboard.log 2>&1 &)`.
+   - Windows: `Start-Process onboard\start.cmd`. It opens its own window.
 
-   Give the link to the student only.
+   The page opens in the student's browser by itself. Check it runs with `start.sh status`. If the browser did not open, run `start.sh open`.
+   - **Never paste the page's link into the chat.** It carries a token that lets whoever has it answer the page. Don't read the link from the log either.
    - **Outside the sandbox.** The page needs the network and writes `~/.ssh`, `~/.codex` and the assistants' settings, so it cannot run inside a sandbox: ask the student to approve running it outside.
-   - **Leave it running.** It stops by itself 15 minutes after the setup finished.
+   - **Leave it running** until the setup is done. `start.sh stop` ends it. It also stops by itself 15 minutes after the setup finished and the page was closed.
 3. **Watch it.**
-   - Run `sh onboard/start.sh status` (Windows: `onboard\start.ps1 status`) now and then, and when the student says something is wrong.
+   - Run `sh onboard/start.sh status` (Windows: `onboard\start.cmd status`) now and then, and when the student says something is wrong.
    - A page started with `--home DIR` (trials) needs the same `--home DIR` on `status`, `retry` and `stop`.
    - A step waiting for the student is not stuck.
 4. **Unblock it.** When a step fails:
@@ -38,7 +39,7 @@ where the setup stands, and what to do when a step gets stuck. In short:
 
 Always:
 - **No secrets in the chat.** Never ask for the cluster password, a sign-in code or a token in the chat, and never answer the page's forms yourself. The page asks the student, and those values go straight to `ssh` or the agents' sign-in on the cluster.
-- **Let the page do the steps.** Don't run ssh, ssh-keygen, the installers or edits to `~/.ssh/config` yourself. The page runs them in order, checks each one and resumes where it stopped.
+- **Let the page do the steps.** Don't run ssh-keygen, the installers, key installs or edits to `~/.ssh/config` yourself. The page runs them in order, checks each one and resumes where it stopped. Looking at the cluster read-only is described in the guide.
 - **Don't cancel jobs.** Never cancel the student's cluster jobs.
 - **Commit only the fix.** Never commit keys, tokens, `~/.sc-hub/*.json` or logs.
 - **After Ready.** When the page says Ready, the student works in `~/sc-hub-workspace`: open that folder with them.

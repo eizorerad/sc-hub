@@ -275,6 +275,34 @@ def test_a_second_copy_of_a_running_slice_leaves_quietly(lab: Settings, cluster:
     assert not engine_calls()
 
 
+def test_a_slice_on_another_node_holds_the_goal_too(lab: Settings, cluster: FakeCluster) -> None:
+    """Lustre's flock is node-local: the goal's lock is a file, so a holder on another node counts."""
+    first = goal_agent.start(lab, Slurm(cluster), "p", GOAL)
+    cluster.jobs[first] = "RUNNING"
+    lock = Goal(lab, "p").state / "owner.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_text("gpu-07 4242 0\n")  # held by the first slice, on another node, touched just now
+    twin = "4243"
+    cluster.jobs[twin], cluster.names[twin] = "RUNNING", Goal(lab, "p").job_name
+    assert Slice(lab, Slurm(cluster), "p", twin).run() == "busy"
+    assert lock.read_text().startswith("gpu-07") and not engine_calls()
+
+
+def test_a_dead_holders_lock_is_broken(lab: Settings, cluster: FakeCluster, monkeypatch) -> None:
+    from schub.bench import goal_agent as agent
+
+    monkeypatch.setattr(agent, "OWNER_STALE_S", 2)
+    first = goal_agent.start(lab, Slurm(cluster), "p", GOAL)
+    cluster.jobs[first] = "RUNNING"
+    lock = Goal(lab, "p").state / "owner.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_text("gpu-07 4242 0\n")  # its node died a moment ago: nobody touches it any more
+    with agent.held(Goal(lab, "p"), Slurm(cluster), first):
+        assert lock.read_text().split()[1] == str(os.getpid())  # ours now
+    assert not lock.exists()
+    assert "stale_lock_broken" in [e["event"] for e in Goal(lab, "p").events(50)]
+
+
 def test_claude_stands_down_above_the_owners_weekly_ceiling(lab: Settings, cluster: FakeCluster, monkeypatch) -> None:
     engine_policy.set_mode(lab.bench_dir / "engine-policy.json", "mixed", claude_weekly_ceiling=0.8)
     monkeypatch.setenv("FAKE_CLAUDE_WEEK", "0.82")  # this turn is allowed; it reports the window above the ceiling

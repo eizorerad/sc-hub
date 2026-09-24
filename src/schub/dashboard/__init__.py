@@ -104,9 +104,6 @@ class _Images:
 
 def _journal_files(settings: Any, view: Path, snapshot: Any) -> None:
     """Figures the Journal tab shows, and each bench project's notebook (also kept in its journal)."""
-    from ..bench.journal import Journal
-    from ..bench.render_nb import render
-
     used: set[Path] = set()
     for card in snapshot.journals:
         for source, relative in card.figures:
@@ -117,8 +114,9 @@ def _journal_files(settings: Any, view: Path, snapshot: Any) -> None:
             except OSError:
                 continue
         _protocol_notebook(settings, view, card)
+        used |= {view / f"{card.notebook}.js", view / f"{card.notebook}.sig"}
         used |= _report_files(view, card)
-    for root in (view / "jfig", view / "jrep"):
+    for root in (view / "jfig", view / "jrep", view / "jnb"):
         for path in root.rglob("*") if root.is_dir() else []:
             if path.is_file() and path not in used:
                 path.unlink(missing_ok=True)
@@ -141,7 +139,7 @@ def _protocol_notebook(settings: Any, view: Path, card: Any) -> None:
     project_dir = settings.projects_dir / card.project
     journal = Journal(project_dir, card.project)
     text = json.dumps(render(card.project, card.question, journal.entries(), journal.folder), indent=1)
-    _write(view / f"{card.notebook}.ipynb", text)
+    (view / f"{card.notebook}.ipynb").unlink(missing_ok=True)  # (older builds wrote one; the page uses the .js)
     _write(view / f"{card.notebook}.js", f"window.SCHUB_JNB=window.SCHUB_JNB||{{}};"
                                          f"window.SCHUB_JNB[{json.dumps(card.project)}]={text};\n")
     try:

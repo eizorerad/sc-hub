@@ -14,11 +14,13 @@ Project slugs may contain "--"; cids never do, so names are split from the right
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from pydantic import ValidationError
 
@@ -36,6 +38,13 @@ def slug(project: str) -> str:
 
 def unslug(name: str) -> str:
     return name.replace(".", "/")
+
+
+def _loads(raw: bytes) -> Any:
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return None
 
 
 def split_name(stem: str) -> tuple[str, str]:
@@ -96,7 +105,12 @@ class Inbox:
                 os.rename(path, target)
             except FileNotFoundError:
                 continue
-            request = _parse(read_json(target))
+            try:
+                raw = target.read_bytes()
+            except OSError:  # a passing file-server error: not an invalid request
+                os.replace(target, path)
+                continue
+            request = _parse(_loads(raw))
             if request is None:
                 if _young(target):  # written in place where link() is missing: finish writing first
                     os.replace(target, path)
@@ -144,10 +158,32 @@ class Inbox:
 
     def rejected_reason(self, project: str, cid: str) -> str | None:
         for path in self._folder("rejected").glob("*.reason.json"):
-            if split_name(path.name[: -len(".reason.json")]) == (project, cid):
-                data = read_json(path)
-                return str(data.get("reason", "")) if data else ""
+            try:
+                if split_name(path.name[: -len(".reason.json")]) == (project, cid):
+                    data = read_json(path)
+                    return str(data.get("reason", "")) if data else ""
+            except ValueError:
+                continue
         return None
+
+    def unrecorded(self) -> list[tuple[str, str, str, Path]]:
+        """Rejected requests whose reason the journal may not show yet: (project, cid, reason, reason file)."""
+        found = []
+        for path in sorted(self._folder("rejected").glob("*.reason.json")):
+            try:
+                project, cid = split_name(path.name[: -len(".reason.json")])
+            except ValueError:
+                continue
+            data = read_json(path) or {}
+            found.append((project, cid, str(data.get("reason", "")), path))
+        return found
+
+    def recorded(self, reason_file: Path) -> None:
+        """The journal shows this rejection now: keep the file, out of unrecorded()."""
+        try:
+            os.rename(reason_file, reason_file.with_name(reason_file.name[: -len(".reason.json")] + ".recorded.json"))
+        except OSError:
+            pass
 
     def _reject(self, path: Path, reason: str) -> None:
         target = self._folder("rejected") / path.name

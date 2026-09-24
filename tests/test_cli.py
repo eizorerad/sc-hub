@@ -87,3 +87,13 @@ def test_long_inline_json_is_not_mistaken_for_a_path():
 
     inline = '{"steps": [' + ",".join(['{"brick": "qc_filter", "params": {}}'] * 20) + "]}"
     assert len(inline) > 300 and read_arg(inline) == inline
+
+
+def test_bad_input_gives_an_error_line_not_a_traceback(tmp_path, monkeypatch, capsys) -> None:
+    from schub.cli import main
+
+    monkeypatch.setenv("SCHUB_ROOT", str(tmp_path / "root"))
+    assert main(["bench-run", "p", "--code", "1", "--why", "w", "--expect", "e", "--checks", "5"]) == 1
+    assert "--checks takes a JSON list" in capsys.readouterr().err
+    assert main(["branch-save", "p", "b", "{bad: [yaml"]) == 1
+    assert "not valid YAML or JSON" in capsys.readouterr().err

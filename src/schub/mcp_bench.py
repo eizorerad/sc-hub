@@ -210,7 +210,8 @@ def _register_journal(mcp: MCPServer, bench: BenchService, call: Calls) -> None:
     def journal(project: str, since: str | None = None, kinds: list[str] | None = None,
                 limit: int = 20, ctx: Context = None) -> JournalView:  # type: ignore[assignment]
         """The project's hand-over, checkpoint and newest journal entries (cells and notes). Read it first in
-        a new chat. `since`: the `newest` value of an earlier answer, to get only what is new."""
+        a new chat. `since`: the `newest` value of an earlier answer, to get only what is new. `left_out`: entries
+        not shown to fit your limit (ask again with `since`, a smaller `limit` or `kinds`)."""
         _, profile = _client(ctx)
         return call("journal", {"project": project, "since": since},
                     lambda: bench.journal_view(project, since, kinds, limit, profile.max_output_chars + 4000))

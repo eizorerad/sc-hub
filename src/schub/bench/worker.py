@@ -77,6 +77,7 @@ class ProjectWorker:
         self.epochs = 0
         self.busy: str | None = None
         self.closing = False
+        self._executed = False  # the busy cell's code has finished running
         self._interrupts: set[str] = set()
         self._lock = threading.Lock()
         self.last_used = time.monotonic()
@@ -146,13 +147,17 @@ class ProjectWorker:
             self.host.inbox.requeue(item)  # never started: the successor runs it
             return
         self.busy = item.request.cid
+        self._executed = False
         try:
             self._run(item)
         except FinalEntryError as exc:  # someone closed the entry meanwhile: the kernel and its variables are fine
             _warn(f"{self.project}: {exc}")
             self.host.inbox.done(item)
         except Exception as exc:  # noqa: BLE001 - recorded in the journal below
-            self._shutdown_kernel()  # the code may still run; stop it before the next cell
+            if not self._executed:
+                self._shutdown_kernel()  # the code may still run; stop it before the next cell
+            # (after execute() returned, e.g. a full quota refused the final write: the kernel and its
+            # variables are fine, only the record failed)
             self._fail(item, f"sc-hub could not run this cell: {type(exc).__name__}: {exc}")
         finally:
             self.busy = None
@@ -202,6 +207,7 @@ class ProjectWorker:
                          on_progress=self._progress(journal, entry, collector),
                          should_interrupt=lambda: self._should_interrupt(entry.cid, project_dir),
                          should_kill=lambda: bool(self.host.retiring))
+        self._executed = True
         after = scan(project_dir, config.snapshot_max_files)
         files = diff(before, after, project_dir, config.snapshot_hash_max_mb * 1024 * 1024)
         events = [] if result.status == "lost" else parse_user_expression(drain_ledger(kernel))
@@ -272,6 +278,8 @@ class ProjectWorker:
             self._final(journal, item, entry.model_copy(update={"started": entry.started or self.host.now()}),
                         "error", message=message)
         except Exception as exc:  # noqa: BLE001 - last resort: keep the request, with the reason
+            # wait() answers with this reason at once, and the runner writes it into the journal
+            # entry as soon as it can (Runner.close_unrecorded), e.g. once the quota has room again.
             _warn(f"{item.request.project}#{item.request.cid}: could not record the failure: {exc}")
             self.host.inbox.reject(item, message)
 

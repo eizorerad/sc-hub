@@ -88,3 +88,21 @@ def test_bad_ids_never_become_paths() -> None:
     for bad in ({"cid": "/abs/escaped"}, {"cid": "c1"}, {"project": "../up"}, {"project": "A"}):
         with pytest.raises(ValidationError):
             request(**bad)
+
+
+def test_a_read_error_leaves_the_request_waiting(tmp_path: Path, monkeypatch) -> None:
+    """ESTALE/EIO while reading a claim is the file server's hiccup, not an invalid request."""
+    inbox = Inbox(tmp_path / "bench")
+    inbox.submit(CellRequest(project="demo", cid="c0001", code="1", why="w", expect="e", created="2026-09-24T00:00:00Z"))
+    real = Path.read_bytes
+
+    def flaky(self):
+        if self.parent.name == "1":
+            raise OSError(116, "Stale file handle")
+        return real(self)
+
+    monkeypatch.setattr(Path, "read_bytes", flaky)
+    assert inbox.claim("1") == [] and inbox.pending()  # back in the inbox, not rejected
+    monkeypatch.setattr(Path, "read_bytes", real)
+    assert [c.request.cid for c in inbox.claim("1")] == ["c0001"]
+

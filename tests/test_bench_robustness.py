@@ -44,6 +44,61 @@ def test_a_dead_holders_lock_is_broken(tmp_path: Path) -> None:
         assert path.exists()
 
 
+def test_a_lock_is_only_removed_by_its_own_holder(tmp_path: Path) -> None:
+    """A holder whose lock was broken (it looked dead) must not delete the lock its successor holds."""
+    path = tmp_path / "x.lock"
+    with exclusive(path, stale_after_s=0.2):
+        time.sleep(0.4)  # no heartbeat: looks dead
+        with exclusive(path, wait_s=1, stale_after_s=0.2):  # breaks it and holds it
+            successor = path.read_text()
+        path.write_text(successor)  # (as if the successor still held it)
+    assert path.exists() and path.read_text() == successor  # the first holder left it alone
+
+
+def test_the_heartbeat_survives_a_passing_file_server_error(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "x.lock"
+    real_utime, failures = os.utime, iter([OSError(116, "Stale file handle")])
+
+    def flaky(target, *args, **kwargs):
+        error = next(failures, None)
+        if error is not None:
+            raise error
+        return real_utime(target, *args, **kwargs)
+
+    monkeypatch.setattr("schub.locking.os.utime", flaky)
+    with exclusive(path, stale_after_s=0.5, heartbeat_s=0.1):
+        time.sleep(1.0)
+        with pytest.raises(LockTimeout):
+            with exclusive(path, wait_s=0.3, stale_after_s=0.5):
+                pass
+
+
+def test_a_stale_lock_is_broken_by_one_waiter_only(tmp_path: Path) -> None:
+    import threading
+
+    path = tmp_path / "x.lock"
+    path.write_text("dead 1 x\n")
+    os.utime(path, (time.time() - 600, time.time() - 600))
+    inside, overlaps, lock = [], [], threading.Lock()
+
+    def worker() -> None:
+        with exclusive(path, wait_s=5, stale_after_s=120):
+            with lock:
+                inside.append(1)
+                if len(inside) > 1:
+                    overlaps.append(1)
+            time.sleep(0.05)
+            with lock:
+                inside.pop()
+
+    threads = [threading.Thread(target=worker) for _ in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not overlaps and not path.exists()
+
+
 # ---- the workbench -------------------------------------------------------------------------------
 
 

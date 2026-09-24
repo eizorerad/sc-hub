@@ -14,7 +14,7 @@ from __future__ import annotations
 from pydantic import Field
 
 from ..state import DatasetState, Issue, error, warning
-from .base import BrickParams, BrickSpec, PlanContext, Resources, need_obs, need_raw_counts, scaled
+from .base import BrickSpec, PlanContext, Resources, need_obs, need_raw_counts, scaled
 from .integrate_scvi import ScviParams
 from .integrate_scvi import check as check_scvi
 

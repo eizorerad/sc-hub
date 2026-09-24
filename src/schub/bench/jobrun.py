@@ -163,6 +163,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="schub.bench.jobrun")
     parser.add_argument("--job-dir", required=True, type=Path)
     job_dir = parser.parse_args(argv).job_dir.resolve()
+    os.umask(0o077)  # the job's files are the student's alone (/l/users is often readable by everyone)
     with _time_warning(job_dir / "time-limit-near"):
         return _run(job_dir)
 

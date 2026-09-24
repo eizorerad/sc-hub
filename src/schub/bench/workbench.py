@@ -92,16 +92,22 @@ class Workbench:
     def ensure(self) -> WorkbenchState:
         if self.stopped():
             raise BenchStopped("the bench is stopped (bench/STOP exists); the student removes it to continue")
-        if self.jobs(WORKBENCH):
+        if self.start_if_missing() is None:
             return self.state()
-        # Parallel run() calls (or several lab agents) check and submit one at a time.
-        self.settings.bench_dir.mkdir(parents=True, exist_ok=True)
-        with exclusive(self.settings.bench_dir / ".ensure.lock", wait_s=60, stale_after_s=120):
-            if self.jobs(WORKBENCH):
-                return self.state()
-            self.submit_workbench()
         self.ensure_watchdog()
         return self.state(started_now=True)
+
+    def start_if_missing(self) -> str | None:
+        """Submit a workbench unless one exists; the new job id, or None. Parallel run() calls, lab agents
+        and the watchdog check and submit one at a time."""
+        if self.jobs(WORKBENCH):
+            return None
+        self.settings.bench_dir.mkdir(parents=True, exist_ok=True)
+        # (a short wait: the MCP answer must come within the client's 35 s; the holder only calls sbatch)
+        with exclusive(self.settings.bench_dir / ".ensure.lock", wait_s=20, stale_after_s=120):
+            if self.jobs(WORKBENCH):
+                return None
+            return self.submit_workbench()
 
     def submit_workbench(self, after: str | None = None) -> str:
         bench = self.settings.bench

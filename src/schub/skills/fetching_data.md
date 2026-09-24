@@ -19,8 +19,8 @@ path = bench.fetch("https://.../file.h5ad", md5="<if the source publishes one>")
   Delete a folder there to free its space.
 - A busy server (HTTP 429 or 5xx) is retried; a 404 or 403 is not.
 - Large files (tens of GB): fetch inside a `%%slurm` cell so the kernel stays free.
-- First check the shared library with `datasets()`: Kang 2018, PBMC 3k and PBMC 1k
-  FASTQ are already there, with checksums.
+- First check `datasets()`: the starter data (PBMC 3k, Kang 2018, the CellTypist
+  models) are already in your workspace, with checksums, and a shared library may add more.
 - Where to find public data, with checked links and checksums:
   skills("dataset_sources"); perturbation screens: skills("perturbseq").
 - GEO: use the https links (https://ftp.ncbi.nlm.nih.gov/geo/...); ftp:// is refused.

@@ -88,7 +88,8 @@ def test_a_check_fixed_later_raises_no_alert(settings: Settings, cluster: FakeCl
 def test_the_notebook_is_valid_and_kept_in_the_journal(settings: Settings, cluster: FakeCluster) -> None:
     bench_project(settings)
     build(settings, cluster)
-    notebook = json.loads((settings.view_dir / "jnb" / "ifn.ipynb").read_text())
+    assert not (settings.view_dir / "jnb" / "ifn.ipynb").exists()  # the page downloads it from its .js
+    notebook = json.loads((settings.projects_dir / "ifn" / "journal" / "notebook.ipynb").read_text())
     assert (notebook["nbformat"], notebook["nbformat_minor"]) == (4, 5)
     ids = [c["id"] for c in notebook["cells"]]
     assert len(ids) == len(set(ids)) and all(re.fullmatch(r"[a-zA-Z0-9-_]{1,64}", i) for i in ids)

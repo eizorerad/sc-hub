@@ -59,6 +59,11 @@ def _time(created: str) -> str:
     return created[5:16].replace("T", " ")
 
 
+def _when(created: str) -> str:
+    """A stamp shown in the reader's own time zone (the page converts it; without scripts it says UTC)."""
+    return f'<span class="jt" data-at="{esc(created)}">{esc(_time(created))} UTC</span>' if created else ""
+
+
 def _line(text: str, limit: int = 220) -> str:
     flat = " ".join(text.split())
     return flat if len(flat) <= limit else flat[: limit - 1] + "…"
@@ -97,9 +102,7 @@ def _branch_group(card: JournalCard, children: dict[str, list[JournalCard]]) -> 
     live = [g for g in groups if g in LIVELY]
     if live:
         return min(live, key=RANK.__getitem__)
-    if card.group == "eval":
-        return "eval"
-    return min((g for g in groups if g != "eval"), key=RANK.__getitem__)
+    return card.group  # nothing lively: where the project itself stands (a done variant does not finish it)
 
 
 def _latest(card: JournalCard, children: dict[str, list[JournalCard]]) -> str:
@@ -177,7 +180,7 @@ def _head(card: JournalCard, names: set[str]) -> str:
     now = f'<span class="jp-live">{esc(card.live)}</span>' if card.live else ""
     nxt = (f'<span class="jp-next" title="{esc(card.next_action)}">Next: {esc(_line(card.next_action, 180))}</span>'
            if card.next_action and card.disposition != "complete" else "")
-    meta = f'<span class="muted small">{esc(card.project)} · {card.cells} cells · updated {esc(_time(card.updated))}</span>'
+    meta = f'<span class="muted small">{esc(card.project)} · {card.cells} cells · updated {_when(card.updated)}</span>'
     return (f'{_crumbs(card.project, names)}<h2 class="jp-q">{esc(card.question or card.project)}</h2>'
             f'<div class="jp-state">{pill(css, label)}{now}{nxt}{meta}</div>')
 
@@ -247,7 +250,7 @@ def _note_row(entry: dict[str, Any], extra: bool) -> str:
     return (f'<details class="jrow-d{" extra" if extra else ""}" data-kind="{esc(entry["kind"])}" '
             f'data-engine="{esc(entry["engine"])}"><summary><span class="jkind">{esc(label)}</span>'
             f'<span class="jrow-text">{esc(_line(entry["text"]))}</span>{audience}{flag}'
-            f'<span class="jwhen-abs">{esc(_time(entry["created"]))}</span></summary>'
+            f'<span class="jwhen-abs">{_when(entry["created"])}</span></summary>'
             f'<div class="jrow-body"><p class="note-text">{esc(entry["text"])}</p>{because}{reverses}{numbers}'
             f'{_foot(entry)}</div></details>')
 
@@ -365,7 +368,7 @@ def _step_row(entry: dict[str, Any], project_path: str = "") -> str:
     return (f'<details class="jrow-d jstep" data-failed="{int(_failed(entry))}" data-fig="{int(figure)}" '
             f'data-engine="{esc(entry["engine"])}"><summary><span class="jst {css}" title="{esc(entry["status"])}">'
             f'{glyph}</span><code class="jcid">{esc(entry["cid"])}</code><span class="jrow-text">{esc(_line(entry["why"]))}'
-            f'</span>{_summary_marks(entry)}<span class="jwhen-abs">{esc(_time(entry["created"]))}</span></summary>'
+            f'</span>{_summary_marks(entry)}<span class="jwhen-abs">{_when(entry["created"])}</span></summary>'
             f'<div class="jrow-body"><div class="muted small">expected: {esc(entry["expect"])}{esc(took)}</div>'
             f'{_badges(entry)}{message}{_output(entry)}{_folded(entry)}{_change(entry, project_path)}'
             f'{_foot(entry)}</div></details>')
@@ -375,7 +378,7 @@ def _system_row(entry: dict[str, Any]) -> str:
     return (f'<details class="jrow-d sys" data-sys="1" hidden><summary><span class="jst muted">·</span>'
             f'<span class="jkind">{esc(NOTE_LABELS.get(entry["kind"], entry["kind"]))}</span>'
             f'<span class="jrow-text">{esc(_line(entry["text"]))}</span><span class="jwhen-abs">'
-            f'{esc(_time(entry["created"]))}</span></summary><div class="jrow-body"><p class="note-text">'
+            f'{_when(entry["created"])}</span></summary><div class="jrow-body"><p class="note-text">'
             f'{esc(entry["text"])}</p>{_foot(entry)}</div></details>')
 
 
@@ -462,12 +465,18 @@ JOURNAL_SCRIPT = r"""
   const pages = () => (window.SCHUB_JPAGE = window.SCHUB_JPAGE || {});
   const slug = p => p.replace(/\//g, '.');
 
+  const pad = n => String(n).padStart(2, '0');
   function ago(root) {
     $$('[data-when]', root).forEach(el => {
       const at = Date.parse(el.dataset.when);
       if (!at) return;
       const m = Math.max(0, Math.round((Date.now() - at) / 60000));
       el.textContent = m < 60 ? `${m} min` : m < 48 * 60 ? `${Math.round(m / 60)} h` : `${Math.round(m / 1440)} d`;
+    });
+    $$('[data-at]', root).forEach(el => {  // stamps are UTC; show them in the reader's own time
+      const at = new Date(el.dataset.at);
+      if (isNaN(at)) return;
+      el.textContent = `${pad(at.getMonth() + 1)}-${pad(at.getDate())} ${pad(at.getHours())}:${pad(at.getMinutes())}`;
     });
   }
   function download(button) {
@@ -620,5 +629,6 @@ JOURNAL_SCRIPT = r"""
   const q = $('#jnav-q');
   if (q && keep('jq')) { q.value = keep('jq'); search(q.value); }
   ago(document);
+  setInterval(() => ago(document), 30000);  // "12 min" labels keep moving while the page waits
 })();
 """

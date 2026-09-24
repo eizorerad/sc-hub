@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import pytest
 
-from schub.bricks import REGISTRY
 from schub.h5ad_profile import profile_h5ad
 from schub.headlines import headline
 from schub.planner import StepRequest, build_plan

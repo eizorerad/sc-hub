@@ -35,6 +35,7 @@ from .kernels import RUNNER_CLEAN, ProjectKernel, runner_env
 from .worker import KernelFactory, ProjectWorker, new_entry
 
 HEARTBEAT_S = 10.0
+WATCHDOG_CHECK_S = 600.0
 STALE_AFTER_S = 60.0
 SHUTDOWN_S = 20.0  # Slurm's KillWait is 30 s by default
 WAIT_FOR_OTHER_S = 120.0
@@ -83,6 +84,7 @@ class Runner:
         self._retiring = ""
         self._stop_reason = ""
         self._last_activity = monotonic()
+        self._watchdog_checked = monotonic()
         self._lock = threading.Lock()
 
     # ---- state shared with workers ---------------------------------------------------
@@ -214,8 +216,47 @@ class Runner:
         self._evict_kernels()
         if self.monotonic() >= next_beat:
             self._write_state("running")
+            self.close_unrecorded()
+            self._keep_watchdog()
             return self.monotonic() + HEARTBEAT_S
         return next_beat
+
+    def _keep_watchdog(self) -> None:
+        """The watchdog chain may have died (a failed sbatch, a lost node) while this workbench lives;
+        ensure() only re-arms it when it starts a workbench, so the runner looks every few minutes."""
+        from .workbench import Workbench
+
+        if "SLURM_JOB_ID" not in os.environ or self.monotonic() < self._watchdog_checked + WATCHDOG_CHECK_S:
+            return  # (not a Slurm job: tests, local runs)
+        self._watchdog_checked = self.monotonic()
+        try:
+            Workbench(self.settings, self.slurm, self.now).ensure_watchdog()
+        except (SlurmError, OSError) as exc:
+            _warn(f"watchdog not re-armed: {exc}")
+
+    def close_unrecorded(self) -> int:
+        """Entries left "running" because their final write failed (a full quota, a file-server error):
+        written as errors with the reason once the journal takes writes again."""
+        closed = 0
+        store = ProjectStore(self.settings)
+        for project, cid, reason, reason_file in self.inbox.unrecorded():
+            try:
+                journal = Journal(store.require(project), project, now=self.now)
+                entry = journal.raw_cell(cid)
+                if entry is None:
+                    continue  # it never started: wait() answers from the reason file itself
+                if not entry.final:
+                    journal.write_cell(entry.model_copy(update={
+                        "status": "error", "finished": self.now(), "message": reason}))
+                    closed += 1
+            except ProjectError:
+                continue  # no such project: the reason file is the only record
+            except JournalError:
+                pass  # it became final meanwhile
+            except OSError:
+                return closed  # still refused (e.g. the quota): try again at the next beat
+            self.inbox.recorded(reason_file)
+        return closed
 
     def _dispatch(self, item: Claimed) -> None:
         self.touch()
@@ -354,6 +395,7 @@ def _install_signals(runner: Runner) -> None:
 def main() -> int:
     if os.environ.get(RUNNER_CLEAN) != "1":
         os.execve(sys.executable, [sys.executable, "-m", "schub.bench.runner"], runner_env(os.environ))
+    os.umask(0o077)  # outputs, figures, hand-overs: /l/users is often readable by everyone
     runner = Runner(load_settings())
     _install_signals(runner)
     return runner.run()

@@ -226,7 +226,7 @@ SCRIPT = r"""
     const st = $('#run-state')?.value || '';
     keep.set('run-q', q); keep.set('run-st', st);
     let shown = 0, matched = 0;
-    $$('#run-list tbody tr').forEach(r => {
+    $$('#run-list tr[data-state]').forEach(r => {  // history rows (the Queue's rows have no state)
       const hit = !((st && r.dataset.state !== st) || (q && !r.dataset.text.includes(q)));
       if (hit) matched++;
       const show = hit && (runsExpanded || q || st || shown < RUNS_SHOWN);

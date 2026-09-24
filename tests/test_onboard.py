@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import threading
 import time
@@ -19,7 +20,7 @@ sys.path.insert(0, str(ONBOARD))
 from sc_hub_onboard.cluster_agents import CLAUDE_URL, DEVICE, clean  # noqa: E402
 from sc_hub_onboard.engine import Engine  # noqa: E402
 from sc_hub_onboard.server import OnboardServer  # noqa: E402
-from sc_hub_onboard.sshkit import Paths, check_login, strip_block, write_block  # noqa: E402
+from sc_hub_onboard.sshkit import Paths, SshError, check_login, strip_block, write_block  # noqa: E402
 from sc_hub_onboard.steps import REMOTE_ROOT, Setup, build  # noqa: E402
 
 
@@ -114,13 +115,13 @@ def test_the_whole_onboarding_from_the_page(helper) -> None:
     failed = [x for x in state["steps"] if x["status"] == "failed"]
     assert not failed, failed
     assert state["progress"] == 100 and [x["status"] for x in state["steps"]][-1] == "skipped"
-    vscode = next(x for x in state["steps"] if x["id"] == "vscode")  # no VS Code here: ready, then skipped
-    assert vscode["status"] == "skipped" and "job 207131 on gpu-03" in vscode["detail"]
+    vscode = next(x for x in state["steps"] if x["id"] == "vscode")  # no VS Code here: nothing set up
+    assert vscode["status"] == "skipped" and "no VS Code" in vscode["detail"]
     # this computer: the alias first in ~/.ssh/config, the old settings kept, a key, the assistants' configs
     config = (paths.ssh_config).read_text()
     assert config.startswith("# >>> sc-hub >>>\nHost mbzuai-schub\n") and "ServerAliveInterval 30" in config
     assert "User test.user" in config and paths.key.exists()
-    assert "Host mbzuai-schub-ide" in config and "/l/users/test.user/schub/bin/schub ide-proxy" in config
+    assert "Host mbzuai-schub-ide" not in config  # no editor, no shell into the job
     codex = (paths.home / ".codex" / "config.toml").read_text()
     assert "[mcp_servers.schub]" in codex and "/l/users/test.user/schub/bin/schub-mcp" in codex and str(paths.ssh_config) in codex
     assert (paths.workspace / "AGENTS.md").exists() and (paths.workspace / "schub-view").exists()
@@ -150,6 +151,22 @@ def test_a_rerun_skips_what_is_done_and_asks_the_password_for_setup(helper) -> N
     while time.monotonic() < deadline and engine.states["cluster"].status not in ("done", "failed"):
         time.sleep(0.05)
     assert engine.states["cluster"].status == "done", engine.states["cluster"].detail
+
+
+def test_with_vs_code_the_editor_gets_its_host_into_the_workbench_job(helper, tmp_path) -> None:
+    server, paths, cluster = helper
+    bin_dir = tmp_path / "vscode-bin"
+    bin_dir.mkdir()
+    (bin_dir / "code").write_text("#!/bin/sh\n[ \"$1\" = --list-extensions ] && echo ms-vscode-remote.remote-ssh\nexit 0\n")
+    (bin_dir / "code").chmod(0o755)
+    os.environ["PATH"] = f"{bin_dir}:{os.environ['PATH']}"  # (the fixture's monkeypatch restores PATH)
+    to_the_agents(server)
+    form(server, "Sign in to Codex")
+    state = api(server, "/api/state")
+    vscode = next(x for x in state["steps"] if x["id"] == "vscode")
+    assert vscode["status"] == "done" and "job 207131 on gpu-03" in vscode["detail"]
+    config = paths.ssh_config.read_text()
+    assert "Host mbzuai-schub-ide" in config and "/l/users/test.user/schub/bin/schub ide-proxy" in config
 
 
 def test_codex_without_device_codes_and_a_personal_account(helper) -> None:
@@ -307,6 +324,19 @@ def test_stop_ends_the_page_and_the_saved_state_says_finished(helper, capsys) ->
     assert report["page"] == "not running (saved state)" and report["finished"] is True
 
 
+def test_open_shows_the_page_to_the_student_without_printing_its_link(helper, monkeypatch, capsys) -> None:
+    import webbrowser
+
+    from sc_hub_onboard import agent_cli
+
+    server, paths, _ = helper
+    agent_cli.write_page_file(paths, server.port, server.token)
+    opened: list[str] = []
+    monkeypatch.setattr(webbrowser, "open", lambda url: opened.append(url) or True)
+    assert agent_cli.open_page(paths) == 0
+    assert opened == [server.url] and server.token not in capsys.readouterr().out
+
+
 def test_the_sign_in_output_is_read_through_colours_and_links() -> None:
     codex = ("Welcome to Codex [v\x1b[90m0.155.1\x1b[0m]\n1. Open this link in your browser\n   "
              "\x1b[94mhttps://auth.openai.com/codex/device\x1b[0m\n\n2. Enter this one-time code \x1b[90m(expires in "
@@ -346,7 +376,7 @@ def test_the_page_is_only_for_this_computer_and_this_link(helper) -> None:
 def test_logins_and_the_config_block() -> None:
     assert check_login(" Test.User ") == "test.user"
     for bad in ("", "a", "root; rm -rf", "leo@x", "../x"):
-        with pytest.raises(Exception):
+        with pytest.raises(SshError):
             check_login(bad)
     assert strip_block("a\n# >>> sc-hub >>>\nHost x\n# <<< sc-hub <<<\nb\n") == "a\nb\n"
     # sc-hub's folder on the cluster: the default one of a firstname.lastname login, nothing that breaks quoting

@@ -9,7 +9,7 @@ import pandas as pd
 import pytest
 
 from schub.dashboard import build_dashboard
-from schub.dashboard.collect import NodeView, RunView, Snapshot, StepView, collect, run_state, step_state
+from schub.dashboard.collect import RunView, Snapshot, StepView, collect, run_state, step_state
 from schub.dashboard.steps import StepExtras, duration, slurm_seconds, step_extras
 from schub.dashboard.views_activity import render_queue, status_chip
 from schub.dashboard.views_runs import run_detail

@@ -23,7 +23,10 @@ def read_arg(raw: str) -> str:
 
 def _load_spec(raw: str) -> BranchSpec:
     text = read_arg(raw)
-    data = yaml.safe_load(text)  # YAML is a superset of JSON
+    try:
+        data = yaml.safe_load(text)  # YAML is a superset of JSON
+    except yaml.YAMLError as exc:
+        raise ValueError(f"branch spec is not valid YAML or JSON: {exc}") from exc
     if not isinstance(data, dict):
         raise ValueError("branch spec must be a mapping (YAML or JSON)")
     return BranchSpec.model_validate(data)
@@ -62,6 +65,9 @@ def add_parsers(sub: Any) -> None:
     assets.add_argument("--missing", action="store_true")
     dash = sub.add_parser("dashboard", help="write the static dashboard (view/)")
     dash.add_argument("--out", type=Path)
+    sub.add_parser("view-sum", help="rebuild the dashboard; print a checksum of its figures and notebooks (Windows mirror)")
+    pack = sub.add_parser("view-pack", help="the dashboard as a tar stream on stdout (Windows mirror)")
+    pack.add_argument("kind", choices=["light", "full"])
 
 
 def _idea_changes(args: argparse.Namespace) -> dict[str, Any]:

@@ -29,6 +29,13 @@ PYTHON=""
 HEAVY_CMD=""
 
 log() { printf '[sc-hub] %s\n' "$*"; }
+
+asset_names() {  # words like pbmc3k, kallisto-human, pbmc1k_v3_fastq: never an option, never a path
+  local word
+  for word in $1; do
+    [[ "$word" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || return 1
+  done
+}
 die() { printf '[sc-hub] ERROR: %s\n' "$*" >&2; exit 1; }
 
 make_layout() {
@@ -51,8 +58,11 @@ shared_env() {
   local current="$LIBRARY/envs/current" env_dir writable
   [ -x "$current/bin/python" ] || return 1
   env_dir="$(readlink -f "$current")"
-  writable="$(find "$env_dir" "$LIBRARY/python" "$LIBRARY/datasets" "$LIBRARY/models" \
-    ! -type l -perm /022 -print -quit 2>/dev/null || true)"
+  # Everything students run or read from it: a folder another student could write to would let them
+  # swap the environment, a tool or a reference under everyone.
+  writable="$( { find "$LIBRARY" "$LIBRARY/envs" -maxdepth 0 -perm /022 -print
+    find "$env_dir" "$LIBRARY/python" "$LIBRARY/datasets" "$LIBRARY/models" "$LIBRARY/tools" "$LIBRARY/refs" \
+      "$LIBRARY/bin" ! -type l -perm /022 -print; } 2>/dev/null | head -n 1 || true)"
   if [ -n "$writable" ]; then
     log "refusing the shared library: $writable is writable by others"
     return 1
@@ -118,7 +128,7 @@ export UV_PYTHON_PREFERENCE=only-managed UV_TORCH_BACKEND='$TORCH_BACKEND'
 [ -x '$ROOT/env/bin/python' ] || '$ROOT/bin/uv' venv --quiet --python $PYTHON_VERSION '$ROOT/env'
 '$ROOT/bin/uv' pip install --quiet --python '$ROOT/env/bin/python' -e '$SRC_DIR[analysis]'
 '$ROOT/bin/schub' gpu-check || [ '$INSTALL_MODE' = login ]
-'$ROOT/bin/schub' fetch $ASSETS"
+'$ROOT/bin/schub' fetch -- $ASSETS"
   log "fallback: building a private environment and fetching $ASSETS (several minutes)..."
   if [ "$INSTALL_MODE" = "job" ]; then run_heavy --gres=gpu:1; else run_heavy; fi
 }
@@ -126,19 +136,19 @@ export UV_PYTHON_PREFERENCE=only-managed UV_TORCH_BACKEND='$TORCH_BACKEND'
 fetch_missing() {
   local todo
   todo="$("$ROOT/bin/schub" assets $ASSETS --missing)" || die "could not check starter assets"
-  [[ "$todo" =~ ^[a-z0-9\ ]*$ ]] || die "unexpected asset list: $todo"
+  asset_names "$todo" || die "unexpected asset list: $todo"
   if [ -z "${todo// /}" ]; then
     log "all starter assets are available"
     return
   fi
   log "not in the shared library, downloading into library-local: $todo"
-  HEAVY_CMD="'$ROOT/bin/schub' fetch $todo"
+  HEAVY_CMD="'$ROOT/bin/schub' fetch -- $todo"
   run_heavy
 }
 
 main() {
   command -v sbatch >/dev/null || die "run this on the cluster login node (sbatch not found)"
-  [[ "$ASSETS" =~ ^[a-z0-9\ ]*$ ]] || die "SCHUB_ASSETS may only contain asset names"
+  asset_names "$ASSETS" || die "SCHUB_ASSETS may only contain asset names (letters, digits, _ and -)"
   make_layout
   local env_dir
   if env_dir="$(shared_env)"; then

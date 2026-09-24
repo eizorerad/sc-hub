@@ -7,22 +7,23 @@ fixes for review so the next student does not hit the same problem.
 
 This guide is for the setup only. When the page says Ready, the work is research in
 `~/sc-hub-workspace`, under that folder's own `AGENTS.md`. There, sc-hub problems
-are worked around and noted in `sc-hub-issues.md`. Come back to this guide when one
-blocks the research or the student asks for a fix.
+are worked around and noted in `sc-hub-issues.md`. Come back to this guide when the
+student asks for a fix.
 
 ## The commands you have
 
-Run these from the root of the sc-hub checkout. `start.sh` / `start.ps1` find a
+Run these from the root of the sc-hub checkout. `start.sh` / `start.cmd` find a
 Python (or fetch one with uv) and pass the arguments on.
 
 | What | macOS, Linux | Windows |
 |---|---|---|
-| Start the page | `sh onboard/start.sh` | `powershell -ExecutionPolicy Bypass -File onboard\start.ps1` |
-| Each step: status, detail, hint, last log lines | `sh onboard/start.sh status` (`--json` for all of it) | `... start.ps1 status` |
-| Ask the running page to retry | `sh onboard/start.sh retry [STEP]` (no STEP: every failed step) | `... start.ps1 retry [STEP]` |
-| Stop the page (to restart it) | `sh onboard/start.sh stop` | `... start.ps1 stop` |
-| The helper's own tests | `sh onboard/start.sh check` (ends with `check: passed`) | `... start.ps1 check` (the portable part) |
-| The reviewer's task (below) | `sh onboard/start.sh review-prompt "FAILURE"` | `... start.ps1 review-prompt "FAILURE"` |
+| Start the page | `sh onboard/start.sh` | `onboard\start.cmd` |
+| Open the running page for the student | `sh onboard/start.sh open` | `onboard\start.cmd open` |
+| Each step: status, detail, hint, last log lines | `sh onboard/start.sh status` (`--json` for all of it) | `onboard\start.cmd status` |
+| Ask the running page to retry | `sh onboard/start.sh retry [STEP]` (no STEP: every failed step) | `onboard\start.cmd retry [STEP]` |
+| Stop the page (to restart it) | `sh onboard/start.sh stop` | `onboard\start.cmd stop` |
+| The helper's own tests | `sh onboard/start.sh check` (ends with `check: passed`) | `onboard\start.cmd check` (the portable part) |
+| The reviewer's task (below) | `sh onboard/start.sh review-prompt "FAILURE"` | `onboard\start.cmd review-prompt "FAILURE"` |
 
 - **Where they look.** `status`, `retry` and `stop` read `~/.sc-hub/page.json`, which the running page writes for you. If the page was started with `--home DIR`, pass the same `--home DIR` to them, in any order (`status --home DIR`). A relative DIR is taken from the folder you run the command in.
 - **No secrets.** None of them prints a password, a sign-in code or the page's token.
@@ -58,7 +59,7 @@ Before `limit` is done, you can look at the cluster with the key:
 - `tail -50 ~/schub/logs/<file>` shows recent logs.
 
 Look only, and change nothing there by hand. After `limit`, the key runs only
-sc-hub's own commands. Use the MCP tools (`cluster_overview`) or ask the student
+sc-hub's own commands. Use the MCP tools (`cluster`) or ask the student
 to run a command in their own terminal with their password.
 
 ## When a step fails or seems stuck
@@ -103,7 +104,7 @@ assistant gets the fix on its next update.
 
 1. **Independent review first.** A second assistant reviews your change against `onboard/REVIEW.md`. `review-prompt` prints its whole task: the checklist, where the checkout is, and the failure you give it. The failure is the step and its detail from `status`, or the test that failed in `check`.
    - Claude Code: start a subagent whose task is that output.
-   - From a terminal, pipe it into another assistant. On Windows, use `onboard\start.ps1 review-prompt "..."` in the same way.
+   - From a terminal, pipe it into another assistant. On Windows, use `onboard\start.cmd review-prompt "..."` in the same way.
      ```bash
      sh onboard/start.sh review-prompt "hello: the job ended as ['COMPLETED'] with checks ['pass']" \
        | claude -p --allowedTools "Read,Grep,Glob,Bash(git diff:*),Bash(git status:*),Bash(sh onboard/start.sh check:*)"

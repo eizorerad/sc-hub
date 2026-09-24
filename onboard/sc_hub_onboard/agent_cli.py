@@ -1,6 +1,7 @@
 """Commands for the assistant that runs the setup with the student (see onboard/AGENT_GUIDE.md).
 
     python -m sc_hub_onboard status [--home DIR] [--json]   each step: status, detail, hint, last log lines
+    python -m sc_hub_onboard open [--home DIR]              the running page in the default browser (no link printed)
     python -m sc_hub_onboard retry [STEP] [--home DIR]      the running page retries STEP (default: the failed ones)
     python -m sc_hub_onboard stop [--home DIR]              the running page stops (start it again to reload the helper)
     python -m sc_hub_onboard check                          the helper's own tests
@@ -26,7 +27,7 @@ from typing import Any
 from .sshkit import Paths
 
 REPO = Path(__file__).resolve().parents[2]
-COMMANDS = ("status", "retry", "stop", "check", "review-prompt")
+COMMANDS = ("status", "open", "retry", "stop", "check", "review-prompt")
 LOG_LINES = 12
 # The page's end-to-end tests drive a fake `ssh` script through PATH, which Windows cannot run.
 PORTABLE_TESTS = "config_block or twice or colours or error_messages"
@@ -122,10 +123,27 @@ def status(paths: Paths, as_json: bool = False) -> int:
     return 0
 
 
+def open_page(paths: Paths) -> int:
+    """The running page in the student's browser, without showing its link (the token) to anyone."""
+    import webbrowser
+
+    try:
+        page = json.loads(page_file(paths).read_text())
+        url = f"http://127.0.0.1:{int(page['port'])}/?t={page['token']}"
+    except (OSError, ValueError, KeyError):
+        print("The page is not running. Start it (onboard/start.sh or onboard\\start.cmd).")
+        return 1
+    if _call(paths, "/api/state") is None:
+        print("The page is not running. Start it again: it resumes where it stopped.")
+        return 1
+    print("Opened in the default browser." if webbrowser.open(url) else "No browser could be opened on this computer.")
+    return 0
+
+
 def retry(paths: Paths, step: str) -> int:
     answer = _call(paths, "/api/retry", {"step": step})
     if answer is None:
-        print("The page is not running. Start it again (onboard/start.sh or start.ps1): it resumes where it stopped.")
+        print("The page is not running. Start it again (onboard/start.sh or onboard\\start.cmd): it resumes where it stopped.")
         return 1
     print(f"The page retries {step or 'the failed steps'}; follow it with the status command.")
     return 0
@@ -135,8 +153,8 @@ def stop(paths: Paths) -> int:
     if _call(paths, "/api/quit", {}) is None:
         print("The page is not running.")
         return 1
-    print("The page stops. Start it again (onboard/start.sh or start.ps1): the steps resume, and the student gets a "
-          "new link.")
+    print("The page stops. Start it again (onboard/start.sh or onboard\\start.cmd): the steps resume, and the page opens "
+          "in the student's browser again.")
     return 0
 
 
@@ -148,7 +166,7 @@ def check() -> int:
     select = ["-k", PORTABLE_TESTS] if os.name == "nt" else []
     if os.name == "nt":
         print("Windows: running the portable tests only; the page's end-to-end tests run on macOS, Linux or WSL "
-              "(and on every pull request).")
+              "(and on every pull request).")  # (tests/onboard_fakes/ssh is a Python script PATH cannot run here)
     try:
         import pytest  # noqa: F401
         command = [sys.executable, "-m", "pytest", *PYTEST_ARGS, str(tests), *select]
@@ -172,7 +190,7 @@ def review_prompt(failure: str) -> int:
           f"- The checkout: `{REPO}` (run `git diff` and `git status` there).\n"
           f"- It was at: {_checkout()}.\n"
           f"- The failure the change fixes: {failure or '(not given: judge from the code and say so)'}\n"
-          "- If you can run commands, run `sh onboard/start.sh check` there (Windows: `onboard\\start.ps1 check`); "
+          "- If you can run commands, run `sh onboard/start.sh check` there (Windows: `onboard\\start.cmd check`); "
           "if you cannot, say so.\n"
           "- The last line of your answer is `APPROVE` or `CHANGES` with its reasons, as above.")
     return 0
@@ -194,6 +212,8 @@ def main(argv: list[str]) -> int:
         return retry(paths, args.step)
     if args.command == "stop":
         return stop(paths)
+    if args.command == "open":
+        return open_page(paths)
     if args.command == "review-prompt":
         return review_prompt(args.step)
     return check()

@@ -10,7 +10,7 @@ repository's `AGENTS.md` tells it to start this page and hand it to you):
 
 ```bash
 sh onboard/start.sh                                             # macOS, Linux
-powershell -ExecutionPolicy Bypass -File onboard\start.ps1      # Windows 10/11
+onboard\start.cmd                                               # Windows 10/11
 ```
 
 A page opens on this computer only (`127.0.0.1`, with a one-time token in the
@@ -51,9 +51,9 @@ home (for trials), `--no-browser` opens nothing by itself.
 ### When the assistant runs it: fixes that come back
 
 Students set up through their coding assistant, and the repository's `AGENTS.md`
-and `onboard/AGENT_GUIDE.md` explain the whole setup to it. It gets three
-commands: `start.sh status`, `start.sh retry <step>` and `start.sh check`. None
-of them shows a password, a sign-in code or the page's token.
+and `onboard/AGENT_GUIDE.md` explain the whole setup to it. It gets these commands:
+`start.sh status`, `open`, `retry <step>`, `stop`, `check` and `review-prompt`. None of
+them shows a password, a sign-in code or the page's token.
 
 When a step gets stuck, the assistant finds the cause and fixes it:
 - **On the student's side** (OpenSSH, the cluster `~/.bashrc`, the VPN), with the student's consent. Nothing is committed.
@@ -66,9 +66,9 @@ When a step gets stuck, the assistant finds the cause and fixes it:
 This routine is for the setup. Afterwards the assistant works in
 `~/sc-hub-workspace` on research. If sc-hub's plumbing fails there, it tells the
 student in one line, works around the problem and notes it in
-`sc-hub-issues.md`. It fixes sc-hub only when the problem blocks the research or
-the student asks. The goal is a working tool for the biologist, not a perfect
-sc-hub.
+`sc-hub-issues.md`. It fixes sc-hub only when the student asks (for example
+because a problem blocks the research). The goal is a working tool for the
+biologist, not a perfect sc-hub.
 
 GitHub Actions (`.github/workflows/tests.yml`) runs the tests on every pull
 request: all of them on Linux, the helper's portable ones on Windows. The pilot
@@ -112,14 +112,19 @@ The key opens sc-hub only: its line in `~/.ssh/authorized_keys` on the cluster
 starts with `restrict,port-forwarding,command="<root>/bin/schub-gate"`, which
 lets through the MCP server, the dashboard mirror (`schub dashboard` + a
 read-only rsync of `view/`) and `schub-lab` sessions (their tunnel), and
-refuses the rest, a shell included; every decision goes to
+refuses the rest, a shell on the login node included; every decision goes to
 `<root>/logs/gate.log`. This keeps an assistant on sc-hub's checked, logged
-tools (quotas and jobs come from `cluster_overview`, not from a shell). It is
-not a sandbox: sc-hub itself runs the student's code (pipelines, Jupyter
-sessions), as it should. The student's own login (password) is unaffected.
-Delete that line to revoke the key; re-running the installer with
-`SCHUB_KEY_UNRESTRICTED=1` makes it a normal key again (not recommended). The
-Windows installer does not limit the key yet.
+tools (quotas and jobs come from the `cluster` tool, not from a shell).
+
+It is a guard rail, not a security boundary:
+- **VS Code's shell.** With VS Code, the same key opens a shell inside the student's own workbench job (`mbzuai-schub-ide`, for the editor).
+- **Cells and tunnels.** Cells run the student's code on a compute node that shares the home folder, and the key may open tunnels.
+- **Agent instructions.** The assistants' instructions tell them not to use either for anything else.
+
+The student's own login (password) is unaffected. Delete that line to revoke the
+key; re-running the installer with `SCHUB_KEY_UNRESTRICTED=1` makes it a normal
+key again (not recommended). The setup page limits the key on every system; the
+older Windows installer does not.
 
 Running it again is safe: it replaces its own blocks in `~/.ssh/config` and the
 Codex config (between `# >>> sc-hub >>>` markers), so a mistyped login is fixed
@@ -178,7 +183,7 @@ and point a workspace at it with `SCHUB_LIBRARY`:
 With `SCHUB_LIBRARY` set and readable, `bootstrap_cluster.sh` uses it: no private
 environment (saves ~6 GB each) and no duplicate datasets. If it is missing or
 unreadable, bootstrap builds a private environment as above. If the library lacks
-one asset, only that asset is downloaded into `library-local`. At any time `fetch_asset` (MCP) queues a
+one asset, only that asset is downloaded into `library-local`. At any time `bench.fetch` in a cell or `schub fetch` in a job fetches a
 download job. Datasets with a recorded checksum get the same cache keys whether
 they come from the library or a fallback copy.
 
@@ -198,5 +203,7 @@ they come from the library or a fallback copy.
 | Run the breadth evaluation | `schub eval-run evals/requests.yaml --engines claude,codex`, later `schub eval-score evals/requests.yaml --markdown` |
 | Run the tests | `.venv/bin/python -m pytest --cov=schub`, then `tests/e2e/run.sh` for the dashboard |
 
-Code changes reach students when the library is published; everyone re-runs the
-installer (idempotent) or just `bootstrap_cluster.sh` to pin the new environment.
+Code changes reach students through the repository: their assistant updates the checkout with
+`git pull --ff-only`, and `start.sh retry cluster` uploads it. Once the key is limited, the page asks
+the password once for that. With a shared library, publishing it and re-running `bootstrap_cluster.sh`
+pins the new environment.

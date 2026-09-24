@@ -11,7 +11,8 @@ CSS = """
 --shadow:0 1px 2px rgba(0,0,0,.04);--float:0 10px 30px rgba(0,0,0,.14)}
 @media (prefers-color-scheme:dark){:root{--bg:#1b1a19;--card:#242321;--text:#ecebe6;--muted:#a3a19b;--line:#34332f;--soft:#2c2b28;
 --accent:#85b7eb;--ok:#9fe1cb;--okbg:#10392f;--run:#b5d4f4;--runbg:#0f2f52;--bad:#f7c1c1;--badbg:#4d1c1c;
---wait:#d3d1c7;--waitbg:#33322f;--plan:#fac775;--planbg:#44300a;--ds:#d3d1c7;--dsbg:#302f2c;--shadow:none;--float:0 10px 30px rgba(0,0,0,.5)}}
+--wait:#d3d1c7;--waitbg:#33322f;--plan:#fac775;--planbg:#44300a;--ds:#d3d1c7;--dsbg:#302f2c;--shadow:none;--float:0 10px 30px rgba(0,0,0,.5)}
+.logo{color:#0e2a22}}
 *{box-sizing:border-box}[hidden]{display:none!important}html{scroll-behavior:smooth}
 body{margin:0;background:var(--bg);color:var(--text);font:14px/1.55 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
 a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
@@ -183,7 +184,7 @@ ol.timeline{list-style:none;padding:0;margin:14px 0;border-left:2px solid var(--
 
 JOURNAL_CSS = """
 .jlayout{display:grid;grid-template-columns:250px minmax(0,1fr);gap:28px;align-items:start}
-.jnav{position:sticky;top:12px;max-height:calc(100vh - 84px);overflow:auto;padding-right:6px;font-size:13px}
+.jnav{position:sticky;top:72px;max-height:calc(100vh - 88px);overflow:auto;padding-right:6px;font-size:13px}
 .jnav-head{display:flex;align-items:center;gap:6px;margin:2px 0 10px}.jnav-head input{flex:1;min-width:0}
 .jgroup{margin:0 0 10px}.jgroup>summary{cursor:pointer;list-style:none;color:var(--muted);font-size:11.5px;text-transform:uppercase;letter-spacing:.05em;font-weight:500;padding:3px 8px}
 .jgroup>summary::-webkit-details-marker,.jkids>summary::-webkit-details-marker,.jrow-d>summary::-webkit-details-marker{display:none}
@@ -194,7 +195,7 @@ JOURNAL_CSS = """
 .jname{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.jwhen{flex:none;color:var(--muted);font-size:11px}
 .jst{flex:none;width:14px;text-align:center;font-size:12px;color:var(--muted)}.jst.ok{color:var(--ok)}.jst.bad{color:var(--bad)}.jst.run{color:var(--run)}
 .jkids{margin-left:15px;padding-left:4px;border-left:1px solid var(--line)}.jkids>summary{cursor:pointer;list-style:none;color:var(--muted);font-size:11.5px;padding:2px 8px}
-.jnav-toggle{display:none}.jmain{min-width:0}.jbench{margin:0 0 8px}
+.jnav-toggle{display:none}.jmain{min-width:0;overflow-wrap:anywhere}.jp-next{min-width:0}.jbench{margin:0 0 8px}
 .jp-crumbs a{color:var(--muted)}.jp-q{font-size:19px;font-weight:500;line-height:1.35;margin:4px 0 8px}
 .jp-state{display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center;font-size:13px;margin:0 0 16px}
 .jp-outcome{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 16px;margin:0 0 22px}
