@@ -45,5 +45,5 @@ Always:
 
 ## Working on sc-hub itself
 
-`README.md` has the design and the owner's commands. Tests: `.venv/bin/python -m pytest`, then
+`README.md` has the overview and the owner's commands; `docs/` has the details. Tests: `.venv/bin/python -m pytest`, then
 `tests/e2e/run.sh` for the dashboard. The setup helper alone: `sh onboard/start.sh check`.
