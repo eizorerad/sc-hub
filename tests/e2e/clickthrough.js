@@ -319,6 +319,19 @@ async function main() {
     }
   });
 
+  await go('runs/history', true);
+  await check('the history filter leaves the Queue alone', async () => {
+    const states = await page.$$eval('#run-state option', os => os.map(o => o.value).filter(Boolean));
+    if (states.length) await page.selectOption('#run-state', states[0]);
+    await page.fill('#run-search', 'zzz-no-such-run');
+    await page.click('[data-subtabs="runs"] button[data-sub="queue"]');
+    const hidden = await page.$$eval('[data-subview="runs"][data-sub="queue"] tbody tr', trs => trs.filter(r => r.hidden).length);
+    assert(hidden === 0, `${hidden} queue rows hidden by the history filter`);
+    await page.click('[data-subtabs="runs"] button[data-sub="history"]');
+    await page.fill('#run-search', '');
+    if (states.length) await page.selectOption('#run-state', '');
+  });
+
   // ---------------------------------------------------------------- library
   section = 'Library';
   await go('library', true);
@@ -373,6 +386,24 @@ async function main() {
   await clocked.close();
 
   // ---------------------------------------------------------------- phone
+  section = 'Journal, again';
+  await go('journal', true);
+  await check('stamps show the reader\'s own time, not UTC', async () => {
+    const texts = await page.$$eval('.jt', els => els.map(e => e.textContent));
+    assert(texts.length && texts.every(t => /^\d\d-\d\d \d\d:\d\d$/.test(t)), `stamps: ${texts.slice(0, 3).join(' | ')}`);
+    return `${texts.length} stamps`;
+  });
+  await check('the project list stays below the header when the page scrolls', async () => {
+    await page.setViewportSize({ width: 1440, height: 520 });  // a short window: room to scroll the list's page
+    await page.evaluate(() => window.scrollTo(0, 200));  // (at a container's end sticky content moves up with it)
+    await page.waitForTimeout(150);
+    const [nav, header] = await page.evaluate(() => [document.querySelector('.jnav').getBoundingClientRect().top,
+      document.querySelector('header.top').getBoundingClientRect().bottom]);
+    assert(nav >= header - 1, `the list starts at ${Math.round(nav)} px, under the header (ends at ${Math.round(header)} px)`);
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.setViewportSize({ width: 1440, height: 900 });
+  });
+
   section = 'Phone (375 px)';
   const phone = await browser.newContext({ viewport: { width: 375, height: 812 }, colorScheme: 'light', isMobile: true, hasTouch: true });
   const mp = await phone.newPage();

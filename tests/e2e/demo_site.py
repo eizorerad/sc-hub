@@ -125,7 +125,8 @@ def _bench_project(hub: Hub) -> None:
                          unresolved_numbers=("2,000",))
         journal.add_note("note", "please confirm the control label", audience="human")
         store = CheckpointStore(hub.settings.projects_dir / name)
-        store.write("active", next_action="full QC, then pseudobulk")
+        store.write("active", next_action="full QC, then pseudobulk into "
+                    "results/k562_essential_pseudobulk_by_guide_and_replicate_with_controls_kept_v2.h5ad")
         store.write_handoff("# Where we are\n- twin QC done (c0002)\n- full QC job 812 done")
     _report(hub, "k562-qc")
 
