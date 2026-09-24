@@ -26,8 +26,12 @@ prepare_dest() {
 }
 
 refresh() {
+  # The page last: rsync copies in name order, so an open page reloading mid-copy would meet
+  # project files that are not there yet.
   ssh "${SSH_OPTS[@]}" "$ALIAS" "$REMOTE/bin/schub dashboard >/dev/null" &&
-    rsync -a --delete --safe-links --exclude "$MARKER" -e "ssh ${SSH_OPTS[*]}" "$ALIAS:$REMOTE/view/" "$DEST/"
+    rsync -a --delete --safe-links --exclude "$MARKER" --exclude /index.html -e "ssh ${SSH_OPTS[*]}" \
+      "$ALIAS:$REMOTE/view/" "$DEST/" &&
+    rsync -a --safe-links --include /index.html --exclude '*' -e "ssh ${SSH_OPTS[*]}" "$ALIAS:$REMOTE/view/" "$DEST/"
 }
 
 open_page() {

@@ -11,7 +11,7 @@
 
     goal/STOP                 the student's stop: the next slice ends the chain
     goal/report-only          a goal `schub goal-report` made for a chat project: reports, never research
-    goal/state/owner.lock     one slice at a time
+    goal/state/owner.lock     one slice at a time (O_EXCL with a heartbeat: works across nodes)
     goal/state/sessions.json  each engine's session id, which engine took the last turn
     goal/state/turns.json     turns taken (the budget)
     goal/state/intent.json    a successor's comment before its sbatch (no blind resubmission)

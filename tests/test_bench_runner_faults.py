@@ -79,7 +79,8 @@ def test_failing_progress_writes_do_not_lose_the_cell(bench: Settings, monkeypat
 
 
 @pytest.mark.kernel
-def test_a_crash_after_the_code_started_stops_the_kernel(bench: Settings, monkeypatch) -> None:
+def test_a_crash_after_the_code_ran_keeps_the_kernel(bench: Settings, monkeypatch) -> None:
+    """The code finished; only sc-hub's bookkeeping failed: the student's variables must survive."""
     calls = []
 
     def broken_diff(*args, **kwargs):
@@ -91,10 +92,27 @@ def test_a_crash_after_the_code_started_stops_the_kernel(bench: Settings, monkey
     thread = run_in_thread(runner)
     first = wait_final(bench, submit(bench, "x = 1"))
     monkeypatch.setattr(worker_module, "diff", lambda *a, **k: ())
-    second = wait_final(bench, submit(bench, "print(x)"))  # a fresh kernel: x is gone
+    second = wait_final(bench, submit(bench, "print(x)"))  # the same kernel: x is still there
     stop(bench, thread)
     assert first.status == "error" and "scan exploded" in first.message and calls
-    assert second.status == "error" and second.kernel_epoch == "2.2"
+    assert second.status == "ok" and second.kernel_epoch == "2.1" and "1" in second.outputs[0].text
+
+
+@pytest.mark.kernel
+def test_a_crash_before_the_code_finished_stops_the_kernel(bench: Settings, monkeypatch) -> None:
+    def broken_announce(*args, **kwargs):
+        raise RuntimeError("announce exploded")
+
+    runner = Runner(bench, job_id="4")
+    thread = run_in_thread(runner)
+    wait_final(bench, submit(bench, "x = 1"))
+    monkeypatch.setattr(worker_module, "announce", broken_announce)
+    failed = wait_final(bench, submit(bench, "y = 2"))
+    monkeypatch.undo()
+    after = wait_final(bench, submit(bench, "print(x)"))  # a fresh kernel: x is gone
+    stop(bench, thread)
+    assert failed.status == "error" and "announce exploded" in failed.message
+    assert after.status == "error" and after.kernel_epoch == "4.2"
 
 
 def test_a_dead_worker_is_replaced_and_keeps_its_queue(bench: Settings, monkeypatch) -> None:

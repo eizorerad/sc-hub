@@ -99,6 +99,9 @@ if [ "$PROGRAM" = "$ROOT/bin/schub" ]; then
     "ide-proxy")  # VS Code: sshd inside the student's own workbench job, never a shell here
       note allowed
       exec "$ROOT/bin/schub" ide-proxy ;;
+    "view-sum" | "view-pack light" | "view-pack full")  # the Windows mirror (no scp through this key)
+      note allowed
+      exec "$ROOT/bin/schub" "${WORDS[@]:1}" ;;
   esac
 fi
 refuse "'${WORDS[0]}' is not an sc-hub command"

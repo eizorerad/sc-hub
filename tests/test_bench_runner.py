@@ -141,6 +141,36 @@ def test_project_stop_file_blocks_cells(bench: Settings) -> None:
     assert entry.status == "interrupted" and "STOP" in entry.message
 
 
+def test_a_refused_final_write_keeps_the_kernel_and_is_recorded_later(bench: Settings, monkeypatch) -> None:
+    """The quota fills after the code ran: its variables survive, the entry does not stay "running"."""
+    from schub.bench import runner as runner_module
+    from schub.bench.journal import Journal as JournalClass
+
+    monkeypatch.setattr(runner_module, "HEARTBEAT_S", 0.2)
+    real_write, full = JournalClass.write_cell, {"on": True}
+
+    def write_cell(self, entry, *args, **kwargs):
+        if full["on"] and entry.final and entry.cid == "c0001":
+            raise OSError(122, "Disk quota exceeded")
+        return real_write(self, entry, *args, **kwargs)
+
+    monkeypatch.setattr(JournalClass, "write_cell", write_cell)
+    thread = start(Runner(bench, job_id="906"))
+    first = submit(bench, "x = 41")
+    inbox = Inbox(bench.bench_dir)
+    deadline = time.monotonic() + 60
+    while inbox.rejected_reason("demo", first) is None and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert "Disk quota exceeded" in inbox.rejected_reason("demo", first)
+    assert journal_of(bench).cell(first).status == "running"  # the record could not be written
+    second = submit(bench, "print(x + 1)")
+    assert "42" in wait_final(bench, second).outputs[0].text  # the kernel and its variables were kept
+    full["on"] = False  # room again: the runner closes the entry at its next beat
+    entry = wait_final(bench, first, timeout_s=30)
+    stop(bench, thread)
+    assert entry.status == "error" and "Disk quota exceeded" in entry.message
+
+
 def test_unknown_project_is_rejected(bench: Settings) -> None:
     thread = start(Runner(bench, job_id="905"))
     inbox = Inbox(bench.bench_dir)

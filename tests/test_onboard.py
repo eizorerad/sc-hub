@@ -19,7 +19,7 @@ sys.path.insert(0, str(ONBOARD))
 from sc_hub_onboard.cluster_agents import CLAUDE_URL, DEVICE, clean  # noqa: E402
 from sc_hub_onboard.engine import Engine  # noqa: E402
 from sc_hub_onboard.server import OnboardServer  # noqa: E402
-from sc_hub_onboard.sshkit import Paths, check_login, strip_block, write_block  # noqa: E402
+from sc_hub_onboard.sshkit import Paths, SshError, check_login, strip_block, write_block  # noqa: E402
 from sc_hub_onboard.steps import REMOTE_ROOT, Setup, build  # noqa: E402
 
 
@@ -346,7 +346,7 @@ def test_the_page_is_only_for_this_computer_and_this_link(helper) -> None:
 def test_logins_and_the_config_block() -> None:
     assert check_login(" Test.User ") == "test.user"
     for bad in ("", "a", "root; rm -rf", "leo@x", "../x"):
-        with pytest.raises(Exception):
+        with pytest.raises(SshError):
             check_login(bad)
     assert strip_block("a\n# >>> sc-hub >>>\nHost x\n# <<< sc-hub <<<\nb\n") == "a\nb\n"
     # sc-hub's folder on the cluster: the default one of a firstname.lastname login, nothing that breaks quoting

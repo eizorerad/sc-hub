@@ -6,6 +6,7 @@ import argparse
 import importlib
 import importlib.metadata
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any, Sequence
@@ -175,6 +176,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "mcp":
         from .mcp_server import build_server
 
+        os.umask(0o077)  # journal entries, reports and hand-overs it writes: the student's alone
         build_server(hub).run()
         return 0
     if args.command == "gpu-check":
@@ -191,6 +193,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         except IdeError as exc:
             sys.stderr.write(f"error: {exc}\n")
             return 1
+        return 0
+    if args.command in ("view-sum", "view-pack"):  # the Windows mirror; view-pack's stdout is a tar stream
+        from .dashboard import build_dashboard
+        from .dashboard.pack import heavy_sum, pack
+
+        view = Path(build_dashboard(hub).path).parent if args.command == "view-sum" else hub.settings.view_dir
+        if args.command == "view-sum":
+            print(heavy_sum(view))
+        else:
+            pack(view, args.kind, sys.stdout.buffer)
+            sys.stdout.buffer.flush()
         return 0
     if args.command == "fetch":
         from .fetch import FetchError, fetch

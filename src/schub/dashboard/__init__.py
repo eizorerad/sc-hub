@@ -104,9 +104,6 @@ class _Images:
 
 def _journal_files(settings: Any, view: Path, snapshot: Any) -> None:
     """Figures the Journal tab shows, and each bench project's notebook (also kept in its journal)."""
-    from ..bench.journal import Journal
-    from ..bench.render_nb import render
-
     used: set[Path] = set()
     for card in snapshot.journals:
         for source, relative in card.figures:

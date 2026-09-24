@@ -14,6 +14,7 @@ import shutil
 import signal
 import subprocess
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -134,7 +135,7 @@ def install_guards(bench_dir: Path) -> Path:
     for engine in ("claude", "codex"):
         source, path = (GUARD_DIR / engine).read_text(), target / engine
         if not path.exists() or path.read_text() != source:
-            temp = target / f".{engine}.tmp"
+            temp = target / f".{engine}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp"  # two installs at once
             temp.write_text(source)
             temp.chmod(0o755)
             temp.replace(path)

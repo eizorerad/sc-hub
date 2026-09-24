@@ -6,7 +6,7 @@ import json
 import os
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -98,6 +98,8 @@ def test_limits_are_recognised_and_resets_parsed() -> None:
     assert parse_reset("try again at 2020-01-01T00:00Z", NOW) is None  # an old date is not a reset
     assert parse_reset("the job finished at 3pm", NOW) is None
     assert parse_reset("resets at 2026-02-30T10:00Z", NOW) is None  # not a date
+    assert parse_reset("You hit your usage limit. Try again in 4 days 3 hours.", NOW) == NOW + timedelta(days=4, hours=3)
+    assert parse_reset("try again in 45 minutes", NOW) == NOW + timedelta(minutes=45)
 
 
 def test_a_paused_engine_is_ready_again_after_its_reset(tmp_path: Path) -> None:

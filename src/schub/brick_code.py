@@ -9,7 +9,7 @@ import re
 from pathlib import Path
 
 from .bricks import REGISTRY, get_brick
-from .provenance import FileStamp, code_id, code_modules, file_stamp
+from .provenance import FileStamp, code_id, file_stamp
 
 RELATIVE_IMPORT = re.compile(r"^(?P<indent>[ \t]*)from (?P<dots>\.+)(?P<name>[\w.]*) import ", re.M)
 RUN_DEF = re.compile(r"^def run\(", re.M)

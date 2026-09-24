@@ -11,11 +11,17 @@ $Dest = "$(if ($env:SCHUB_VIEW_DIR) { $env:SCHUB_VIEW_DIR } else { Join-Path $HO
 $Every = [Math]::Max(30, [int]($(if ($env:SCHUB_VIEW_EVERY) { $env:SCHUB_VIEW_EVERY } else { 60 })))
 $Marker = Join-Path $Dest '.schub-view'
 $Incoming = "$Dest.incoming"
-$ImageSet = ''
+# The download lands next to the view under a name without spaces (cmd writes it; see Update-View).
+$Work = Split-Path -Parent $Dest
+$Archive = '.sc-hub-view.tar'
+$HeavySum = ''
 
 # Only ever replace a folder this script created.
 if ((Test-Path $Dest) -and -not (Test-Path $Marker) -and (Get-ChildItem $Dest -Force | Select-Object -First 1)) {
     throw "$Dest exists and is not an sc-hub view folder; set SCHUB_VIEW_DIR to an empty folder"
+}
+if (-not (Get-Command tar -ErrorAction SilentlyContinue)) {
+    throw "tar.exe is missing (it comes with Windows 10 1803 and later): update Windows, then run this again"
 }
 New-Item -ItemType Directory -Force -Path $Dest | Out-Null
 New-Item -ItemType File -Force -Path $Marker | Out-Null
@@ -30,36 +36,51 @@ function Invoke-Native([scriptblock]$Command) {
 function Say($Text) { Write-Host "$Text at $(Get-Date -Format HH:mm); will retry" }
 
 function Update-View {
-    # Rebuild on the cluster and list its images, cell maps, notebooks and graphs: the page is
-    # fetched every time, the rest (most of the bytes) only when that list changes.
-    $list = 'schub/bin/schub dashboard >/dev/null && cd schub/view && find img pts nb br -type f -printf ''%p %s %T@\n'' 2>/dev/null | sort | cksum'
-    $images = (Invoke-Native { ssh -o BatchMode=yes $Alias $list } | Out-String).Trim()
-    if ($LASTEXITCODE -ne 0 -or -not $images) { Say 'refresh failed'; return }
-    $all = $images -ne $script:ImageSet -or -not (Test-Path (Join-Path $Dest 'img'))
-    # Download next to the view, then swap: the open page never sees a half copy.
-    # scp copies files as bytes (PowerShell 5 pipes would re-encode binary data).
+    # The sc-hub key runs only sc-hub's own commands: `view-sum` rebuilds the dashboard and prints a
+    # checksum of its figures, notebooks and reports; `view-pack light|full` sends the view as a tar
+    # stream. The page and its project scripts come every time, the rest only when the checksum changed.
+    $sum = (Invoke-Native { ssh -o BatchMode=yes $Alias 'schub/bin/schub view-sum' } | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or -not $sum) { Say 'refresh failed'; return }
+    $all = $sum -ne $script:HeavySum
+    $kind = if ($all) { 'full' } else { 'light' }
+    $archive = Join-Path $Work $Archive
     try {
         if (Test-Path $Incoming) { Remove-Item -Recurse -Force $Incoming }
         New-Item -ItemType Directory -Path $Incoming | Out-Null
-        $source = if ($all) { "${Alias}:schub/view/*" } else { "${Alias}:schub/view/index.html" }
-        Invoke-Native { scp -q -r -o BatchMode=yes $source $Incoming }
+        # cmd's redirection keeps the bytes as they are (PowerShell 5 pipes would re-encode binary data).
+        Push-Location $Work
+        try { Invoke-Native { cmd /c "ssh -o BatchMode=yes $Alias schub/bin/schub view-pack $kind > $Archive" } }
+        finally { Pop-Location }
+        if ($LASTEXITCODE -ne 0) { Say 'download failed'; return }
+        Invoke-Native { tar -xf $archive -C $Incoming }
         if ($LASTEXITCODE -ne 0 -or -not (Test-Path (Join-Path $Incoming 'index.html'))) { Say 'download failed'; return }
+        # Each file or folder replaced as a whole, the page last: an open page reloading in between
+        # still finds the project files it points to.
+        $names = @()
+        foreach ($item in Get-ChildItem $Incoming -Force | Where-Object { $_.Name -ne 'index.html' }) {
+            $names += $item.Name
+            $old = Join-Path $Dest $item.Name
+            if (Test-Path $old) { Remove-Item -Recurse -Force $old }
+            Move-Item $item.FullName -Destination $Dest
+        }
         if ($all) {
-            # Images first, the page last: an auto-reload in between still finds a page.
-            Get-ChildItem $Dest -Force | Where-Object { $_.Name -notin '.schub-view', 'index.html' } | Remove-Item -Recurse -Force
-            Get-ChildItem $Incoming -Force | Where-Object { $_.Name -ne 'index.html' } | Move-Item -Destination $Dest
+            # A full copy: what the cluster no longer has goes away here too.
+            Get-ChildItem $Dest -Force | Where-Object { $_.Name -notin (@('.schub-view', 'index.html') + $names) } |
+                Remove-Item -Recurse -Force
         }
         Move-Item -Force (Join-Path $Incoming 'index.html') (Join-Path $Dest 'index.html')
         Remove-Item -Recurse -Force $Incoming
-        if ($all) { $script:ImageSet = $images }
+        if ($all) { $script:HeavySum = $sum }
     } catch {
         # A file briefly locked (antivirus, indexer, Explorer): keep the loop alive.
         Say "update failed ($($_.Exception.Message))"
+    } finally {
+        Remove-Item -Force $archive -ErrorAction SilentlyContinue
     }
 }
 
 Update-View
-Start-Process (Join-Path $Dest 'index.html')
+if (-not $env:SCHUB_VIEW_NO_OPEN) { Start-Process (Join-Path $Dest 'index.html') }
 if ($Once) { return }
 Write-Host "sc-hub view: $Dest\index.html (refreshing every ${Every}s, Ctrl-C to stop)"
 while ($true) { Start-Sleep -Seconds $Every; Update-View }

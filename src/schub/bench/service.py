@@ -12,6 +12,7 @@ from typing import Callable, Sequence
 from pydantic import ValidationError
 
 from ..config import Settings
+from ..locking import LockTimeout
 from ..projects import ProjectError, ProjectMeta, ProjectStore
 from ..slurm import Slurm, SlurmError
 from .checkpoint import CheckpointError, CheckpointStore, check_handoff
@@ -99,6 +100,8 @@ class BenchService:
             self.workbench.ensure()
         except (BenchStopped, SlurmError) as exc:
             return waiting_result(journal.ref(request.cid), "queued", f"the workbench could not start: {exc}")
+        except LockTimeout:  # another call is starting the workbench: this cell is queued, never send it again
+            return waiting_result(journal.ref(request.cid), "queued", "the workbench is being started")
         return self.wait(journal.ref(request.cid), wait_s, for_jobs=False)  # a %%slurm cell returns at once
 
     def _request(self, journal: Journal, project: str, code: str, why: str, expect: str,
@@ -153,6 +156,10 @@ class BenchService:
             if not (journal.folder / "ids" / cid).exists():
                 raise BenchError(f"{ref} does not exist")
             return waiting_result(ref, "queued", self._where())
+        if not entry.final:
+            rejected = self.inbox.rejected_reason(journal.project, cid)
+            if rejected is not None:  # its final write failed: say why now, not "still running" forever
+                entry = entry.model_copy(update={"status": "error", "message": rejected})
         previous = _previous_epoch(journal, entry)
         return cell_result(self._live_jobs(entry), previous, self._where() if not entry.final else "",
                            self._setup_refs(journal))

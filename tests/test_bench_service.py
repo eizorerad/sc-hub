@@ -5,11 +5,13 @@ import threading
 
 import pytest
 
+from schub.bench.clock import stamp
 from schub.bench.config import BenchConfig
 from schub.bench.inbox import Inbox
 from schub.bench.journal import Journal
 from schub.bench.models import Actor, CellEntry, OutputItem
 from schub.bench.runner import Runner
+from schub.bench.worker import new_entry
 from schub.bench.service import BenchError, BenchService
 from schub.config import Settings
 from schub.projects import ProjectStore
@@ -94,6 +96,18 @@ def test_rejected_requests_say_why(bench: Settings, cluster: FakeCluster) -> Non
     inbox.reject(inbox.claim("1")[0], "the project was removed")
     result = svc.wait(ref, wait_s=0)
     assert result.status == "rejected" and "removed" in result.message
+
+
+def test_a_started_cell_whose_record_failed_answers_the_reason(bench: Settings, cluster: FakeCluster) -> None:
+    svc = service(bench, cluster)
+    ref = svc.run("demo", "1", "w", "e", wait_s=0).ref
+    inbox = Inbox(bench.bench_dir)
+    item = inbox.claim("1")[0]
+    journal = Journal(bench.projects_dir / "demo", "demo")
+    journal.write_cell(new_entry(item.request, journal, status="running", started=stamp()))
+    inbox.reject(item, "sc-hub could not run this cell: OSError: Disk quota exceeded")
+    result = svc.wait(ref, wait_s=0)
+    assert result.status == "error" and "Disk quota exceeded" in result.message  # not "still running"
 
 
 @pytest.mark.kernel

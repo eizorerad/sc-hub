@@ -22,7 +22,7 @@ from .provenance import code_id, env_id
 from .runs import LimitExceeded, PlanRejected, RunManifest, RunResults, RunStatus, RunStore
 from .sessions import SessionError, SessionInfo, SessionStore
 from .seurat import ImportJob, SeuratImportError, submit_import
-from .slurm import ActiveJob, JobSpec, PartitionInfo, Slurm, SlurmError, render_script
+from .slurm import ActiveJob, JobSpec, PartitionInfo, Slurm, render_script
 from .state import Frozen
 
 PLAN_ID = re.compile(r"[0-9a-f]{12}")

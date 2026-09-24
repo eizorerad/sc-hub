@@ -24,6 +24,8 @@ LIMIT = re.compile(
     re.I)
 ISO = re.compile(r"\b(?:resets?|try again)\s+(?:(?:at|on)\s+)?(20\d\d-\d\d-\d\d[T ]\d\d:\d\d(?::\d\d)?(?:Z|[+-]\d\d:\d\d)?)",
                  re.I)
+RELATIVE = re.compile(r"\b(?:resets?|try again)\s+in\s+(?:(\d+)\s*d(?:ays?)?)?[\s,]*(?:(\d+)\s*h(?:(?:ou)?rs?)?)?"
+                      r"[\s,]*(?:(\d+)\s*m(?:in(?:ute)?s?)?)?", re.I)
 CLOCK = re.compile(r"\b(?:resets?|try again)\s+(?:at\s+)?(\d{1,2})(?::(\d\d))?\s*(am|pm)?\b(?:\s*\(([^()\n]+)\))?", re.I)
 
 
@@ -32,7 +34,12 @@ def is_limit(text: str) -> bool:
 
 
 def parse_reset(text: str, now: datetime) -> datetime | None:
-    """The reset time an engine names ('resets at 2026-09-24T14:00Z', 'resets 3pm (Asia/Dubai)'), in UTC."""
+    """The reset time an engine names ('resets at 2026-09-24T14:00Z', 'resets 3pm (Asia/Dubai)',
+    'try again in 4 days 3 hours'), in UTC."""
+    relative = RELATIVE.search(text or "")
+    if relative and any(relative.groups()):
+        days, hours, minutes = (int(g) if g else 0 for g in relative.groups())
+        return now + timedelta(days=days, hours=hours, minutes=minutes)
     match = ISO.search(text or "")
     if match:
         try:

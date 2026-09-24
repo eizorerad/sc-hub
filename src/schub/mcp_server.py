@@ -15,7 +15,7 @@ from .bench.service import BenchService
 from .mcp_bench import register_bench_tools
 from .mcp_tools import register_tools
 from .planner import DatasetOverrides, PlanSummary, StepRequest
-from .projects import BranchSpec, Idea, IdeaStatus, ProjectError, ProjectMeta, ProjectSummary
+from .projects import BranchSpec, Idea, IdeaStatus, ProjectError, ProjectSummary
 from .runs import RunError, RunManifest, RunResults, RunStatus
 from .service import ClusterStatus, FetchJob, Hub, HubError, NotebookInfo
 from .slurm import SlurmError

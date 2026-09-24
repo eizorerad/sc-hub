@@ -41,3 +41,6 @@ jobs:
       - name: The setup helper's portable tests
         working-directory: onboard
         run: python -m sc_hub_onboard check
+      - name: The dashboard mirror (schub-view.ps1) against a fake cluster
+        shell: powershell
+        run: .\tests\windows\check_view_mirror.ps1
