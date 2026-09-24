@@ -84,6 +84,10 @@ def check(state: DatasetState, p: PseudobulkParams, ctx: PlanContext) -> list[Is
     return issues + _check_levels(state, p) + _check_replicates(state, p)
 
 
+def reads_obs(p: PseudobulkParams) -> tuple[str, ...]:
+    return tuple(c for c in (p.condition_key, p.replicate_key, p.group_key) if c)
+
+
 def transform(state: DatasetState, p: PseudobulkParams) -> DatasetState:
     return state.with_flags("de")
 
@@ -102,4 +106,5 @@ SPEC = BrickSpec(
     resources=resources,
     impl="schub.bricks.impl.pseudobulk_de:run",
     terminal=True,
+    reads_obs=reads_obs,
 )

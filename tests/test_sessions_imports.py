@@ -199,7 +199,8 @@ def test_sessions_and_imports_do_not_count_as_pipelines(hub, settings, cluster):
     for n in range(settings.limits.max_active_runs):
         plan = hub.plan(str(library_datasets(settings) / "one.h5ad"), [{"brick": "qc_filter", "params": {"min_genes": n}}])
         hub.submit(plan.plan_id)
-    with pytest.raises(Exception, match="pipelines are already active"):
+    # The cap counts only the pipelines: the next plan waits in sc-hub's queue.
+    with pytest.raises(HubError, match="already active"):  # at the cap: refused with the reason, nothing queued
         hub.submit(hub.plan(str(library_datasets(settings) / "one.h5ad"), [{"brick": "qc_filter", "params": {"min_genes": 99}}]).plan_id)
 
 
@@ -257,3 +258,14 @@ def test_wait_until_listening_sees_only_a_live_server(tmp_path):
     dead = subprocess.Popen([sys.executable, "-c", "pass"])
     dead.wait()
     assert not wait_until_listening(dead, free_port(), timeout_s=3)
+
+
+def test_jupyter_sessions_keep_the_token_out_of_kernels():
+    from schub.jupyter_launch import take_token
+
+    command = jupyter_command("/env/python", 41000, Path("/r"), "")
+    assert command[1:3] == ["-m", "schub.jupyter_launch"]
+    env = {"JUPYTER_TOKEN": "abc", "SCHUB_SESSION_TOKEN": "abc", "PATH": "/bin"}
+    assert take_token(env) == "abc" and env == {"PATH": "/bin"}
+    with pytest.raises(SystemExit):
+        take_token({"PATH": "/bin"})

@@ -1,5 +1,5 @@
-"""What is happening now: the status in the header, the numbers above the runs,
-the queue of sc-hub jobs and the interactive sessions (all on the Runs tab)."""
+"""What is happening now: the status in the header, sc-hub's jobs in the Slurm queue and
+the interactive sessions (both on the Runs page)."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from pathlib import Path
 
 from ..slurm import QueueJob
 from .collect import Snapshot
-from .html import esc, listing, pill
+from .html import esc, hint, listing, pill
 from .steps import slurm_seconds
 
 LIVE_SESSIONS = frozenset({"RUNNING", "PENDING", "CONFIGURING"})
@@ -81,33 +81,14 @@ def render_queue(snap: Snapshot) -> str:
     ours = _ours(snap)
     others = [j for j in snap.jobs if not j.name.startswith("schub-")]
     headers = ("Job", "Name", "State", "Partition", "Progress or why it waits")
-    html = listing(headers, _job_rows(ours), "Filter jobs", key="jobs-schub") if ours else '<p class="empty">No sc-hub jobs in the queue.</p>'
+    html = (listing(headers, _job_rows(ours), "Filter jobs", key="jobs-schub") if ours
+            else '<p class="empty">No sc-hub jobs in the queue.</p>')
     if others:
         html += f"<details><summary>{len(others)} other jobs of yours</summary>{listing(headers, _job_rows(others), 'Filter jobs', key='jobs-other')}</details>"
-    return html + (
-        '<p class="note">Cluster rule: on ws-ia each person runs at most 2 jobs at once (24 CPUs, about 107 GB). '
-        'Extra steps wait in the queue and start by themselves. Your limits, storage and every job: '
-        '<a href="#cluster">cluster overview</a> (menu under the sc-hub square).</p>'
-    )
-
-
-def _metric(label: str, value: object, href: str, state: str = "") -> str:
-    attr = f' data-filter-state="{esc(state)}"' if state else ""
-    return f'<a class="metric" href="{esc(href)}"{attr}><span>{esc(label)}</span><b>{esc(value)}</b></a>'
-
-
-def metrics(snap: Snapshot) -> str:
-    running, queued = live_counts(snap)
-    done = sum(r.state == "COMPLETED" for r in snap.runs)
-    failed = sum(r.state == "FAILED" for r in snap.runs)
-    return (
-        '<div class="metrics">'
-        + _metric("Running steps", running, "#runs/queue")
-        + _metric("Queued steps", queued, "#runs/queue")
-        + _metric("Completed runs", done, "#runs/history", "COMPLETED")
-        + _metric("Failed runs", failed, "#runs/history", "FAILED")
-        + "</div>"
-    )
+    rule = ("Cluster rule: on ws-ia each person runs at most 2 jobs at once (24 CPUs, about 107 GB). Extra steps wait "
+            "in the queue and start by themselves. Your limits, storage and every job: Cluster overview in the menu "
+            "under the sc-hub square.")
+    return html + f'<p class="muted small why-wait">Why do steps wait? {hint(rule)} <a href="#cluster">Cluster overview</a></p>'
 
 
 SESSION_NAMES = {"jupyter": "JupyterLab", "cellxgene": "cellxgene"}
@@ -124,6 +105,7 @@ def render_sessions(snap: Snapshot) -> str:
             f'<div class="card session"><b>{esc(SESSION_NAMES.get(s.kind, s.kind))}</b>{pill(s.state)}'
             f'<span class="muted small">{esc(" · ".join(d for d in details if d))}</span>{target}{how}</div>'
         )
-    hint = ('<p class="muted small">Ask your assistant to start JupyterLab (optionally with a GPU, or with a run\'s '
-            "notebook) or cellxgene for a result; it runs as a job on a compute node.</p>")
-    return (f'<div class="cards">{"".join(cards)}</div>' if cards else '<p class="empty">No interactive sessions.</p>') + hint
+    how = hint("Ask your assistant to start JupyterLab (optionally with a GPU, or with a run's notebook) or "
+               "cellxgene for a result; it runs as a job on a compute node.")
+    return (f'<div class="cards">{"".join(cards)}</div>' if cards
+            else f'<p class="empty">No interactive sessions. {how}</p>')

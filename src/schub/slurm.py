@@ -18,7 +18,11 @@ from .state import Frozen
 Runner = Callable[[Sequence[str]], "subprocess.CompletedProcess[str]"]
 
 JOB_NAME = re.compile(r"^[A-Za-z0-9_.-]{1,120}$")
+SIGNAL = re.compile(r"^(B:)?(USR1|USR2|TERM|INT)@\d{1,6}$")
+BEGIN = re.compile(r"^(now(\+\d{1,5}(seconds|minutes|hours)?)?|\d{4}-\d\d-\d\dT\d\d:\d\d(:\d\d)?)$")
+COMMENT = re.compile(r"^[A-Za-z0-9_.:/-]{1,120}$")
 SCONTROL_STATE = re.compile(r"\bJobState=([A-Z_]+)")
+UNKNOWN_JOB = re.compile(r"invalid job id", re.I)  # squeue/scontrol for a job that is gone: an answer, not an error
 ACTIVE_STATES = frozenset({"PENDING", "RUNNING", "CONFIGURING", "COMPLETING", "REQUEUED", "SUSPENDED"})
 FAILED_STATES = frozenset(
     {"FAILED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY", "NODE_FAIL", "BOOT_FAIL", "DEADLINE", "PREEMPTED"}
@@ -45,7 +49,12 @@ class JobSpec:
     workdir: Path
     command: tuple[str, ...]
     env: tuple[tuple[str, str], ...] = ()
-    dependency: tuple[str, ...] = ()
+    dependency: tuple[str, ...] = ()  # after all of these succeed (a pipeline chain)
+    after_any: tuple[str, ...] = ()  # after any one of these ends (the queue pump)
+    signal: str = ""  # e.g. "B:USR1@1800": warn the batch shell before the time limit
+    begin: str = ""  # e.g. "now+30minutes": a self-rescheduling job (scrontab is disabled)
+    comment: str = ""  # an idempotency key, found again with squeue %k
+    requeue: bool = True  # False: a node failure ends the job instead of rerunning it under the same id
 
 
 class PartitionInfo(Frozen):
@@ -73,6 +82,7 @@ class QueueJob(Frozen):
     reason: str
     partition: str
     time_limit: str = ""
+    start: str = ""  # when it started, or is expected to (a --begin job's time); "N/A" when unknown
 
 
 def format_time(minutes: int) -> str:
@@ -95,14 +105,33 @@ def render_script(spec: JobSpec) -> str:
     ]
     if r.gpus:
         lines.append(f"#SBATCH --gres=gpu:{r.gpus}")
+    if not spec.requeue:
+        lines.append("#SBATCH --no-requeue")
+    lines += _optional_lines(spec)
+    if spec.dependency and spec.after_any:
+        raise ValueError("a job waits either on a chain (dependency) or on any of several jobs (after_any)")
     if spec.dependency:
         lines.append(f"#SBATCH --dependency=afterok:{':'.join(spec.dependency)}")
         lines.append("#SBATCH --kill-on-invalid-dep=yes")
+    if spec.after_any:
+        lines.append("#SBATCH --dependency=" + "?".join(f"afterany:{job}" for job in spec.after_any))
     lines.append("set -euo pipefail")
     lines += [f"export {key}={shlex.quote(value)}" for key, value in spec.env]
     lines.append(f"cd {shlex.quote(str(spec.workdir))}")
     lines.append("exec " + " ".join(shlex.quote(part) for part in spec.command))
     return "\n".join(lines) + "\n"
+
+
+def _optional_lines(spec: JobSpec) -> list[str]:
+    lines = []
+    for value, pattern, flag in ((spec.signal, SIGNAL, "signal"), (spec.begin, BEGIN, "begin"),
+                                 (spec.comment, COMMENT, "comment")):
+        if not value:
+            continue
+        if not pattern.fullmatch(value):
+            raise ValueError(f"invalid --{flag} value {value!r}")
+        lines.append(f"#SBATCH --{flag}={value}")
+    return lines
 
 
 def parse_job_id(stdout: str) -> str:
@@ -134,7 +163,9 @@ class Slurm:
 
         sacct needs the accounting database, which some login nodes cannot reach;
         squeue knows queued/running jobs and scontrol recently finished ones.
-        Ids unknown to all three are omitted; callers decide from step markers.
+        Ids unknown to all three are omitted; callers decide from step markers. When
+        Slurm does not answer (a timeout, the controller restarting) this raises
+        SlurmError: "no answer" must never read as "the job is gone".
         """
         if not job_ids:
             return {}
@@ -142,13 +173,20 @@ class Slurm:
         missing = [j for j in job_ids if j not in states]
         if missing:
             # squeue exits non-zero for ids it no longer knows; keep whatever it printed.
-            queued = self._run(["squeue", "-h", "-j", ",".join(missing), "-o", "%i|%T"]).stdout
+            queued = self._answered(["squeue", "-h", "-j", ",".join(missing), "-o", "%i|%T"])
             states = {**states, **{row[0]: row[1] for row in _rows(queued) if len(row) >= 2}}
         for job_id in [j for j in job_ids if j not in states]:
-            found = SCONTROL_STATE.search(self._run(["scontrol", "show", "job", "-o", job_id]).stdout)
+            found = SCONTROL_STATE.search(self._answered(["scontrol", "show", "job", "-o", job_id]))
             if found:
                 states = {**states, job_id: found.group(1)}
         return states
+
+    def _answered(self, args: Sequence[str]) -> str:
+        """stdout of a query whose non-zero exit only means "no such job"; anything else is Slurm not answering."""
+        proc = self._run(args)
+        if proc.returncode != 0 and not UNKNOWN_JOB.search(proc.stderr + proc.stdout):
+            raise SlurmError(f"{args[0]} did not answer: {proc.stderr.strip() or proc.stdout.strip()}")
+        return proc.stdout
 
     def _sacct_states(self, job_ids: Sequence[str]) -> dict[str, str]:
         try:
@@ -156,6 +194,12 @@ class Slurm:
         except SlurmError:
             return {}  # accounting database unreachable from this node
         return {row[0]: row[1].split()[0] for row in _rows(out) if len(row) >= 2 and row[1]}
+
+    def delay(self, job_id: str, minutes: int) -> None:
+        """A pending job starts no earlier than `minutes` from now (scontrol update StartTime)."""
+        if not str(job_id).isdigit() or minutes < 1:
+            raise SlurmError(f"cannot delay job {job_id!r} by {minutes} minutes")
+        self._checked(["scontrol", "update", f"JobId={job_id}", f"StartTime=now+{int(minutes)}minutes"])
 
     def cancel(self, job_ids: Sequence[str]) -> None:
         if job_ids:
@@ -169,11 +213,29 @@ class Slurm:
             if len(r) >= 3 and r[1].startswith(f"{prefix}-")
         ]
 
+    def find_by_comment(self, comment: str) -> str | None:
+        """The job carrying this --comment (an idempotency key), if it is queued or running."""
+        proc = self._run(["squeue", "--me", "-h", "-o", "%i|%k"])
+        if proc.returncode != 0:
+            raise SlurmError(f"squeue failed: {proc.stderr.strip() or proc.stdout.strip()}")
+        for row in _rows(proc.stdout):
+            if len(row) >= 2 and row[1].strip() == comment:
+                return row[0]
+        return None
+
+    def node_of(self, job_id: str) -> tuple[str, str]:
+        """(node list, partition) of a running job."""
+        out = self._checked(["squeue", "-h", "-j", str(job_id), "-o", "%N|%P"]).strip()
+        node, _, partition = out.partition("|")
+        if not node:
+            raise SlurmError(f"job {job_id} has no node (not running)")
+        return node, partition
+
     def my_jobs(self) -> list[QueueJob]:
-        out = self._checked(["squeue", "--me", "-h", "-o", "%i|%j|%T|%M|%R|%P|%l"])
+        out = self._checked(["squeue", "--me", "-h", "-o", "%i|%j|%T|%M|%R|%P|%l|%S"])
         return [
             QueueJob(job_id=r[0], name=r[1], state=r[2], elapsed=r[3], reason=r[4], partition=r[5],
-                     time_limit=r[6] if len(r) > 6 else "")
+                     time_limit=r[6] if len(r) > 6 else "", start=r[7] if len(r) > 7 else "")
             for r in _rows(out)
             if len(r) >= 6
         ]

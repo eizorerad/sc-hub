@@ -13,6 +13,8 @@ from typing import Any, Sequence
 from pydantic import BaseModel
 
 from .config import load_settings
+from .cli_bench import add_bench_parsers, bench_handlers
+from .cli_goal import add_goal_parsers, goal_handlers
 from .cli_projects import add_parsers, handlers, read_arg
 from .cli_tools import add_tool_parsers, tool_handlers
 from .h5ad_profile import UnsupportedFile
@@ -136,6 +138,8 @@ def _parser() -> argparse.ArgumentParser:
     sub.add_parser("mcp", help="run the MCP server on stdio")
     add_parsers(sub)
     add_tool_parsers(sub)
+    add_bench_parsers(sub)
+    add_goal_parsers(sub)
     return parser
 
 
@@ -159,6 +163,8 @@ def _dispatch(hub: Hub, args: argparse.Namespace) -> Any:
         "doctor": lambda: _doctor(hub),
         **handlers(hub, args),
         **tool_handlers(hub, args),
+        **(bench_handlers(hub, args) if args.command.startswith("bench-") else {}),
+        **(goal_handlers(hub, args) if args.command.startswith(("goal-", "engine-", "eval-")) else {}),
     }
     return table[args.command]()
 
@@ -173,6 +179,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if args.command == "gpu-check":
         return _gpu_check()
+    if args.command == "ide-proxy":  # stdout is the ssh stream: nothing else may be printed
+        from .bench.ide import proxy
+
+        return proxy(hub.settings, hub.slurm)
+    if args.command == "ide-setup":
+        from .bench.ide import IdeError, setup
+
+        try:
+            _emit(setup(hub.settings, sys.stdin.read()))
+        except IdeError as exc:
+            sys.stderr.write(f"error: {exc}\n")
+            return 1
+        return 0
     if args.command == "fetch":
         from .fetch import FetchError, fetch
 

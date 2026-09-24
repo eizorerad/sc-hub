@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .collect_journal import BenchPanel, JournalCard, bench_panel, journal_cards
 from ..datasets import DatasetEntry, dataset_label
 from ..h5ad_profile import UnsupportedFile
 from ..headlines import headline
@@ -23,10 +24,9 @@ from ..runs import RunManifest
 from ..bricks.merge_datasets import label_of
 from ..overview import Overview, cached_overview
 from ..project_env import BuiltEnv, built, slug
-from ..revisions import Revision, history
 from ..sessions import SessionInfo
 from ..slurm import QueueJob, SlurmError
-from ..state import Frozen
+from ..state import Frozen, Issue
 from ..stepfile import ERROR_FILE, STEP_FILE, SUCCESS, SUMMARY_FILE
 from .steps import StepExtras, step_extras, trained_model_size_mb
 
@@ -82,6 +82,13 @@ class NodeView(Frozen):
     labels: tuple[str, ...] = ()
     inputs: tuple[str, ...] = ()  # extra dataset roots ("ds:<name>") a merge step reads
     refs: tuple[str, ...] = ()  # "<project>/<branch>#<step>" of every branch using this step
+    # False for results no branch uses any more (the branch was revised, or sc-hub was
+    # updated so its steps have new keys): history, hidden from graphs by default.
+    current: bool = True
+    # A planned step: per branch label, the key of that branch step's earlier result (a
+    # step shared by two branches may have run before in one of them only).
+    earlier: dict[str, str] = {}
+    issues: tuple[Issue, ...] = ()  # what the planner says about this step
 
 
 class TrainedModel(Frozen):
@@ -109,9 +116,12 @@ class BranchInfo(Frozen):
     reason: str = ""
     datasets: tuple[str, ...] = ()
     steps: int = 0
-    history: tuple[Revision, ...] = ()
     keys: tuple[str, ...] = ()  # step keys of the branch as it is now
     problem: str = ""
+    state: str = "PLANNED"  # of the branch as it is now; see branch_state
+    plan_id: str = ""  # of the branch as it is now
+    idea: str | None = None
+    saved: str = ""  # when this revision was saved
 
 
 class Snapshot(Frozen):
@@ -136,6 +146,8 @@ class Snapshot(Frozen):
     nodes: tuple[NodeView, ...]
     steps_by_key: dict[str, StepView] = {}
     notebooks: frozenset[str] = frozenset()  # runs with nb/<run_id>.js (set when the page is built)
+    journals: tuple[JournalCard, ...] = ()  # the bench's projects (the Journal tab)
+    bench: BenchPanel | None = None
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:
@@ -225,8 +237,10 @@ def _previews(hub: Any, projects: list[ProjectSummary]) -> dict[str, Any]:
     return found
 
 
-def _nodes(hub: Any, runs: list[RunView], projects: list[ProjectSummary], previews: dict[str, Any]) -> list[NodeView]:
+def _nodes(runs: list[RunView], previews: dict[str, Any]) -> list[NodeView]:
     nodes: dict[str, NodeView] = {}
+    earlier: dict[str, tuple[str, str]] = {}  # "<branch>#<step>" -> (key, brick) of its newest finished result
+    history: set[str] = set()  # labels of runs kept as a project's history (no branch)
 
     def add(key: str, parent: str, dataset: str, brick: str, state: str, head: str,
             params: dict[str, Any], label: str, ref: str = "") -> None:
@@ -240,25 +254,71 @@ def _nodes(hub: Any, runs: list[RunView], projects: list[ProjectSummary], previe
             params=params, labels=labels, inputs=_inputs(brick, params), refs=refs,
         )
 
-    for run in runs:
+    adhoc = {run_label(r) for r in runs if not r.project}  # labels "run abcd" may collide
+    for run in runs:  # newest first
         parent = f"ds:{run.dataset}"
+        if run.project and not run.branch and run_label(run) not in adhoc:
+            history.add(run_label(run))
         for step in run.steps:
             ref = f"{run.project}/{run.branch}#{step.index}" if run.project and run.branch else ""
             add(step.key, parent, run.dataset, step.brick, step.state, step.headline, step.params, run_label(run), ref)
+            if ref and step.state == "COMPLETED":
+                earlier.setdefault(ref, (step.key, step.brick))
             parent = step.key
-    for project in projects:
-        for branch in project.branches:
-            plan = previews.get(f"{project.path}/{branch}")
-            if plan is None or isinstance(plan, Exception):
-                continue
-            dataset = dataset_label(plan.dataset)
-            parent = f"ds:{dataset}"
-            for step in plan.steps:
-                # add() keeps the state of a node a run already produced.
-                label = f"{project.path}/{branch}"
-                add(step.step_key, parent, dataset, step.brick, "PLANNED", "", step.params, label, f"{label}#{step.index}")
-                parent = step.step_key
-    return list(nodes.values())
+    issues: dict[str, dict[tuple[str, str], Issue]] = {}
+    for label, plan in previews.items():
+        if plan is None or isinstance(plan, Exception):
+            continue
+        dataset = dataset_label(plan.dataset)
+        parent = f"ds:{dataset}"
+        for step in plan.steps:
+            # add() keeps the state of a node a run already produced.
+            add(step.step_key, parent, dataset, step.brick, "PLANNED", "", step.params, label, f"{label}#{step.index}")
+            found = issues.setdefault(step.step_key, {})
+            found.update({(i.code, i.message): i for i in plan.issues if i.step == step.index})
+            parent = step.step_key
+    now = {label: set(_keys(plan)) for label, plan in previews.items() if _keys(plan)}
+    return [_settle(n, now, history, earlier, tuple(issues.get(n.key, {}).values())) for n in nodes.values()]
+
+
+def _settle(node: NodeView, now: dict[str, set[str]], history: set[str],
+            earlier: dict[str, tuple[str, str]], issues: tuple[Issue, ...]) -> NodeView:
+    """Is the step part of a branch as it is now (or of a run outside any branch)?
+    And for a step not run yet: what each branch's same step produced before."""
+    current = any(label not in history and (label not in now or node.key in now[label]) for label in node.labels)
+    found: dict[str, str] = {}
+    if current and node.state == "PLANNED":
+        for ref in node.refs:
+            key, brick = earlier.get(ref, ("", ""))
+            if key and key != node.key and brick == node.brick:
+                found[ref.rpartition("#")[0]] = key
+    return node.model_copy(update={"current": current, "earlier": found, "issues": issues})
+
+
+# What a branch's state means to a student (pill and dot colours come from the state).
+BRANCH_LABELS = {
+    "COMPLETED": "done", "RUNNING": "running", "PENDING": "queued", "FAILED": "failed",
+    "PLANNED": "not run yet", "OUTDATED": "needs re-run", "BLOCKED": "can't plan", "WAITING": "waiting for a slot",
+}
+
+
+def branch_state(plan: Any, nodes: dict[str, NodeView], label: str) -> str:
+    """The branch as it is now: BLOCKED if it cannot be planned, OUTDATED if steps it
+    ran before must run again (sc-hub updated, or a revision), else the run states."""
+    if plan is None or isinstance(plan, Exception) or not plan.ok:
+        return "BLOCKED"
+    steps = [nodes[s.step_key] for s in plan.steps if s.step_key in nodes]
+    states = {n.state for n in steps}
+    if states == {"COMPLETED"}:
+        return "COMPLETED"
+    for state in ("FAILED", "STOPPED", "MISSING"):
+        if state in states:
+            return "FAILED"
+    if "RUNNING" in states:
+        return "RUNNING"
+    if states - {"COMPLETED", "PLANNED"}:
+        return "PENDING"
+    return "OUTDATED" if any(label in n.earlier for n in steps) else "PLANNED"
 
 
 def _trained_models(runs: list[RunView]) -> list[TrainedModel]:
@@ -294,7 +354,8 @@ def _references(hub: Any) -> tuple[Reference, ...]:
     return tuple(found)
 
 
-def _branches(hub: Any, projects: list[ProjectSummary], previews: dict[str, Any]) -> dict[str, BranchInfo]:
+def _branches(hub: Any, projects: list[ProjectSummary], previews: dict[str, Any],
+              nodes: dict[str, NodeView]) -> dict[str, BranchInfo]:
     found = {}
     for project in projects:
         for name in project.branches:
@@ -309,12 +370,13 @@ def _branches(hub: Any, projects: list[ProjectSummary], previews: dict[str, Any]
                     project=project.path, name=name, revision=spec.revision, from_branch=spec.from_branch,
                     forked_from=spec.forked_from, description=spec.description, reason=spec.reason,
                     datasets=datasets, steps=len(resolved.steps),
-                    history=tuple(history(hub.projects, project.path, name)),
                     keys=_keys(previews.get(key)),
                     problem=str(previews[key])[:200] if isinstance(previews.get(key), Exception) else "",
+                    state=branch_state(previews.get(key), nodes, key),
+                    plan_id=getattr(previews.get(key), "plan_id", ""), idea=spec.idea, saved=spec.saved,
                 )
             except (ProjectError, UnsupportedFile, ValueError, OSError, KeyError) as exc:
-                found[key] = BranchInfo(project=project.path, name=name, problem=str(exc)[:200])
+                found[key] = BranchInfo(project=project.path, name=name, problem=str(exc)[:200], state="BLOCKED")
     return found
 
 
@@ -365,6 +427,9 @@ def collect(hub: Any) -> Snapshot:
     steps_by_key: dict[str, StepView] = {}
     for run in reversed(runs):  # the newest run wins for a shared step
         steps_by_key.update({s.key: s for s in run.steps})
+    nodes = _nodes(runs, previews)
+    overview = _overview(hub)
+    journals = journal_cards(hub.settings, None if jobs_error else tuple(jobs))
     return Snapshot(
         generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         user=os.environ.get("USER", ""),
@@ -380,10 +445,12 @@ def collect(hub: Any) -> Snapshot:
         trained_models=tuple(_trained_models(runs)),
         references=_references(hub),
         sessions=_sessions(hub, queue, not jobs_error),
-        branches=_branches(hub, projects, previews),
+        branches=_branches(hub, projects, previews, {n.key: n for n in nodes}),
         kernels={p.path: env for p in projects if (env := built(hub.settings, p.path)) is not None},
         env_builds=tuple(p.path for p in projects if f"{hub.settings.job_prefix}-env-{slug(p.path)}" in {j.name for j in jobs}),
-        overview=_overview(hub),
-        nodes=tuple(_nodes(hub, runs, projects, previews)),
+        overview=overview,
+        nodes=tuple(nodes),
         steps_by_key=steps_by_key,
+        journals=journals,
+        bench=bench_panel(hub.settings, tuple(jobs), overview, journals),
     )

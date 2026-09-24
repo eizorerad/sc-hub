@@ -47,6 +47,10 @@ def check(state: DatasetState, p: MementoParams, ctx: PlanContext) -> list[Issue
     return issues
 
 
+def reads_obs(p: MementoParams) -> tuple[str, ...]:
+    return tuple(c for c in (p.condition_key, p.replicate_key, p.group_key) if c)
+
+
 def transform(state: DatasetState, p: MementoParams) -> DatasetState:
     return state.with_flags("de")
 
@@ -74,4 +78,5 @@ SPEC = BrickSpec(
     impl="schub.bricks.impl.memento_de:run",
     terminal=True,
     key_extra=key_extra,
+    reads_obs=reads_obs,
 )

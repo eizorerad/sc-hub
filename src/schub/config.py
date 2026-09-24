@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping
 
+from .bench.config import BenchConfig, load_bench_config
+
 DEFAULT_PARTITION = "ws-ia"
 LUSTRE_USERS = Path("/l/users")
 
@@ -55,6 +57,8 @@ class Settings:
     job_prefix: str = "schub"
     limits: Limits = field(default_factory=Limits)
     extra_roots: tuple[Path, ...] = ()
+    bench: BenchConfig = field(default_factory=BenchConfig)
+    legacy_tools: bool = False  # the brick-era MCP tools (plans, branches, runs, sessions)
 
     @property
     def local_library(self) -> Path:
@@ -99,6 +103,11 @@ class Settings:
         return self.root / ".cache"
 
     @property
+    def bench_dir(self) -> Path:
+        """Workbench state: request inbox, claims, controls, the workbench's own record."""
+        return self.root / "bench"
+
+    @property
     def view_dir(self) -> Path:
         return self.root / "view"
 
@@ -138,7 +147,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         Path(p).expanduser() for p in env.get("SCHUB_EXTRA_ROOTS", "").split(":") if p
     )
     limits = Limits(
-        max_active_runs=int(_number(env, "SCHUB_MAX_ACTIVE_RUNS", Limits.max_active_runs)),
+        max_active_runs=max(1, int(_number(env, "SCHUB_MAX_ACTIVE_RUNS", Limits.max_active_runs))),
         max_gpu_hours_per_plan=_number(
             env, "SCHUB_MAX_GPU_HOURS", Limits.max_gpu_hours_per_plan
         ),
@@ -150,4 +159,6 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         partition=env.get("SCHUB_PARTITION", DEFAULT_PARTITION),
         limits=limits,
         extra_roots=extra,
+        bench=load_bench_config(env),
+        legacy_tools=env.get("SCHUB_LEGACY_TOOLS", "") not in ("", "0", "false", "no"),
     )

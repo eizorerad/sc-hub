@@ -8,8 +8,11 @@
 #   2. copies sc-hub to the cluster and sets up your workspace there (in a Slurm job);
 #   3. connects sc-hub to Codex, Claude Code and Claude Desktop, whichever you have;
 #   4. creates ~/sc-hub-workspace with instructions for the assistant, ./schub-view
-#      (dashboard) and ./schub-lab (JupyterLab / cellxgene sessions).
-# It never reads or stores your password: ssh asks for it directly.
+#      (dashboard) and ./schub-lab (JupyterLab / cellxgene sessions);
+#   5. limits the key to sc-hub: it opens the MCP server, the dashboard and sessions,
+#      nothing else (SCHUB_KEY_UNRESTRICTED=1 makes it a normal key again).
+# It never reads or stores your password: ssh asks for it directly. Re-running it
+# with a limited key asks your password for the update steps.
 set -euo pipefail
 
 VERSION="__VERSION__"
@@ -26,7 +29,17 @@ WORKSPACE="${SCHUB_WORKSPACE:-$HOME/sc-hub-workspace}"
 CODEX_CONFIG="${CODEX_HOME:-$HOME/.codex}/config.toml"
 REMOTE_ROOT=""
 BUNDLE_DIR=""
-ADD_KEY_REMOTE='umask 077; mkdir -p ~/.ssh; f=~/.ssh/authorized_keys; touch $f; t=$(mktemp); tr -d '"'"'\r'"'"' > $t; if ! grep -qxFf $t $f; then if test -s $f && test $(tail -c1 $f | wc -l) -eq 0; then echo >> $f; fi; cat $t >> $f; fi; rm -f $t'
+# Once the key is limited to sc-hub, update steps log in with the student's password.
+KEY_LIMITED=0
+# Rewrites the sc-hub key's line in authorized_keys to "$OPTS <key>" (empty OPTS: a
+# plain key line again). Commented-out lines are left alone; the file is rewritten in
+# place (cat, not mv, so a symlinked file stays one) after a copy to .schub-backup.
+# The caller prefixes R= and OPTS=.
+KEY_LINE_REMOTE='set -e; umask 077; mkdir -p ~/.ssh; f=~/.ssh/authorized_keys; touch "$f"; if [ -n "$OPTS" ]; then test -x "$R/bin/schub-gate"; fi; line=$(tr -d '"'"'\r'"'"' | head -n 1); set -- $line; blob="$1 $2"; new="${OPTS:+$OPTS }$line"; cp "$f" "$f.schub-backup"; tmp=$(mktemp); awk -v blob="$blob" -v new="$new" '"'"'!/^[[:space:]]*#/ && index($0, blob) { if (!done) print new; done = 1; next } { print } END { if (!done) print new }'"'"' "$f" > "$tmp"; cat "$tmp" > "$f"; rm -f "$tmp"'
+
+# Password logins of one run share one connection (one password prompt), never the
+# user's own ControlMaster, which may be logged in with the limited key.
+ADMIN_MUX=()
 # Piped through `curl | bash`, stdin is the script; prompts must read the terminal.
 HAVE_TTY=0
 if { exec 3</dev/tty; } 2>/dev/null; then HAVE_TTY=1; exec 3<&-; fi
@@ -37,6 +50,7 @@ interactive() {
   if [ "$HAVE_TTY" = 1 ]; then "$@" </dev/tty; else "$@"; fi
 }
 die() { printf '[sc-hub] ERROR: %s\n' "$*" >&2; exit 1; }
+warn() { printf '\033[1m[sc-hub] WARNING:\033[0m %s\n' "$*" >&2; }
 # Empty-array-safe expansion for the bash 3.2 that ships with macOS.
 sshx() { ssh ${SSH_F[@]+"${SSH_F[@]}"} "$@"; }
 strip_block() {
@@ -73,7 +87,8 @@ check_tools() {
 
 extract_bundle() {
   BUNDLE_DIR="$(mktemp -d)"
-  trap 'rm -rf "$BUNDLE_DIR"' EXIT
+  ADMIN_MUX=(-o ControlMaster=auto -o "ControlPath=$BUNDLE_DIR/cm" -o ControlPersist=600)
+  trap 'ssh -o "ControlPath=$BUNDLE_DIR/cm" -O exit "$ALIAS" 2>/dev/null; rm -rf "$BUNDLE_DIR"' EXIT
   bundle | base64 -d 2>/dev/null | tar -xzf - -C "$BUNDLE_DIR" || bundle | base64 -D | tar -xzf - -C "$BUNDLE_DIR"
 }
 
@@ -120,10 +135,54 @@ install_key() {
   fi
   if sshx -o BatchMode=yes -o ConnectTimeout=15 "$ALIAS" true 2>/dev/null; then return; fi
   log "installing your key on $HOST: type your cluster password when asked"
-  # ssh reads the password from the terminal itself, so the key can go through stdin.
-  # Added once, on its own line, even if authorized_keys lacks a final newline.
-  sshx "$ALIAS" "$ADD_KEY_REMOTE" <"$KEY.pub"
+  # ssh reads the password from the terminal itself, so the key can go through stdin. The
+  # key's line is written in place: a limited line whose gate is gone becomes a plain one
+  # (set_key_access limits it again at the end), never a second line after it.
+  sshx -o PubkeyAuthentication=no ${ADMIN_MUX[@]+"${ADMIN_MUX[@]}"} "$ALIAS" "R=''; OPTS=''; $KEY_LINE_REMOTE" <"$KEY.pub"
   sshx -o BatchMode=yes "$ALIAS" true || die "key login still fails (is the key loaded? ssh-add $KEY)"
+}
+
+key_is_limited() {
+  # Not a pipe into grep: with pipefail the gate's refusal (exit 126) would hide the match.
+  local answer
+  answer="$(sshx -o BatchMode=yes "$ALIAS" 'echo sc-hub-probe' 2>&1 || true)"
+  [[ "$answer" == *"only opens sc-hub"* ]]
+}
+
+choose_admin_access() {
+  if key_is_limited; then
+    KEY_LIMITED=1
+    log "your sc-hub key only opens sc-hub; type your cluster password for the update steps"
+  fi
+}
+
+admin_ssh() {  # update steps: with the key, or with the password once the key is limited
+  if [ "$KEY_LIMITED" = 1 ]; then
+    sshx -o PubkeyAuthentication=no ${ADMIN_MUX[@]+"${ADMIN_MUX[@]}"} "$@"
+  else
+    sshx -o BatchMode=yes "$@"
+  fi
+}
+
+set_key_access() {
+  # restrict: no shell, pty, agent, X11 or ~/.ssh/rc; port-forwarding back on for ./schub-lab.
+  local opts="restrict,port-forwarding,command=\"$REMOTE_ROOT/bin/schub-gate\""
+  if [ "${SCHUB_KEY_UNRESTRICTED:-0}" = 1 ]; then
+    opts=""
+    if [ "$KEY_LIMITED" = 0 ]; then log "key left unrestricted (SCHUB_KEY_UNRESTRICTED=1)"; return 0; fi
+    log "removing the limit on the sc-hub key (SCHUB_KEY_UNRESTRICTED=1)"
+  else
+    log "limiting the sc-hub key to sc-hub (MCP server, dashboard, sessions)"
+  fi
+  if ! admin_ssh "$ALIAS" "R='$REMOTE_ROOT'; OPTS='$opts'; $KEY_LINE_REMOTE" <"$KEY.pub"; then
+    warn "could not change the key's access on the cluster; everything else is set up. Re-run the installer to retry."
+    return 0
+  fi
+  if [ -n "$opts" ] && ! key_is_limited; then
+    warn "the key still answers like a normal key; check its line in ~/.ssh/authorized_keys on the cluster"
+  fi
+  sshx -o BatchMode=yes "$ALIAS" true \
+    || warn "the key no longer opens sc-hub; on the cluster, restore ~/.ssh/authorized_keys.schub-backup"
 }
 
 check_clean_channel() {
@@ -135,7 +194,7 @@ needs a clean channel. In ~/.bashrc on the cluster, put this line before any ech
 
 upload_and_bootstrap() {
   log "copying sc-hub $VERSION to the cluster"
-  REMOTE_ROOT="$(bundle | sshx -o BatchMode=yes "$ALIAS" 'set -e
+  REMOTE_ROOT="$(bundle | admin_ssh "$ALIAS" 'set -e
 R="${SCHUB_ROOT:-/l/users/$USER/schub}"
 mkdir -p "$R/src"; rm -rf "$R/src/sc-hub.new"; mkdir "$R/src/sc-hub.new"
 base64 -di | tar -xzf - -C "$R/src/sc-hub.new"
@@ -145,7 +204,9 @@ printf "%s" "$R"')"
   log "setting up your workspace on the cluster (this runs in a Slurm job; a few minutes)"
   local tty_flag="-T"
   if [ "$HAVE_TTY" = 1 ]; then tty_flag="-t"; fi
-  interactive sshx "$tty_flag" "$ALIAS" "bash '$REMOTE_ROOT/src/sc-hub/scripts/bootstrap_cluster.sh'"
+  local access=(-o PubkeyAuthentication=yes)
+  if [ "$KEY_LIMITED" = 1 ]; then access=(-o PubkeyAuthentication=no ${ADMIN_MUX[@]+"${ADMIN_MUX[@]}"}); fi
+  interactive sshx "$tty_flag" "${access[@]}" "$ALIAS" "bash '$REMOTE_ROOT/src/sc-hub/scripts/bootstrap_cluster.sh'"
 }
 
 mcp_args_toml() {
@@ -170,6 +231,8 @@ command = "ssh"
 args = $(mcp_args_toml)
 startup_timeout_sec = 60
 tool_timeout_sec = 180
+# The bench records every call in the project journal; asking before each cell would stall the work.
+default_tools_approval_mode = "approve"
 # <<< sc-hub <<<
 EOF
   log "Codex: connected (also used by Codex in the ChatGPT desktop app)"
@@ -253,11 +316,13 @@ main() {
   add_ssh_alias
   install_key
   check_clean_channel
+  choose_admin_access
   upload_and_bootstrap
   register_codex
   register_claude_code
   register_claude_desktop || log "Claude Desktop: could not update its config (invalid JSON?); add the schub server by hand"
   make_workspace
+  set_key_access
   cat <<EOF
 
 Ready. Start your assistant in the workspace and just ask, for example:

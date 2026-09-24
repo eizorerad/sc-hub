@@ -13,7 +13,7 @@ from schub.overview import (
 )
 
 # Real output captured on the MBZUAI student cluster (2026-09-23).
-LFS = """Disk quotas for usr leonid.klarov (uid 3525):
+LFS = """Disk quotas for usr test.user (uid 3525):
      Filesystem    used  bquota  blimit  bgrace   files  iquota  ilimit  igrace
              /l  2.021T      3T   3.15T       - 2416558 50000000 52500000       -
 """
@@ -24,7 +24,7 @@ QOS = """    User Limits
       someone.else(2955)
         MaxJobsPU=2(0) MaxJobsAccruePU=N(0) MaxSubmitJobsPU=N(2)
         MaxTRESPU=cpu=24(0),mem=110000(0),energy=N(0),gres/gpu=N(0)
-      leonid.klarov(3525)
+      test.user(3525)
         MaxJobsPU=2(1) MaxJobsAccruePU=N(0) MaxSubmitJobsPU=N(1)
         MaxTRESPU=cpu=24(8),mem=110000(32768),energy=N(0),node=N(1),billing=N(8),fs/disk=N(0),vmem=N(0),pages=N(0),gres/gpu=N(0),gres/gpumem=N(0),gres/gpuutil=N(0)
         MaxTRESRunMinsPU=cpu=N(4387),mem=N(17969971)
@@ -59,7 +59,7 @@ def test_storage_parsers():
 
 
 def test_user_limits_are_found_for_this_user_only():
-    limits = {limit.name: (limit.used, limit.limit) for limit in parse_user_qos(QOS, "leonid.klarov")}
+    limits = {limit.name: (limit.used, limit.limit) for limit in parse_user_qos(QOS, "test.user")}
     assert limits["running jobs"] == (1, 2) and limits["CPUs"] == (8, 24)
     assert limits["memory (GB)"] == (32.0, 107.4) and limits["GPUs"] == (0, None)
     assert parse_user_qos(QOS, "nobody") == ()
@@ -76,9 +76,9 @@ def test_cluster_load_and_jobs():
 
 
 def test_collect_overview_survives_failing_commands(settings, monkeypatch):
-    monkeypatch.setenv("USER", "leonid.klarov")
+    monkeypatch.setenv("USER", "test.user")
     outputs = {
-        "lfs": LFS, "df": DF, "who": "leonid.klarov pts/40 2026-09-22 23:39 (zap-2)\nother pts/1 x\n",
+        "lfs": LFS, "df": DF, "who": "test.user pts/40 2026-09-22 23:39 (zap-2)\nother pts/1 x\n",
         "sinfo": SINFO_CPUS, "squeue": SQUEUE, "du": "2048\t/x\n",
     }
 

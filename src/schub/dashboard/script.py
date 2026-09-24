@@ -18,35 +18,32 @@ SCRIPT = r"""
     '#1f77b4','#ff7f0e','#2ca02c','#d62728','#9467bd','#8c564b','#e377c2','#7f7f7f','#bcbd22','#17becf'];
   const decode = s => { try { return decodeURIComponent(s); } catch (e) { return s; } };
 
-  // Old addresses keep working: the overview became Projects, Jobs a part of Runs.
-  const ALIASES = {overview: 'projects', jobs: 'runs/queue'};
+  // Old addresses keep working: the brick-era tabs lead to the Journal, Jobs to a part of Runs.
+  const ALIASES = {overview: 'journal', projects: 'journal', pipelines: 'journal', experiments: 'journal',
+                   jobs: 'runs/queue'};
   const RUN_SECTIONS = ['history', 'queue', 'sessions'];
   const pickers = {};
 
   function route() {
-    let hash = location.hash.slice(1) || 'projects';
+    const firstTab = ($('[data-tab]') || {dataset: {tab: 'journal'}}).dataset.tab;
+    let hash = location.hash.slice(1) || firstTab;
     const first = hash.split('/')[0];
     if (ALIASES[first]) hash = ALIASES[first];
     const [view, ...rest] = hash.split('/');
     const arg = rest.join('/');  // project paths contain '/'
-    const name = $$('.view').some(v => v.dataset.view === view) ? view : 'projects';
+    const name = $$('.view').some(v => v.dataset.view === view) ? view : firstTab;
     $$('.view').forEach(v => v.classList.toggle('active', v.dataset.view === name));
     $$('[data-tab]').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
-    $$('details.account').forEach(d => { d.open = false; });
+    $$('details.account .brand').forEach(b => b.classList.toggle('here', $$('[data-tab]').every(t => t.dataset.tab !== name)));
+    closeMenus();
     if (name === 'runs' && RUN_SECTIONS.includes(arg)) { pickers.runs?.(arg); showRun(null); }
     else if (name === 'runs') showRun(arg ? decode(arg) : null);
-    if (name === 'pipelines') selectPipe(arg || keep.get('pipe') || 'v-all');
-    if (name === 'projects') selectProject(arg ? decode(arg) : keep.get('project'));
+    if (name === 'journal' && window.SCHUB_JOURNAL) window.SCHUB_JOURNAL.select(arg ? decode(arg) : null);
     if (!restoring) window.scrollTo(0, 0);
   }
 
-  function selectProject(path) {
-    const cards = $$('.project[data-project]');
-    if (!cards.length) return;
-    if (!cards.some(c => c.dataset.project === path)) path = cards[0].dataset.project;
-    cards.forEach(c => { c.hidden = c.dataset.project !== path; });
-    $$('.project-tree [data-project-link]').forEach(b => b.classList.toggle('active', b.dataset.projectLink === path));
-    keep.set('project', path);
+  function closeMenus(except) {
+    $$('details.account[open], details.menu-pop[open]').forEach(d => { if (d !== except) d.open = false; });
   }
 
   async function copyText(text) {
@@ -62,7 +59,9 @@ SCRIPT = r"""
 
   // The requests the step buttons copy (built here so the page stays small).
   function askText(kind, box) {
-    const ref = box.dataset.ref, brick = box.dataset.brick, branch = box.dataset.branch;
+    const picked = $('select.ask-ref', box)?.value;
+    const ref = picked || box.dataset.ref, brick = box.dataset.brick;
+    const branch = picked ? picked.split('#')[0].split('/').pop() : box.dataset.branch;
     if (kind === 'ref') return ref;
     if (kind === 'jupyter') {
       const run = box.dataset.nbRun, gpu = box.dataset.nbGpu ? ' with a GPU' : '';
@@ -70,11 +69,11 @@ SCRIPT = r"""
         + `session${gpu} with that notebook as the target, and tell me when I can run ./schub-lab jupyter on my laptop.`;
     }
     if (kind === 'fix') return `In sc-hub, fix step ${ref} (${brick}): <what is wrong and what it should do>. `
-      + `Look at it with inspect_step("${ref}"), then use revise_branch (same branch, new revision) with a short reason, `
-      + 'show me the plan, and submit it when I confirm.';
+      + `Change that step of branch ${branch} and save it again with save_branch (overwrite=true; the previous `
+      + 'revision is kept), show me the plan, and submit it when I confirm.';
     return `In sc-hub, from step ${ref} (${brick}) on, try this instead: <the alternative>. `
-      + `Look at it with inspect_step("${ref}"), then use fork_branch into a new branch (keep ${branch} as it is), `
-      + 'show me the plan, and submit it when I confirm.';
+      + `Save it as a new branch with save_branch (from_branch="${branch}" and overrides for that step), keep `
+      + `${branch} as it is, show me the plan, and submit it when I confirm.`;
   }
 
   // Long lists: a filter box and 'Show all N' instead of one endless table.
@@ -178,40 +177,6 @@ SCRIPT = r"""
     });
   }
 
-  function selectPipe(id) {
-    if (!$(sel('data-pipe-view', id))) id = 'v-all';
-    $$('[data-pipe-view]').forEach(v => { v.hidden = v.dataset.pipeView !== id; });
-    $$('[data-pipe]').forEach(b => b.classList.toggle('active', b.dataset.pipe === id));
-    keep.set('pipe', id);
-    const node = keep.get('node');
-    if (node) selectNode(node, false);
-  }
-
-  function selectNode(key, remember = true) {
-    const tpl = $(sel('data-node', key));
-    const panel = $('#node-panel');
-    if (!tpl || !panel) return;
-    panel.replaceChildren(tpl.content.cloneNode(true));
-    panel.classList.remove('filled'); void panel.offsetWidth; panel.classList.add('filled');
-    const view = $('[data-pipe-view]:not([hidden])');
-    if (view) {
-      const svg = $('svg', view);
-      $$('.node', view).forEach(n => n.classList.remove('selected', 'on-path'));
-      const hit = $('.node' + sel('data-key', key), view);
-      if (svg) svg.classList.toggle('focused', !!hit);
-      if (hit) {
-        hit.classList.add('selected');
-        (hit.dataset.path || '').split(' ').forEach(k => {
-          const n = k && $('.node' + sel('data-key', k), view);
-          if (n) n.classList.add('on-path');
-        });
-      }
-    }
-    $$('.cellmap:not(.drawn)', panel).forEach(drawMap);
-    $$('details.code[open]', panel).forEach(fillCode);
-    if (remember) keep.set('node', key);
-  }
-
   function loadPoints(src, key, done) {
     loadScript(src, () => window.SCHUB_PTS && window.SCHUB_PTS[key], done);
   }
@@ -273,11 +238,19 @@ SCRIPT = r"""
   }
 
   document.addEventListener('click', e => {
+    // Menus: one open at a time; a click outside, or on one of its links, closes it.
+    const inMenu = e.target.closest('details.account, details.menu-pop');
+    closeMenus(inMenu && !e.target.closest('.menu a, .pop a') ? inMenu : null);
     const nb = e.target.closest('[data-notebook]');
     if (nb) { downloadNotebook(nb); return; }
     const ask = e.target.closest('[data-ask]');
     if (ask) {
-      const box = ask.closest('.ask, .nb-box'), text = askText(ask.dataset.ask, box);
+      const box = ask.closest('.ask, .nb-box'), pick = $('select.ask-ref', box);
+      if (pick && !pick.value) {  // a step several branches share: which one is the request about?
+        pick.classList.add('need'); pick.focus();
+        return;
+      }
+      const text = askText(ask.dataset.ask, box);
       copyText(text).then(ok => {
         const manual = $('textarea.manual', box), note = $('.copied', box);
         if (ok) {
@@ -291,36 +264,15 @@ SCRIPT = r"""
       return;
     }
     if (e.target.id === 'runs-more') { runsExpanded = true; keep.set('runs-all', '1'); filterRuns(); return; }
-    const project = e.target.closest('[data-project-link]');
-    if (project) { location.hash = 'projects/' + project.dataset.projectLink; return; }
-    // Outside the menu, or on one of its links (also when the address does not change): close it.
-    if (!e.target.closest('details.account') || e.target.closest('details.account .menu a')) {
-      $$('details.account').forEach(d => { d.open = false; });
-    }
-    const node = e.target.closest('.node[data-key]');
-    if (node && !node.classList.contains('ds')) return selectNode(node.dataset.key);
-    const pipe = e.target.closest('[data-pipe]');
-    if (pipe) { location.hash = 'pipelines/' + pipe.dataset.pipe; return; }
-    const metric = e.target.closest('[data-filter-state]');
-    if (metric && $('#run-state')) { $('#run-state').value = metric.dataset.filterState; setTimeout(filterRuns); }
-    const row = e.target.closest('tr[data-href]');
-    if (row && !e.target.closest('a')) location.hash = row.dataset.href;
+    // A whole row opens what it names (not when a link, button or menu inside it was used).
+    const row = e.target.closest('tr[data-href], .row-link[data-href]');
+    if (row && !inMenu && !e.target.closest('a, button, select, input, summary')) location.hash = row.dataset.href;
   });
   document.addEventListener('keydown', e => {
-    const node = e.key === 'Enter' && e.target.closest && e.target.closest('.node[data-key]');
-    if (node && !node.classList.contains('ds')) selectNode(node.dataset.key);
+    const open = e.key === 'Escape' && $('details.account[open], details.menu-pop[open]');
+    if (open) { closeMenus(); $('summary', open)?.focus(); }
   });
   ['input', 'change'].forEach(t => document.addEventListener(t, e => { if (e.target.closest('#run-filters')) filterRuns(); }));
-  const filterTree = input => {
-    const q = input.value.toLowerCase();
-    keep.set('tree-' + (input.closest('[data-tree]')?.dataset.tree || input.placeholder), q);
-    $$('button[data-text]', input.parentElement).forEach(b => { b.hidden = !!q && !b.dataset.text.includes(q); });
-  };
-  document.addEventListener('input', e => { if (e.target.matches('.tree-filter')) filterTree(e.target); });
-  $$('.tree-filter').forEach(input => {
-    input.value = keep.get('tree-' + (input.closest('[data-tree]')?.dataset.tree || input.placeholder)) || '';
-    if (input.value) filterTree(input);
-  });
   window.addEventListener('hashchange', route);
   document.addEventListener('toggle', e => {
     if (!e.target.open) return;
@@ -340,7 +292,7 @@ SCRIPT = r"""
   let typedAt = 0;
   document.addEventListener('input', () => { typedAt = Date.now(); });
   const busy = () => Date.now() - typedAt < 15000 ||
-    $$('.view.active details[open], #node-panel details[open], details.account[open], textarea.manual:not([hidden])')
+    $$('.view.active details[open]:not(.jgroup):not(.jkids), #node-panel details[open], details.account[open], textarea.manual:not([hidden])')
       .some(d => d.getClientRects().length);
   setInterval(() => {
     if (auto() && !document.hidden && !busy()) { keep.set('scroll', String(window.scrollY)); location.reload(); }

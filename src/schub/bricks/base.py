@@ -69,6 +69,8 @@ KeyExtraFn = Callable[[DatasetState, Any, PlanContext], str]
 ContextTransformFn = Callable[[DatasetState, Any, PlanContext], DatasetState]
 # Datasets a step reads besides its input: {name: "<resolved path>\t<fingerprint>"}.
 PinsFn = Callable[[DatasetState, Any, PlanContext], dict[str, str]]
+# obs columns a step writes or reads, given its params.
+ColumnsFn = Callable[[Any], tuple[str, ...]]
 
 
 @dataclass(frozen=True)
@@ -88,6 +90,13 @@ class BrickSpec:
     first_only: bool = False  # must be step 1 (it reads datasets, not a previous step)
     transform_ctx: ContextTransformFn | None = None  # replaces transform when it needs the context
     input_pins: PinsFn | None = None  # extra datasets, checked again at submit and in the job
+    # What a step changes and reads, so the planner can tell which earlier steps a
+    # result depends on (see schub.upstream).
+    keeps_counts: bool = False  # cells, genes and raw counts come out unchanged
+    prepares: bool = False  # routine preparation (normalization), not an analysis choice
+    writes_obs: ColumnsFn | None = None  # obs columns it adds or overwrites
+    label_columns: ColumnsFn | None = None  # the cell-label columns among them
+    reads_obs: ColumnsFn | None = None  # reads only raw counts plus these obs columns
 
     def describe(self) -> dict[str, Any]:
         return {

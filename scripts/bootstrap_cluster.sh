@@ -3,16 +3,14 @@
 #
 #   bash scripts/bootstrap_cluster.sh
 #
-# Uses the pilot owner's shared library when this user can read it: no private
-# environment and no duplicate datasets. Otherwise it falls back to building a
-# private environment and downloading everything into $ROOT/library-local.
+# Builds the user's own environment and downloads the starter datasets into
+# $ROOT/library-local. With SCHUB_LIBRARY set to a shared library this user can
+# read (scripts/publish_library.sh), it uses that instead: no private environment
+# and no duplicate datasets.
 #
 # Overrides (env): SCHUB_ROOT, SCHUB_LIBRARY, SCHUB_PARTITION,
 #   SCHUB_INSTALL_MODE=job|login, SCHUB_ASSETS, SCHUB_TORCH_BACKEND.
 set -euo pipefail
-
-# The pilot owner's shared library (read-only for students).
-DEFAULT_LIBRARY="/l/users/leonid.klarov/sc-hub-library"
 
 UV_VERSION="0.12.17"
 UV_SHA256="fa82fd8dde8e8eefdecada6aa0889666556cfceb690d06e0c3bca49eb3070a63"
@@ -21,7 +19,7 @@ PYTHON_VERSION="3.12"
 
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ROOT="${SCHUB_ROOT:-/l/users/$USER/schub}"
-LIBRARY="${SCHUB_LIBRARY:-$DEFAULT_LIBRARY}"
+LIBRARY="${SCHUB_LIBRARY:-}"  # none by default: everything in the user's own root
 PARTITION="${SCHUB_PARTITION:-ws-ia}"
 INSTALL_MODE="${SCHUB_INSTALL_MODE:-job}"
 ASSETS="${SCHUB_ASSETS:-pbmc3k kang2018 celltypist}"
@@ -49,6 +47,7 @@ make_layout() {
 shared_env() {
   # Prints the concrete env directory if the shared library env is usable and
   # nothing in it is group/world-writable (students share a Unix group).
+  [ -n "$LIBRARY" ] || return 1
   local current="$LIBRARY/envs/current" env_dir writable
   [ -x "$current/bin/python" ] || return 1
   env_dir="$(readlink -f "$current")"
@@ -102,6 +101,8 @@ $exports
 $guard
 exec "\$SCHUB_PYTHON" -m schub.cli mcp
 EOF
+  # The forced command of the sc-hub SSH key (the installer limits the key to it).
+  install -m 755 "$SRC_DIR/scripts/schub-gate" "$ROOT/bin/schub-gate"
   # Notebooks now open in a Jupyter session (schub session-start jupyter / ./schub-lab).
   rm -f "$ROOT/bin/schub-notebook"
   chmod 755 "$ROOT/bin/schub" "$ROOT/bin/schub-mcp"
@@ -146,7 +147,7 @@ main() {
     write_wrappers
     fetch_missing
   else
-    log "shared library $LIBRARY is not usable from this account"
+    if [ -n "$LIBRARY" ]; then log "shared library $LIBRARY is not usable from this account"; fi
     build_private_env
   fi
   cp "$SRC_DIR/templates/AGENTS.cluster.md" "$ROOT/AGENTS.md"

@@ -18,6 +18,7 @@ from .config import Limits
 from .h5ad_profile import DatasetProfile
 from .hashing import stable_hash
 from .state import DatasetState, Frozen, GeneIds, Issue, Species, error, warning
+from .upstream import upstream_issues
 
 
 class StepRequest(Frozen):
@@ -201,6 +202,7 @@ def build_plan(
         )
         state = spec.transform_ctx(state, params, ctx) if spec.transform_ctx else spec.transform(state, params)
         prev_key = key
+    issues += upstream_issues(steps, registry)
     gpu_hours = round(sum(s.resources.gpu_hours for s in steps), 2)
     if gpu_hours > ctx.limits.max_gpu_hours_per_plan:
         issues.append(

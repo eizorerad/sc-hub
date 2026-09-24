@@ -67,6 +67,11 @@ class BranchSpec(Frozen):
     saved: str = ""
     reason: str = ""  # why this revision (or fork) was made
     forked_from: str | None = None  # "<branch>@r<N>#<step>" for forks
+    # Written by brick-era sweeps (removed); kept so their branch files still read.
+    sweep: str | None = None
+    sweep_step: int | None = None
+    sweep_param: str | None = None
+    sweep_value: Any = None
 
     @model_validator(mode="after")
     def _steps_or_parent(self) -> "BranchSpec":
@@ -192,7 +197,7 @@ class ProjectStore:
             self.require(parent)
         if (directory / PROJECT_FILE).exists():
             raise ProjectError(f"project '{project}' already exists")
-        for sub in ("pipelines", "ideas", "runs", "notebooks", "exports"):
+        for sub in ("pipelines", "ideas", "runs", "notebooks", "exports", "work", "journal"):
             (directory / sub).mkdir(parents=True, exist_ok=True)
         meta = ProjectMeta(name=project, question=question, created=_now(), datasets=datasets)
         (directory / PROJECT_FILE).write_text(yaml.safe_dump(meta.model_dump(mode="json"), sort_keys=False))

@@ -1,5 +1,6 @@
-"""The single-page shell: the header (the sc-hub square is the account menu, then
-the tabs, then a one-line status), the views, inline CSS and JS."""
+"""The single-page shell: the header (the sc-hub square is the menu with everything
+besides research: runs, library, sessions, cluster; then the Journal tab, then a
+one-line status), the views, inline CSS and JS."""
 
 from __future__ import annotations
 
@@ -7,26 +8,22 @@ from .collect import Snapshot
 from .html import esc
 from .notebooks import code_templates
 from .script import SCRIPT
-from .style import CSS
+from .style import CSS, JOURNAL_CSS
 from .views_activity import status_chip
 from .views_cluster import render_cluster
 from .views_library import render_library
-from .views_projects import render_projects
-from .views_pipelines import render_pipelines
+from ..state import Frozen
+from .views_journal import JOURNAL_SCRIPT, page_file, page_script, page_version, project_pages, render_journal
 from .views_runs import ImageUrl, render_runs
 
-# Projects are the root: a question, its datasets and branches. Pipelines show the
-# branches as graphs, Runs what ran and what runs now, Library what there is to use.
-TABS = (
-    ("projects", "Projects"),
-    ("pipelines", "Pipelines"),
-    ("runs", "Runs"),
-    ("library", "Library"),
-)
+# What a researcher needs is the Journal. Runs of brick pipelines, the Library, sessions
+# and the cluster are one click away in the menu under the sc-hub square.
+MENU_VIEWS = {"runs": "Runs", "library": "Library"}  # the cluster overview has its own title
 
 
-def _counts(snap: Snapshot) -> dict[str, int]:
-    return {"projects": len(snap.projects), "runs": len(snap.runs)}
+class Site(Frozen):
+    index: str  # index.html
+    pages: dict[str, str] = {}  # view path (jproj/<project>.js) -> a project's page, loaded when picked
 
 
 def _initials(user: str) -> str:
@@ -40,16 +37,18 @@ def _iso(generated_at: str) -> str:
 
 
 def _account(snap: Snapshot) -> str:
-    """The sc-hub square: who you are, the cluster overview, sessions, and page refresh."""
+    """The sc-hub square: who you are, runs, library, sessions, the cluster, and page refresh."""
     where = f"login node {snap.overview.login_node}" if snap.overview and snap.overview.login_node else "the cluster"
     initials = esc(_initials(snap.user))
     return (
-        f'<details class="account"><summary class="brand" title="{esc(snap.user)}: account, cluster and refresh">'
+        f'<details class="account"><summary class="brand" title="{esc(snap.user)}: runs, library, cluster and refresh">'
         f'<span class="logo">{initials}</span><b>sc-hub</b><span class="caret" aria-hidden="true"></span></summary>'
         f'<div class="menu"><div class="who"><span class="logo big">{initials}</span>'
         f'<div><b>{esc(snap.user)}</b><div class="muted small">on {esc(where)}</div></div></div>'
-        '<a href="#cluster"><b>Cluster overview</b><span class="muted small">quotas, limits, your jobs, storage</span></a>'
+        '<a href="#runs"><b>Runs</b><span class="muted small">history, queue, what runs now</span></a>'
+        '<a href="#library"><b>Library</b><span class="muted small">datasets, models, tools</span></a>'
         '<a href="#runs/sessions"><b>Interactive sessions</b><span class="muted small">JupyterLab and cellxgene</span></a>'
+        '<a href="#cluster"><b>Cluster overview</b><span class="muted small">quotas, limits, your jobs, storage</span></a>'
         '<hr><div class="menu-row"><span>Updated</span>'
         f'<span title="{esc(snap.generated_at)}"><b>{esc(snap.generated_at[11:])}</b> '
         f'<span class="muted small" data-ago="{esc(_iso(snap.generated_at))}"></span></span></div>'
@@ -60,24 +59,33 @@ def _account(snap: Snapshot) -> str:
 
 
 def render_page(snap: Snapshot, image_url: ImageUrl) -> str:
-    counts = _counts(snap)
-    tabs = "".join(
-        f'<a href="#{key}" data-tab="{key}">{esc(label)}'
-        f'{f"<span class=count>{counts[key]}</span>" if key in counts else ""}</a>'
-        for key, label in TABS
-    )
-    views = {
-        "projects": render_projects(snap),
-        "pipelines": render_pipelines(snap, image_url),
+    return render_site(snap, image_url).index
+
+
+def _titled(key: str, html: str) -> str:
+    """Views opened from the menu get a title, so it is clear where you are."""
+    title = MENU_VIEWS.get(key)
+    return f'<h1 class="view-title">{esc(title)}</h1>{html}' if title else html
+
+
+def render_site(snap: Snapshot, image_url: ImageUrl) -> Site:
+    tabs = '<a href="#journal" data-tab="journal">Journal</a>'
+    pages = project_pages(snap.journals)
+    versions = {project: page_version(html) for project, html in pages.items()}
+    views = {"journal": render_journal(snap.journals, snap.bench, versions)}
+    views.update({
         "runs": render_runs(snap, image_url),
         "library": render_library(snap),
         "cluster": render_cluster(snap.overview),
-    }
-    sections = "".join(f'<section class="view" data-view="{key}">{html}</section>' for key, html in views.items())
-    return (
+    })
+    sections = "".join(f'<section class="view" data-view="{key}">{_titled(key, html)}</section>' for key, html in views.items())
+    index = (
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
-        f"<title>sc-hub · {esc(snap.user)}</title><style>{CSS}</style></head><body>"
+        '<link rel="icon" href="data:,">'  # no favicon request (a 404 in every console)
+        f"<title>sc-hub · {esc(snap.user)}</title><style>{CSS}{JOURNAL_CSS}</style></head><body>"
         f'<header class="top">{_account(snap)}<nav class="tabs">{tabs}</nav>{status_chip(snap)}</header>'
-        f"<main>{sections}</main>{code_templates(snap)}<script>{SCRIPT}</script></body></html>"
+        f"<main>{sections}</main>{code_templates(snap)}"
+        f"<script>{JOURNAL_SCRIPT}</script><script>{SCRIPT}</script></body></html>"
     )
+    return Site(index=index, pages={page_file(p): page_script(p, html) for p, html in pages.items()})

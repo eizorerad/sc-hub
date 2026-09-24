@@ -44,6 +44,10 @@ class LimitExceeded(RunError):
     pass
 
 
+class PlanRejected(RunError):
+    """The plan itself cannot run (planner errors): retrying will not help."""
+
+
 class StepRecord(Frozen):
     index: int
     brick: str
@@ -130,7 +134,7 @@ class RunStore:
     def submit(self, plan: Plan, force_new: bool = False) -> RunManifest:
         if not plan.ok:
             errors = "; ".join(i.message for i in plan.issues if i.level == "error")
-            raise RunError(f"plan {plan.plan_id} has errors: {errors}")
+            raise PlanRejected(f"plan {plan.plan_id} has errors: {errors}")
         try:
             with exclusive(self.settings.root / ".submit.lock"):
                 return self._submit_locked(plan, force_new)
@@ -141,7 +145,8 @@ class RunStore:
         existing = None if force_new else self._reusable_run(plan.plan_id)
         if existing is not None:
             return existing
-        self._check_active_limit()
+        if not all((self.settings.steps_dir / s.step_key / SUCCESS).exists() for s in plan.steps):
+            self._check_active_limit()  # a plan whose steps are all cached starts no job
         created = self._clock()
         run_id = f"{created:%Y%m%d-%H%M%S}-{plan.plan_id[:6]}-{secrets.token_hex(2)}"
         records: list[StepRecord] = []

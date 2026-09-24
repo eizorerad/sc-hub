@@ -1,5 +1,5 @@
-"""Runs: what is happening (numbers, queue, sessions), the history of runs, and one
-detail view per run (step timeline, its notebook)."""
+"""Runs: the history of runs, what is happening (queue, sessions), and one detail
+view per run (step timeline, its notebook)."""
 
 from __future__ import annotations
 
@@ -9,10 +9,10 @@ from typing import Callable
 
 from ..bricks import REGISTRY
 from .collect import BranchInfo, RunView, Snapshot, StepView
-from .html import ask_block, dot, esc, kv, pill, subtabs, table, warnings
+from .html import ask_block, dot, esc, hint, kv, pill, subtabs, table, warnings
 from .notebooks import code_section, notebook_button
 from .steps import duration
-from .views_activity import metrics, render_queue, render_sessions
+from .views_activity import render_queue, render_sessions
 
 DE_TOP = 12
 ImageUrl = Callable[[StepView, str, bool], str | None]
@@ -69,7 +69,25 @@ def _samples(summary: dict) -> str:
     return "<h4>Per sample</h4>" + table(("Sample", *(c.replace("_", " ") for c in columns)), rows, "compact")
 
 
-def _extra(step: StepView, summary: dict) -> str:
+def _by_reference(summary: dict) -> str:
+    """CellTypist vs known labels: which label each known type got."""
+    found = summary.get("by_reference")
+    if not isinstance(found, dict) or not found:
+        return ""
+    entries = [(kind, g) for kind, g in found.items() if isinstance(g, dict)]
+    rows = [
+        f"<tr><td>{esc(kind)}</td><td>{esc(g.get('label', ''))}</td>"
+        f"<td class=num>{float(g.get('share', 0)):.0%}</td><td class=num>{esc(g.get('cells', ''))}</td></tr>"
+        for kind, g in sorted(entries, key=lambda item: -int(item[1].get("cells", 0)))
+    ]
+    return (f"<h4>Against {esc(summary.get('reference_key', 'known labels'))}</h4>"
+            + table(("Known type", "Most got", "Share", "Cells"), rows, "compact"))
+
+
+def result_tables(step: StepView, summary: dict) -> str:
+    """Tables a result needs beyond its key numbers (shared by Runs and Pipelines)."""
+    if step.brick == "annotate_celltypist":
+        return _by_reference(summary)
     if step.brick == "pseudobulk_de":
         return _groups(summary) + _de_table(Path(step.step_dir))
     if step.brick == "memento_de":
@@ -144,7 +162,7 @@ def _ask(run: RunView, step: StepView, info: BranchInfo | None) -> str:
 def _step_card(step: StepView, image_url: ImageUrl, ask: str = "") -> str:
     summary = step.summary or {}
     message = f'<p class="note bad">{esc(step.message)}</p>' if step.message else ""
-    extra = _extra(step, summary)
+    extra = result_tables(step, summary)
     return (
         f'<li class="step {esc(step.state)}"><div class="step-head">{dot(step.state)}'
         f'<b>{step.index}. {esc(step.brick)}</b> {pill(step.state)}'
@@ -175,8 +193,8 @@ def _notebook(run: RunView, notebooks: frozenset[str]) -> str:
     gpu = any(s.brick in REGISTRY and REGISTRY[s.brick].uses_gpu for s in run.steps)
     return (
         f'<div class="nb-box" data-nb-run="{esc(run.run_id)}" data-nb-gpu="{"1" if gpu else ""}">'
-        '<div><b>Notebook</b> <span class="muted small">every step with the exact code and parameters it ran with; '
-        "change a step and run it again from there</span></div>"
+        '<div><b>Notebook</b>' + hint("Every step with the exact code and parameters it ran with; change a step "
+                                         "and run it again from there.") + "</div>"
         f'<div class="ask-buttons">{button}<button type="button" data-ask="jupyter">Open in JupyterLab on the cluster</button></div>'
         '<p class="muted small copied" hidden>Copied: paste it into Codex or Claude.</p>'
         '<textarea class="manual" readonly hidden rows="3" aria-label="Request to copy"></textarea></div>'
@@ -201,14 +219,14 @@ def _row(run: RunView) -> str:
     text = f"{run.run_id} {run.label} {run.dataset} {last}".lower()
     return (
         f'<tr data-href="runs/{esc(run.run_id)}" data-state="{esc(run.state)}" data-text="{esc(text)}">'
-        f'<td><a href="#runs/{esc(run.run_id)}">{esc(run.label)}</a><div class="muted small">{esc(run.run_id)}</div></td>'
+        f'<td><a href="#runs/{esc(run.run_id)}" title="run {esc(run.run_id)}">{esc(run.label)}</a></td>'
         f"<td>{esc(' + '.join(run.inputs) or run.dataset)}</td><td>{pill(run.state)}</td><td class=dots>{dots}</td>"
         f'<td class="muted">{esc(last)}</td></tr>'
     )
 
 
 def _history(snap: Snapshot) -> str:
-    states = sorted({r.state for r in snap.runs} | {"COMPLETED", "FAILED"})  # the metrics filter by these
+    states = sorted({r.state for r in snap.runs} | {"COMPLETED", "FAILED"})  # always offered as filters
     options = '<option value="">All states</option>' + "".join(f'<option value="{esc(s)}">{esc(s.lower())}</option>' for s in states)
     rows = table(("Run", "Dataset", "State", "Steps", "Latest result"), [_row(r) for r in snap.runs], "runs clickable") \
         if snap.runs else '<p class="empty">No runs yet. Ask your assistant to plan and submit a branch.</p>'
@@ -226,6 +244,6 @@ def render_runs(snap: Snapshot, image_url: ImageUrl) -> str:
         ("sessions", "Sessions", len(snap.sessions), render_sessions(snap)),
     ])
     return (
-        f'<div id="run-list">{metrics(snap)}{sections}</div>'
+        f'<div id="run-list">{sections}</div>'
         + "".join(run_detail(r, image_url, snap.branches.get(f"{r.project}/{r.branch}"), snap.notebooks) for r in snap.runs)
     )

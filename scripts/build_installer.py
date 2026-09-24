@@ -21,7 +21,7 @@ import textwrap
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-INCLUDE = ("pyproject.toml", "README.md", "src", "scripts", "templates")
+INCLUDE = ("pyproject.toml", "README.md", "LICENSE", "NOTICE", "src", "scripts", "templates")
 EXCLUDE_PARTS = {"__pycache__", ".DS_Store", ".pytest_cache"}
 TEMPLATES = {"install.sh.in": "install-sc-hub.sh", "install.ps1.in": "install-sc-hub.ps1"}
 

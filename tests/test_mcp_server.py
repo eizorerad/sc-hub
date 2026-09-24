@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import json
 
 import anyio
@@ -37,20 +38,18 @@ EXPECTED_TOOLS = {
     "add_logbook_entry",
     "fetch_asset",
     "make_dashboard",
-    "list_recipes",
-    "recipe_steps",
     "register_fastq",
     "import_seurat",
     "start_session",
     "list_sessions",
     "stop_session",
-    "inspect_step",
-    "revise_branch",
-    "fork_branch",
-    "branch_history",
     "cluster_overview",
     "add_project_packages",
 }
+
+
+BENCH_TOOLS = {"projects", "create_project", "run", "wait", "journal", "note", "handoff", "report", "datasets",
+               "files", "skills", "cluster", "stop"}
 
 
 @pytest.fixture
@@ -58,7 +57,8 @@ def server(settings, cluster, ctx, write_h5ad):
     directory = library_datasets(settings) / "pbmc3k"
     write_catalog_entry(directory, {"title": "PBMC"})
     write_h5ad(make_adata(), directory=directory)
-    return build_server(Hub(settings, Slurm(cluster)))
+    legacy = dataclasses.replace(settings, legacy_tools=True)
+    return build_server(Hub(legacy, Slurm(cluster)))
 
 
 def call(server, tool, args=None):
@@ -69,12 +69,20 @@ def call(server, tool, args=None):
     return anyio.run(_run)
 
 
-def test_tools_are_listed(server):
+def tool_names(server) -> set[str]:
     async def _run():
         async with Client(server) as client:
             return {t.name for t in (await client.list_tools()).tools}
 
-    assert anyio.run(_run) == EXPECTED_TOOLS
+    return anyio.run(_run)
+
+
+def test_tools_are_listed(server):
+    assert tool_names(server) == EXPECTED_TOOLS | BENCH_TOOLS
+
+
+def test_legacy_tools_only_behind_the_flag(settings, cluster):
+    assert tool_names(build_server(Hub(settings, Slurm(cluster)))) == BENCH_TOOLS
 
 
 def test_plan_and_submit_through_mcp(server, cluster, settings):
@@ -83,7 +91,8 @@ def test_plan_and_submit_through_mcp(server, cluster, settings):
     summary = plan.structured_content
     assert summary["ok"] is True and summary["steps"][0]["brick"] == "qc_filter"
     run = call(server, "submit_plan", {"plan_id": summary["plan_id"]})
-    assert run.structured_content["plan_id"] == summary["plan_id"]
+    assert run.structured_content["plan_id"] == summary["plan_id"] and run.structured_content["run_id"]
+    assert run.structured_content["steps"][0]["brick"] == "qc_filter"  # the run itself, not a queue receipt
     assert len(cluster.jobs) == 1
     log_lines = next(settings.logs_dir.glob("calls-*.jsonl")).read_text().splitlines()
     assert [json.loads(line)["tool"] for line in log_lines] == ["plan_pipeline", "submit_plan"]

@@ -44,6 +44,10 @@ def check(state: DatasetState, p: ScviParams, ctx: PlanContext) -> list[Issue]:
     return issues
 
 
+def writes_obs(p: ScviParams) -> tuple[str, ...]:
+    return ("leiden",)
+
+
 def transform(state: DatasetState, p: ScviParams) -> DatasetState:
     return (
         state.with_obsm("X_scVI", "X_umap")
@@ -68,4 +72,6 @@ SPEC = BrickSpec(
     resources=resources,
     impl="schub.bricks.impl.integrate_scvi:run",
     uses_gpu=True,
+    keeps_counts=True,
+    writes_obs=writes_obs,
 )

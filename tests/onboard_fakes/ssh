@@ -1,0 +1,118 @@
+#!/usr/bin/env python3
+"""A fake `ssh` to the fake cluster in $FAKE_CLUSTER: password via askpass, the key, the gate, the setup commands."""
+import json, os, subprocess, sys, threading, time
+from pathlib import Path
+
+args = sys.argv[1:]
+if args == ["-V"]:
+    sys.stderr.write(os.environ.get("FAKE_SSH_VERSION", "OpenSSH_9.6p1, LibreSSL 3.3.6") + "\n")
+    sys.exit(0)
+cluster = Path(os.environ["FAKE_CLUSTER"])
+cluster.mkdir(parents=True, exist_ok=True)
+host = next(a for a in args if a in ("mbzuai-schub", "mbzuai-schub-ide"))
+command = args[args.index(host) + 1]
+agents = cluster / "agents.json"
+
+
+def agent_state() -> dict:
+    return json.loads(agents.read_text()) if agents.exists() else {}
+
+
+def sign(name: str, signed_in: bool, email: str = "") -> None:
+    state = agent_state()
+    state[name] = {**state.get(name, {}), "installed": True, "signed_in": signed_in, "email": email}
+    agents.write_text(json.dumps(state))
+
+
+def until_approved() -> None:  # the student approves in the browser (the test writes codex_approved)
+    threading.Thread(target=lambda: (sys.stdin.buffer.read(), os._exit(143)), daemon=True).start()  # ssh went away
+    deadline = time.time() + 60
+    while time.time() < deadline:
+        if (cluster / "codex_approved").exists():
+            sign("codex", True, (cluster / "codex_approved").read_text().strip())
+            sys.stdout.flush()
+            os._exit(0)  # not sys.exit: the stdin thread is still reading
+        time.sleep(0.05)
+    os._exit(1)
+
+
+with (cluster / "calls.jsonl").open("a") as log:
+    log.write(json.dumps({"args": args[:-1], "command": command[:300]}) + "\n")
+state = cluster / "authorized.json"
+auth = json.loads(state.read_text()) if state.exists() else {}
+password_login = "PubkeyAuthentication=no" in args
+if host == "mbzuai-schub-ide":  # through the gate's ide-proxy into the job's own sshd
+    ide = cluster / "ide_authorized"
+    if not ide.exists() or ide.read_text().strip() != auth.get("key", ""):
+        sys.stderr.write("Permission denied (publickey).\n"); sys.exit(255)
+    print("207131 gpu-03"); sys.exit(0)
+if password_login:
+    if os.environ.get("SSH_ASKPASS") and not os.environ.get("FAKE_NO_ASKPASS"):
+        given = subprocess.run([os.environ["SSH_ASKPASS"]], capture_output=True, text=True).stdout.strip()
+    else:  # an ssh without askpass (Windows 10): the student types it in ssh's own window
+        given = os.environ.get("FAKE_CONSOLE_PASSWORD", "") if not os.environ.get("SSH_ASKPASS") else ""
+    if given != os.environ["FAKE_PASSWORD"]:
+        sys.stderr.write("test.user@login: Permission denied (password).\n"); sys.exit(255)
+elif not auth.get("key"):
+    sys.stderr.write("test.user@login: Permission denied (publickey).\n"); sys.exit(255)
+elif "schub-gate" in auth.get("options", ""):
+    if not (command == "true" or command.endswith("/bin/schub-mcp") or command.endswith("dashboard >/dev/null")):
+        sys.stderr.write("sc-hub: this key only opens sc-hub (MCP server, dashboard, sessions): no shell\n"); sys.exit(126)
+if "login --device-auth" in command:
+    print("Follow these steps to sign in with ChatGPT using device code authorization:\n\n"
+          "1. Open this link in your browser and sign in to your account\n   \x1b[94mhttps://auth.openai.com/codex/device\x1b[0m\n\n"
+          "2. Enter this one-time code \x1b[90m(expires in 15 minutes)\x1b[0m\n   \x1b[94mFAKE-C0DE1\x1b[0m\n", flush=True)
+    until_approved()
+if command.endswith('"$(codex_bin)" login'):
+    assert "1455:127.0.0.1:1455" in args, args  # the redirect's tunnel, to where Codex listens
+    print("Starting local login server on http://localhost:1455.\nIf your browser did not open, navigate to this URL to "
+          "authenticate:\n\nhttps://auth.openai.com/oauth/authorize?response_type=code&state=fake\n", flush=True)
+    until_approved()
+if "auth login" in command:
+    print("Opening browser to sign in…\nIf the browser didn't open, visit: https://claude.com/cai/oauth/authorize?"
+          "code=true&state=fake\nPaste code here if prompted > ", end="", flush=True)
+    line = sys.stdin.readline().strip()
+    if line == "good-code#fake":
+        sign("claude", True, "test.user@mbzuai.ac.ae")
+        print("Login successful.")
+    else:
+        print("Login failed: Request failed with status code 400")
+        sys.exit(1)
+    sys.exit(0)
+stdin = b"" if sys.stdin is None or sys.stdin.closed else sys.stdin.buffer.read()
+if "authorized_keys" in command:
+    options = command.split("OPTS='", 1)[1].split("';", 1)[0]
+    key = command.split("printf '%s\\n' '", 1)[1].split("'", 1)[0] if "printf '%s" in command else stdin.decode().strip()
+    state.write_text(json.dumps({"key": key, "options": options}))
+elif command == "true":
+    pass
+elif command.startswith("echo sc-hub-probe"):
+    print("sc-hub-probe")
+elif "base64 -di" in command:
+    (cluster / "bundle.b64").write_bytes(stdin)
+    sys.stdout.write("/l/users/test.user/schub")
+elif "bootstrap_cluster.sh" in command:
+    print("[sc-hub] using the shared library"); print("[sc-hub] done")
+elif "ide-setup" in command:
+    (cluster / "ide_authorized").write_text(stdin.decode().strip())
+    print('{"ide": "/l/users/test.user/schub/ide"}')
+elif "bench-run" in command:
+    slurm = "%%slurm" in stdin.decode()
+    answer = {"ref": "hello#c0002", "status": "ok", "jobs": [{"job_id": "812", "state": "COMPLETED"}],
+              "checks": [{"name": "table_columns", "status": "pass"}], "outputs": []} if slurm else \
+             {"ref": "hello#c0001", "status": "ok", "outputs": [{"text": "gpu-03 8 CPUs"}]}
+    print(json.dumps(answer))
+elif "chatgpt.com/codex/install.sh" in command:
+    print("installing Codex\ninstalling Claude Code\nCodex: codex-cli 0.155.1\nClaude Code: 2.1.281 (Claude Code)")
+    if not agents.exists():
+        agents.write_text(json.dumps({"codex": {"installed": True}, "claude": {"installed": True}}))
+elif "python3 -" in command and b"loggedIn" in stdin:
+    print(json.dumps(agent_state()))
+elif command.endswith('"$(codex_bin)" logout'):
+    sign("codex", False); (cluster / "codex_approved").unlink(missing_ok=True)
+elif command.endswith("auth logout"):
+    sign("claude", False)
+elif "bench-wait" in command or "projects" in command or "dashboard" in command:
+    print("{}" if "bench-wait" in command else "")
+else:
+    sys.stderr.write(f"fake cluster: unknown command {command[:80]}\n"); sys.exit(1)

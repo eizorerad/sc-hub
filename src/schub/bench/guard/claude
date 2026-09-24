@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# The lab agent's only way to start claude: the owner's engine policy decides (schub.bench.engines.guard).
+exec "${SCHUB_PYTHON:-python3}" -m schub.bench.engines.guard claude "$@"

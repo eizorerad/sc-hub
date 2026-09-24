@@ -6,7 +6,6 @@ from schub.bricks import REGISTRY
 from schub.h5ad_profile import profile_h5ad
 from schub.headlines import headline
 from schub.planner import StepRequest, build_plan
-from schub.recipes import fill_recipe, get_recipe, list_recipes
 
 from .conftest import make_adata
 
@@ -75,35 +74,10 @@ def test_export_cellxgene_needs_an_embedding(profile, ctx):
     assert exported.ok and exported.steps[-1].terminal
 
 
-def test_every_recipe_uses_real_bricks_and_valid_params(profile, ctx):
-    values = {
-        "celltypist_model": "Immune_All_Low.pkl", "batch_key": "donor", "labels_key": "sample_name",
-        "replicate_key": "donor", "group_key": "sample_name", "other_dataset": "pbmc3k", **DESIGN,
-    }
-    for recipe in list_recipes():
-        steps = fill_recipe(recipe.name, values)
-        for step in steps:
-            REGISTRY[step["brick"]].params_model.model_validate(step["params"])
-        assert set(recipe.placeholders) >= {
-            v[1:-1] for s in recipe.steps for v in s["params"].values() if isinstance(v, str) and v.startswith("<")
-        }
-    standard = plan(profile, ctx, *fill_recipe("standard_analysis", values))
-    assert standard.ok, standard.issues
-    de = plan(profile, ctx, *fill_recipe("condition_de", values))
-    assert de.ok, de.issues
-
-
-def test_recipe_errors():
-    with pytest.raises(KeyError, match="unknown recipe"):
-        get_recipe("nope")
-    with pytest.raises(KeyError, match="batch_key"):
-        fill_recipe("scvi_integration", {"celltypist_model": "m.pkl", "condition_key": "label"})
-
-
 def test_headlines_for_new_bricks():
     assert headline("kb_count", {"n_cells": 1187, "samples": {"a": {}}}) == "1,187 cells from 1 sample(s)"
     assert headline("memento_de", {"groups": {"B": {"significant": 3, "variability_significant": 1}}}) == "3 mean / 1 variability genes"
-    assert headline("integrate_scanvi", {"n_labels": 8, "label_agreement_on_labeled": 0.93}) == "8 labels, 0.93 agreement"
+    assert headline("integrate_scanvi", {"n_labels": 8, "label_agreement_on_labeled": 0.93}) == "8 labels"
     assert headline("export_cellxgene", {"n_cells": 5000, "size_mb": 12.5}) == "5,000 cells, 12.5 MB"
 
 

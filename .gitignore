@@ -5,3 +5,5 @@ __pycache__/
 *.egg-info/
 dist/
 .DS_Store
+tests/e2e/node_modules/
+tests/e2e/out/

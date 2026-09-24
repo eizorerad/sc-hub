@@ -4,9 +4,10 @@ build-backend = "hatchling.build"
 
 [project]
 name = "schub"
-version = "0.3.0"
+version = "0.5.0"
 description = "Single-cell pipeline hub for Slurm clusters, driven by coding agents over MCP"
 requires-python = ">=3.11"
+license = "Apache-2.0"
 dependencies = [
   "pydantic>=2.7",
   "h5py>=3.10",
@@ -35,7 +36,7 @@ analysis = [
   "ipykernel>=6.29",
   "ipywidgets>=8.1",
 ]
-dev = ["pytest>=8", "pytest-cov>=5", "anndata>=0.11"]
+dev = ["pytest>=8", "pytest-cov>=5", "anndata>=0.11", "ipykernel>=6.29", "jupyter_client>=8.6", "nbconvert>=7"]
 
 [project.scripts]
 schub = "schub.cli:main"
@@ -46,8 +47,9 @@ packages = ["src/schub"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
-markers = ["cluster: needs the analysis extras (scanpy, scvi-tools, ...)"]
+markers = ["cluster: needs the analysis extras (scanpy, scvi-tools, ...)", "kernel: starts a real Jupyter kernel (ipykernel)"]
 
 [tool.coverage.run]
 source = ["schub"]
-omit = ["*/schub/bricks/impl/*", "*/schub/fetch.py", "*/schub/cellxgene_session.py"]
+# pytest-of-*: a test imports a copy of the package from a temporary folder
+omit = ["*/schub/bricks/impl/*", "*/schub/fetch.py", "*/schub/cellxgene_session.py", "*/pytest-of-*/*"]

@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
 # Build the installers and publish them where students download them from.
 #
-#   bash scripts/release.sh            publish to the shared library on the cluster
-#   bash scripts/release.sh --gist     also update the secret gist
+#   SCHUB_LIBRARY_ROOT=/path/on/cluster bash scripts/release.sh          publish into that folder
+#   SCHUB_LIBRARY_ROOT=/path/on/cluster bash scripts/release.sh --gist   also update the secret gist
 #
-# The cluster copy lives in the pilot owner's world-readable library, so only
-# people with a cluster account can fetch it, over the same SSH they already use.
+# The cluster copy goes into a folder students can read (SCHUB_LIBRARY_ROOT, e.g. a
+# shared library), so only people with a cluster account can fetch it, over the
+# same SSH they already use.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OWNER_ALIAS="${SCHUB_OWNER_ALIAS:-mbzuai}"
-LIBRARY="${SCHUB_LIBRARY_ROOT:-/l/users/leonid.klarov/sc-hub-library}"
+LIBRARY="${SCHUB_LIBRARY_ROOT:?set SCHUB_LIBRARY_ROOT to the cluster folder students download the installer from}"
 HOST="${SCHUB_HOST:-login-student-lab.mbzu.ae}"
 GIST_FILE="$ROOT/installer/GIST_ID"
 

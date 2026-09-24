@@ -91,7 +91,7 @@ def ctx(settings: Settings) -> PlanContext:
 class FakeCluster:
     """Simulates sbatch/sacct/squeue/scancel/sinfo for tests."""
 
-    ACTIVE = {"PENDING", "RUNNING"}
+    ACTIVE = {"PENDING", "RUNNING", "COMPLETING"}
 
     def __init__(self) -> None:
         self.next_id = 1000
@@ -102,6 +102,9 @@ class FakeCluster:
         self.sacct_down = False
         self.recently_finished: dict[str, str] = {}
         self.calls: list[list[str]] = []
+        self.comments: dict[str, str] = {}
+        self.updates: list[dict[str, str]] = []
+        self.slurm_down = False  # squeue/scontrol time out, as when the controller restarts
 
     def _ok(self, args: Sequence[str], out: str = "") -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(list(args), 0, out, "")
@@ -123,6 +126,9 @@ class FakeCluster:
             line.split("=", 1)[1] for line in script.splitlines() if line.startswith("#SBATCH --job-name=")
         )
         self.jobs[job_id] = "PENDING"
+        comment = next((line.split("=", 1)[1] for line in script.splitlines() if line.startswith("#SBATCH --comment=")), "")
+        if comment:
+            self.comments[job_id] = comment
         return self._ok(args, f"{job_id}\n")
 
     def _sacct(self, args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -132,17 +138,32 @@ class FakeCluster:
         return self._ok(args, "".join(f"{i}|{self.jobs[i]}\n" for i in ids if i in self.jobs))
 
     def _squeue(self, args: list[str]) -> subprocess.CompletedProcess[str]:
+        if self.slurm_down:
+            return subprocess.CompletedProcess(args, 1, "", "squeue: error: Socket timed out on send/recv operation")
+        if "--me" in args and args[args.index("-o") + 1] == "%i|%k":
+            rows = [f"{i}|{self.comments.get(i, '')}\n" for i, s in self.jobs.items() if s in self.ACTIVE]
+            return self._ok(args, "".join(rows))
         if "--me" in args:
             wide = args[args.index("-o") + 1].count("|") >= 5
-            extra = "|0:42|None|ws-ia|1:00:00" if wide else ""
+            extra = "|0:42|None|ws-ia|1:00:00|N/A" if wide else ""
             rows = [f"{i}|{self.names[i]}|{s}{extra}\n" for i, s in self.jobs.items() if s in self.ACTIVE]
             return self._ok(args, "".join(rows))
         ids = args[args.index("-j") + 1].split(",")
+        if args[args.index("-o") + 1] == "%N|%P":  # Slurm.node_of
+            return self._ok(args, "".join(f"node-{i}|gpu\n" for i in ids if self.jobs.get(i) == "RUNNING"))
         rows = [f"{i}|{self.jobs[i]}\n" for i in ids if self.jobs.get(i) in self.ACTIVE]
-        return subprocess.CompletedProcess(args, 0 if rows else 1, "".join(rows), "")
+        # the real squeue: a gone job is an error message, but still an answer
+        return subprocess.CompletedProcess(args, 0 if rows else 1, "".join(rows),
+                                           "" if rows else "slurm_load_jobs error: Invalid job id specified")
 
     def _scontrol(self, args: list[str]) -> subprocess.CompletedProcess[str]:
+        if args[1] == "update":
+            fields = dict(a.split("=", 1) for a in args[2:])
+            self.updates.append(fields)
+            return self._ok(args)
         job_id = args[-1]
+        if self.slurm_down:
+            return subprocess.CompletedProcess(args, 1, "", "scontrol: error: Socket timed out on send/recv operation")
         if job_id in self.recently_finished:
             return self._ok(args, f"JobId={job_id} JobName=x JobState={self.recently_finished[job_id]} Reason=None\n")
         return subprocess.CompletedProcess(args, 1, "", "slurm_load_jobs error: Invalid job id specified")
