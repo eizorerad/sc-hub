@@ -79,10 +79,10 @@ def repo_env(repo: str | os.PathLike, python: str = "3.11", torch: str | None = 
 
 
 def compare(ours: dict, paper: dict, source: str, tolerance: float | dict = 0.10,
-            name: str = "comparison") -> list[dict]:
+            name: str = "comparison", bounds: dict | None = None) -> list[dict]:
     from .compare import compare as _compare
 
-    return _compare(ours, paper, source, tolerance, name)
+    return _compare(ours, paper, source, tolerance, name, bounds)
 
 
 def run_brick(name: str, input: str | os.PathLike, output: str | os.PathLike | None = None,

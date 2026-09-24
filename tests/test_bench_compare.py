@@ -43,3 +43,15 @@ def test_bad_inputs_are_refused(project: Path) -> None:
     assert (row["verdict"], row["relative"]) == ("differs", None)
     with pytest.raises(CompareError, match="finite"):
         compare({"a": float("nan")}, {"a": 1.0}, source="Fig 2")
+
+
+def test_a_registered_interval_decides_instead_of_a_tolerance(project: Path) -> None:
+    """The GEARS lab agent registered an absolute band [0.32, 0.62]; a relative tolerance called its 0.332 'differs'."""
+    rows = {r["metric"]: r for r in compare({"ratio": 0.332, "gain": 0.9}, {"ratio": 0.47, "gain": 0.5},
+                                             source="Fig. 2f", tolerance=0.15,
+                                             bounds={"ratio": (0.32, 0.62), "gain": [0.4, 0.6]})}
+    assert rows["ratio"]["verdict"] == "within [0.32, 0.62]" and rows["gain"]["verdict"] == "outside [0.4, 0.6]"
+    with pytest.raises(CompareError, match="low"):
+        compare({"a": 1.0}, {"a": 1.0}, source="x", bounds={"a": (2, 1)})
+    with pytest.raises(CompareError, match="low, high"):
+        compare({"a": 1.0}, {"a": 1.0}, source="x", bounds={"a": 3})

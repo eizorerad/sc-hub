@@ -75,6 +75,7 @@ change; a new one needs a new run folder).
 ```
 bench.compare(ours={"pearson_delta": 0.41}, paper={"pearson_delta": 0.45},
               source="Table 2, scGPT row", tolerance=0.1, name="table2")
+# or the interval the registration named: bounds={"pearson_delta": (0.38, 0.52)}
 ```
 
 Then a finding per target citing the compare cell, and a `verdict` note:
