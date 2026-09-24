@@ -118,3 +118,13 @@ def test_a_retiring_runner_arms_its_successor_only_when_in_use(settings: Setting
     idle.retire("close to the time limit", successor=True)
     idle._shutdown("retired")
     assert idle.successor is None  # nobody was working: let the slot go
+
+
+def test_a_workbench_that_is_stopping_does_not_block_a_new_one(settings: Settings, cluster: FakeCluster) -> None:
+    """Found on the cluster: stop the workbench, then run a cell at once; the cancelled job was still listed
+    as COMPLETING, ensure() took it for a live workbench, and the cell waited for the watchdog."""
+    wb = bench(settings, cluster)
+    old = wb.ensure().job_id
+    cluster.jobs[old] = "COMPLETING"
+    fresh = wb.ensure()
+    assert fresh.started_now and fresh.job_id != old

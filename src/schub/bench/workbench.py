@@ -68,7 +68,9 @@ class Workbench:
         return f"{self.settings.job_prefix}-{kind}"
 
     def jobs(self, kind: str) -> list[QueueJob]:
-        return [j for j in self.slurm.my_jobs() if j.name == self.job_name(kind) and j.state in ACTIVE_STATES]
+        """Live jobs of this kind: a COMPLETING one is already ending (a stop, a time limit) and counts no more."""
+        return [j for j in self.slurm.my_jobs() if j.name == self.job_name(kind) and j.state in ACTIVE_STATES
+                and j.state != "COMPLETING"]
 
     def stopped(self) -> bool:
         return stop_path(self.settings).exists()

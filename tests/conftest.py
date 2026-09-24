@@ -91,7 +91,7 @@ def ctx(settings: Settings) -> PlanContext:
 class FakeCluster:
     """Simulates sbatch/sacct/squeue/scancel/sinfo for tests."""
 
-    ACTIVE = {"PENDING", "RUNNING"}
+    ACTIVE = {"PENDING", "RUNNING", "COMPLETING"}
 
     def __init__(self) -> None:
         self.next_id = 1000
