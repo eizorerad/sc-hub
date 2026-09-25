@@ -136,13 +136,13 @@ def test_datasets_show_the_twins_already_built(server, bench: Settings, write_h5
 def test_skills_and_stop(server, bench: Settings, cluster: FakeCluster) -> None:
     names = [s["name"] for s in ok(call(server, "skills"))["skills"]]
     assert {"resume", "rigor", "mbzuai_slurm", "perturbseq", "twins", "fetching_data", "dataset_sources",
-            "paper_reproduction"} <= set(names)
+            "paper_reproduction", "gene_sets"} <= set(names)
     assert "d8cba17576d1a8afc0f7d71b79cad0f7" in ok(call(server, "skills", {"name": "perturbseq"}))["text"]
     assert "hand-over" in ok(call(server, "skills", {"name": "resume"}))["text"]
     assert call(server, "skills", {"name": "../x"}).is_error
     ok(call(server, "create_project", {"project": "p", "question": "q"}))
     ref = ok(call(server, "run", {"project": "p", "code": "import time; time.sleep(5)", "why": "w", "expect": "e"}))["ref"]
-    assert "interrupt" in call(server, "stop", {"target": ref}).content[0].text
+    assert "taken out of the queue" in call(server, "stop", {"target": ref}).content[0].text  # never started
     job = next(j for j, n in cluster.names.items() if n == "schub-bench-workbench")
     assert f"Stopped the workbench (job {job})" in call(server, "stop", {"target": "workbench"}).content[0].text
     assert cluster.jobs[job] == "CANCELLED"

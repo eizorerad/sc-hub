@@ -33,7 +33,8 @@ there by students. Without it, everything lives in this folder.
 - Never run heavy computation on the login node; cells run in the workbench job,
   heavy work in its own Slurm job.
 - Do not edit `journal/`, `bench/`, `cache/steps` or `runs` by hand: they are the
-  provenance record. A correction is a new note, never an edit.
+  provenance record. A correction is a new note, never an edit. Inputs in `data/`
+  and a project's `data/` are never changed either: derive into `work/`.
 - `touch bench/STOP` stops the bench (nothing runs, nothing restarts); removing it
   lets the next cell start the workbench again.
 - Never read `sessions/*/connection.json` or run `schub session-info`: they hold the

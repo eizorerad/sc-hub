@@ -4,6 +4,8 @@
     bench.twin(path, stratify=None, keep=(), fraction=0.05)   a small stratified copy to try code on
     bench.clone(url, ref=None)                   a paper's repository at a recorded commit (work/repos/<name>)
     bench.repo_env(repo, python, torch, cuda, requirements)   its own uv environment; returns its python
+    bench.packages(pip=[...], conda=[...])       add what the shared environment lacks to this project's kernel
+    bench.import_seurat(rds, name)               a Seurat .rds as data/<name>/data.h5ad (R built once if needed)
     bench.compare(ours, paper, source="Table 2 ...")            our numbers next to the paper's
     from schub_ckpt import Run                   checkpoints that survive time limits (skills('paper_reproduction'))
     bench.run_brick(name, input, output, params)   a checked sc-hub brick
@@ -99,6 +101,49 @@ def compare(ours: dict, paper: dict, source: str, tolerance: float | dict = 0.10
     return _compare(ours, paper, source, tolerance, name, bounds)
 
 
+def packages(pip: tuple[str, ...] | list[str] = (), conda: tuple[str, ...] | list[str] = (),
+             remove: bool = False) -> dict:
+    """Add packages the shared environment lacks (pip: PyPI names like "decoupler>=2"; conda: conda-forge or
+    bioconda tools) to this project's own environment, built now in this cell (a few minutes; only what is
+    missing is installed, at versions that fit the shared ones). The project's NEXT cell starts a fresh
+    kernel with them: variables are lost, so re-run the setup cells. remove=True drops the listed ones.
+    Without arguments: what the project has. A failed build keeps the previous kernel."""
+    from ..config import load_settings
+    from ..project_env import EnvError, build_here, built, merged
+
+    settings = load_settings()
+    project = os.environ.get("SCHUB_PROJECT", "")
+    if not project:
+        raise RuntimeError("bench.packages works in a bench cell (SCHUB_PROJECT is not set)")
+    if not pip and not conda:
+        current = built(settings, project)
+        return {"pip": list(current.pip) if current else [], "conda": list(current.conda) if current else [],
+                "built": current.built if current else ""}
+    try:
+        new_pip, new_conda = merged(settings, project, list(pip), list(conda), remove)
+        result = build_here(settings, project, new_pip, new_conda)
+    except EnvError as exc:
+        raise RuntimeError(str(exc)) from None
+    return {"pip": list(new_pip), "conda": list(new_conda), "built": result.built if result else "",
+            "next": "the next cell of this project starts a fresh kernel with these packages; re-run setup cells"}
+
+
+def import_seurat(rds: str | os.PathLike, name: str) -> Path:
+    """A Seurat object (.rds, e.g. under data/) as an AnnData dataset: data/<name>/data.h5ad in the sc-hub folder
+    (counts in X when the object has them, metadata in obs, embeddings in obsm). R + Seurat come from the
+    shared library, or are built once into your own library (10-20 minutes). Large objects need memory:
+    run it in a %%slurm cell with --mem 32G. Returns the path of its data.h5ad."""
+    from ..config import load_settings
+    from ..seurat import SeuratImportError, ensure_r, run_import
+
+    settings = load_settings()
+    try:
+        ensure_r(settings)
+        return run_import(settings, str(rds), name)
+    except SeuratImportError as exc:
+        raise RuntimeError(str(exc)) from None
+
+
 def run_brick(name: str, input: str | os.PathLike, output: str | os.PathLike | None = None,
               params: dict | None = None, results_dir: str | os.PathLike | None = None) -> dict:
     from .bricks_lib import run_brick as _run
@@ -106,5 +151,5 @@ def run_brick(name: str, input: str | os.PathLike, output: str | os.PathLike | N
     return _run(name, input, output, params or {}, results_dir)
 
 
-__all__ = ["FetchError", "clone", "compare", "current_cell", "current_checks", "data_dir", "fetch", "project_dir", "repo_env",
-           "run_brick", "set_cell", "twin", "work_dir"]
+__all__ = ["FetchError", "alias", "clone", "compare", "current_cell", "current_checks", "data_dir", "fetch", "import_seurat",
+           "packages", "project_dir", "repo_env", "run_brick", "set_cell", "twin", "work_dir"]

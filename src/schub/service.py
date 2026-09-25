@@ -16,7 +16,7 @@ from .headlines import headline
 from .library import celltypist_dirs, find_dataset
 from .notebook import load_run, write_notebook
 from .planner import DatasetOverrides, Plan, StepRequest, build_plan
-from .project_env import EnvError, EnvJob, built, check_packages, remove_env, slug, submit_env_build
+from .project_env import EnvError, EnvJob, merged, remove_env, slug, submit_env_build
 from .projects import BranchSpec, Idea, ProjectError, ProjectMeta, ProjectStore, ProjectSummary
 from .provenance import code_id, env_id
 from .runs import LimitExceeded, PlanRejected, RunManifest, RunResults, RunStatus, RunStore
@@ -341,15 +341,8 @@ class Hub:
         if queued:
             raise HubError(f"the kernel of '{project}' is being built (job {queued[0].job_id}); "
                            "ask again when it has finished, so no request is lost")
-        current = built(self.settings, project)
-        have_pip, have_conda = (current.pip, current.conda) if current else ((), ())
-        if remove:
-            new_pip = tuple(x for x in have_pip if x not in set(pip))
-            new_conda = tuple(x for x in have_conda if x not in set(conda))
-        else:
-            new_pip, new_conda = tuple(dict.fromkeys((*have_pip, *pip))), tuple(dict.fromkeys((*have_conda, *conda)))
         try:
-            check_packages(new_pip, new_conda)
+            new_pip, new_conda = merged(self.settings, project, pip, conda, remove)
             if not new_pip and not new_conda:
                 remove_env(self.settings, project)
                 return EnvJob(project=project, job_id="", log="", env="", kernel="",

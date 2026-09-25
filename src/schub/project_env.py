@@ -10,7 +10,10 @@
 
 The result is a Jupyter kernel "sc-hub: <project>"; the pipeline bricks keep
 using the shared environment. The request is recorded in project.yaml
-(`pip:` / `conda:`) and the build runs in a Slurm job (downloads, Lustre writes).
+(`pip:` / `conda:`) and the build runs in a Slurm job (downloads, Lustre writes),
+or, from the bench, in the cell that asks (`bench.packages(...)`, on the workbench's
+compute node: no second job slot); the project's next cell then starts a fresh
+kernel on the new build.
 """
 
 from __future__ import annotations
@@ -20,6 +23,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence
@@ -77,6 +81,52 @@ def built(settings: Settings, project: str) -> BuiltEnv | None:
         return None
 
 
+def merged(settings: Settings, project: str, pip: Sequence[str], conda: Sequence[str],
+           remove: bool = False) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """The project's packages after this request: built on what is installed now, never on an earlier
+    request that failed; `remove` drops the listed ones."""
+    current = built(settings, project)
+    have_pip, have_conda = (current.pip, current.conda) if current else ((), ())
+    if remove:
+        new_pip = tuple(x for x in have_pip if x not in set(pip))
+        new_conda = tuple(x for x in have_conda if x not in set(conda))
+    else:
+        new_pip, new_conda = tuple(dict.fromkeys((*have_pip, *pip))), tuple(dict.fromkeys((*have_conda, *conda)))
+    check_packages(new_pip, new_conda)
+    return new_pip, new_conda
+
+
+def build_here(settings: Settings, project: str, pip: Sequence[str], conda: Sequence[str],
+               out=None) -> BuiltEnv | None:
+    """Build the project's environment in this process (a bench cell on a compute node), its output
+    streamed to `out`. None when no packages are left (the shared kernel again)."""
+    if not pip and not conda:
+        remove_env(settings, project)
+        return None
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    logs = settings.logs_dir / "envs"
+    logs.mkdir(parents=True, exist_ok=True)
+    script = logs / f"build-{slug(project)}-{stamp}.sh"
+    script.write_text(build_script(settings, project, pip, conda, stamp))
+    process = subprocess.Popen(["bash", str(script)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                               cwd=str(settings.root))
+    out = out or sys.stdout  # looked up now: a kernel (or a test) replaces sys.stdout after import
+    tail: list[str] = []
+    try:
+        for line in process.stdout or ():
+            out.write(line)
+            tail = (tail + [line])[-40:]
+        code = process.wait()
+    except BaseException:  # an interrupted cell: stop the build (its trap removes the half-built folder)
+        process.terminate()
+        process.wait()
+        raise
+    if code != 0:
+        raise EnvError(f"the build failed (exit {code}); the project keeps its previous kernel. Last lines:\n"
+                       + "".join(tail))
+    return built(settings, project)
+
+
 def check_packages(pip: Sequence[str], conda: Sequence[str]) -> None:
     if len(pip) + len(conda) > MAX_PACKAGES:
         raise EnvError(f"at most {MAX_PACKAGES} packages per project")
@@ -86,9 +136,11 @@ def check_packages(pip: Sequence[str], conda: Sequence[str]) -> None:
 
 
 def _tool(settings: Settings, name: str) -> Path | None:
-    """uv / micromamba from the shared library, else the student's own sc-hub bin/."""
+    """uv / micromamba from the shared library, else the student's own sc-hub bin/ or own library's bin/
+    (where building R + Seurat put micromamba)."""
     roots = [settings.shared_library] if settings.shared_library else []
-    candidates = [r / "bin" / name for r in roots] + [settings.root / "bin" / name]
+    candidates = [r / "bin" / name for r in roots] + [settings.root / "bin" / name,
+                                                       settings.local_library / "bin" / name]
     return next((c for c in candidates if c.is_file()), None)
 
 

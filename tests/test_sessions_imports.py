@@ -269,3 +269,66 @@ def test_jupyter_sessions_keep_the_token_out_of_kernels():
     assert take_token(env) == "abc" and env == {"PATH": "/bin"}
     with pytest.raises(SystemExit):
         take_token({"PATH": "/bin"})
+
+
+FAKE_RSCRIPT = '''#!{python}
+import sys
+from pathlib import Path
+import scipy.io, scipy.sparse as sp
+out = Path(sys.argv[3])  # Rscript seurat_export.R <rds> <folder>
+out.mkdir(parents=True, exist_ok=True)
+scipy.io.mmwrite(out / "matrix.mtx", sp.csc_matrix([[1.0, 0.0], [2.0, 3.0]]))  # genes x cells
+(out / "genes.txt").write_text("CD3E\\nLYZ\\n")
+(out / "cells.txt").write_text("c1\\nc2\\n")
+(out / "meta.csv").write_text(",group\\nc1,a\\nc2,b\\n")
+(out / "info.txt").write_text("kind counts\\nassay RNA\\n")
+'''
+
+
+def test_bench_import_seurat_builds_r_once_into_the_students_own_library(settings, tmp_path, monkeypatch, capsys):
+    """No shared library (students build their own sc-hub): the first import builds R + Seurat, later ones reuse it."""
+    import sys
+
+    from schub import seurat
+    from schub.bench import kernel_api
+
+    build = tmp_path / "build_tools.sh"
+    build.write_text(f'''set -e
+echo "building r-seurat into $1"
+mkdir -p "$1/tools/r-seurat/9.9/bin" && cat > "$1/tools/r-seurat/9.9/bin/Rscript" <<'R'
+{FAKE_RSCRIPT.format(python=sys.executable)}
+R
+chmod 755 "$1/tools/r-seurat/9.9/bin/Rscript" && ln -sfn 9.9 "$1/tools/r-seurat/current"
+''')
+    monkeypatch.setattr(seurat, "BUILD_TOOLS", build)
+    monkeypatch.setenv("SCHUB_ROOT", str(settings.root))
+    monkeypatch.delenv("SCHUB_LIBRARY", raising=False)
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    (settings.data_dir / "obj.rds").write_bytes(b"x")
+    h5ad = kernel_api.import_seurat(settings.data_dir / "obj.rds", "tcells")
+    assert "building r-seurat" in capsys.readouterr().out
+    assert h5ad == settings.data_dir / "tcells" / "data.h5ad" and h5ad.is_file()
+    assert (settings.local_library / "tools" / "r-seurat" / "current").exists()
+    build.write_text("echo 'must not run again'; exit 1\n")
+    (settings.data_dir / "obj2.rds").write_bytes(b"x")
+    assert kernel_api.import_seurat(settings.data_dir / "obj2.rds", "tcells2").is_file()
+    with pytest.raises(RuntimeError, match="already exists"):
+        kernel_api.import_seurat(settings.data_dir / "obj.rds", "tcells")
+
+
+def test_a_failed_r_build_says_why(settings, tmp_path, monkeypatch):
+    from schub import seurat
+    from schub.bench import kernel_api
+
+    build = tmp_path / "build_tools.sh"
+    build.write_text("echo 'critical libmamba could not solve'; exit 1\n")
+    monkeypatch.setattr(seurat, "BUILD_TOOLS", build)
+    monkeypatch.setenv("SCHUB_ROOT", str(settings.root))
+    monkeypatch.delenv("SCHUB_LIBRARY", raising=False)
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    (settings.data_dir / "obj.rds").write_bytes(b"x")
+    with pytest.raises(RuntimeError, match="could not solve"):
+        kernel_api.import_seurat(settings.data_dir / "obj.rds", "tcells")
+    monkeypatch.setattr(seurat, "BUILD_TOOLS", tmp_path / "missing.sh")
+    with pytest.raises(RuntimeError, match="ask the library owner"):
+        kernel_api.import_seurat(settings.data_dir / "obj.rds", "tcells")

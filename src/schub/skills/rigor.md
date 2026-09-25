@@ -28,3 +28,12 @@ Each rule names the failure it prevents.
   what generalises. It is not a failure to report one; it is one to hide it.
 - **Invalid is not negative.** A run that failed for a pipeline reason says nothing
   about the idea: mark it `invalid`, fix it, run again.
+- **Replicates are samples, not cells.** Compare conditions across donors or samples
+  (pseudobulk, per-donor summaries); thousands of cells from two mice are two mice.
+- **Choose the method before the result.** Estimator, covariates, thresholds and
+  filters are fixed in the registration, not picked after seeing which one helps.
+- **A signal needs its null.** Build the matched null (permuted labels, non-targeting
+  guides, shuffled sets) before claiming an effect; a null result needs its power or
+  an interval, not only "not significant".
+- **Say what the design allows.** Observational data give "associated with", not
+  "causes" or "drives"; name the confounders that remain.

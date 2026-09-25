@@ -96,7 +96,9 @@ ssh LOGIN@login-student-lab.mbzu.ae cat LIBRARY/install/install-sc-hub.ps1 | Out
 
 `LIBRARY` is the cluster folder where the pilot owner published the installer
 (`SCHUB_LIBRARY_ROOT=... bash scripts/release.sh`); they give you the path. Only
-people with a cluster account can download it. It:
+people with a cluster account can download it. The folder and every folder above it
+must be open to other accounts (o+x): a private home (0700) is not, and
+`release.sh` / `publish_library.sh` warn when that is the case. It:
 
 1. creates a dedicated SSH key (no passphrase, so the assistants can connect on
    their own) and the alias `mbzuai-schub`, and installs the key on the login

@@ -20,6 +20,14 @@ python3 "$ROOT/scripts/build_installer.py"
 ssh -o BatchMode=yes "$OWNER_ALIAS" "umask 022; mkdir -p '$LIBRARY/install'"
 scp -q "$ROOT/dist/install-sc-hub.sh" "$ROOT/dist/install-sc-hub.ps1" "$OWNER_ALIAS:$LIBRARY/install/"
 ssh -o BatchMode=yes "$OWNER_ALIAS" "chmod 755 '$LIBRARY/install'; chmod 644 '$LIBRARY/install/'install-sc-hub.*"
+# Students run `ssh ... cat $LIBRARY/install/...`: every folder on the way must be open to other accounts.
+blocked="$(ssh -o BatchMode=yes "$OWNER_ALIAS" "d='$LIBRARY/install'; while [ -n \"\$d\" ] && [ \"\$d\" != / ]; do \
+  if [ -d \"\$d\" ]; then m=\$(stat -c %a \"\$d\"); [ \$(( 0\$m & 1 )) -eq 1 ] || { echo \"\$d (\$m)\"; break; }; fi; \
+  d=\$(dirname \"\$d\"); done")"
+if [ -n "$blocked" ]; then
+  echo "WARNING: students cannot read $LIBRARY/install: $blocked is closed to other accounts." >&2
+  echo "Publish into a folder whose parents are open (o+x); the one-command install below fails until then." >&2
+fi
 
 if [ "${1:-}" = "--gist" ]; then
   if [ -s "$GIST_FILE" ]; then

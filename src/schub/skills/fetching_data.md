@@ -27,3 +27,11 @@ path = bench.fetch("https://.../file.h5ad", md5="<if the source publishes one>")
 - Say where the data comes from (paper, accession, license) in the cell's `why`.
 - Never download into another student's folder or the shared library.
 - Data stays on the cluster: never copy matrices into the chat.
+- Lab-internal, unpublished, patient or controlled-access data (dbGaP, EGA), or a
+  course's own corpus: read it where it is; never copy it to another folder, cluster or
+  service, and ask the student what its terms allow before sharing any result from it.
+- Downloaded and registered inputs are never changed: derive into `work/`.
+- A Seurat object (.rds): `bench.import_seurat(path, name)` makes `data/<name>/data.h5ad`
+  (R + Seurat are built once if the library has none); large objects in a
+  `%%slurm --mem 32G` cell.
+- Gene sets (MSigDB Hallmark, checksums): skills("gene_sets").
