@@ -139,7 +139,8 @@ def packages(pip: tuple[str, ...] | list[str] = (), conda: tuple[str, ...] | lis
 
 
 def import_seurat(rds: str | os.PathLike, name: str) -> Path:
-    """A Seurat object (.rds, e.g. under data/) as an AnnData dataset: data/<name>/data.h5ad in the sc-hub folder
+    """A Seurat object (.rds; a relative path is the project's, e.g. "data/x.rds") as an AnnData dataset:
+    data/<name>/data.h5ad in the sc-hub folder, listed by datasets()
     (counts in X when the object has them, metadata in obs, embeddings in obsm). R + Seurat come from the
     shared library, or are built once into your own library (10-20 minutes). Large objects need memory:
     run it in a %%slurm cell with --mem 32G. Returns the path of its data.h5ad."""
@@ -147,9 +148,11 @@ def import_seurat(rds: str | os.PathLike, name: str) -> Path:
     from ..seurat import SeuratImportError, ensure_r, run_import
 
     settings = load_settings()
+    path = Path(rds)
+    path = path if path.is_absolute() else project_dir() / path  # "data/x.rds": the project's, as in files()
     try:
         ensure_r(settings)
-        return run_import(settings, str(rds), name)
+        return run_import(settings, str(path), name)
     except SeuratImportError as exc:
         raise RuntimeError(str(exc)) from None
 

@@ -12,14 +12,18 @@ incident every hour; a probe that gets an answer ends the pause early.
 from __future__ import annotations
 
 import re
+from contextlib import ExitStack, contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Iterator
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from ...locking import LockTimeout, exclusive
 from ..fsio import read_json, write_json_atomic
 
 DEFAULT_HOURS = 5
 MAX_PAUSE = timedelta(days=8)  # a weekly window plus a day; "resets in 2099" must not stop an engine for good
+UNNAMED_MAX = timedelta(hours=48)  # a limit that names no reset (a spend cap), met again and again
 LIMIT = re.compile(
     r"usage limit|rate.?limit|limit reached|limit will reset|\bresets? at\b|"
     r"\b(?:weekly|daily|monthly|session) limit\b|hit your limit\b|out of extra usage|"
@@ -123,6 +127,9 @@ def reset_hint(details: dict) -> datetime | None:
 
 
 class Cooldown:
+    """The pauses of every engine, shared by all projects' slices and the probe: each change is a
+    read-modify-write under a lock file, so two slices finishing at once never undo each other."""
+
     def __init__(self, path: Path, now=lambda: datetime.now(timezone.utc)) -> None:
         self.path = path
         self.now = now
@@ -131,71 +138,126 @@ class Cooldown:
         data = read_json(self.path)
         return data if isinstance(data, dict) else {}
 
+    @contextmanager
+    def _changing(self) -> Iterator[dict]:
+        """The state to change in place; written back when the block ends."""
+        with ExitStack() as stack:
+            try:
+                stack.enter_context(exclusive(self.path.with_name(self.path.name + ".lock"), wait_s=30,
+                                              stale_after_s=60))
+            except (LockTimeout, OSError):
+                pass  # a stuck lock must not stop the lab agent: change it unguarded
+            state = self._state()
+            before = dict(state)
+            yield state
+            if state != before:
+                write_json_atomic(self.path, state)
+
     def mark(self, engine: str, text: str, resets: datetime | None = None) -> datetime:
         """Pause after a usage limit: until `resets` (the engine's own number), the time its message
-        names, or DEFAULT_HOURS."""
+        names, or DEFAULT_HOURS, doubled (up to UNNAMED_MAX) while the same unnamed limit comes back."""
         now = self.now()
         parsed = resets if resets is not None and resets > now else parse_reset(text, now)
-        until = min(parsed or now + timedelta(hours=DEFAULT_HOURS), now + MAX_PAUSE)
-        return self._pause(engine, until, "usage limit", text, parsed=parsed is not None)
+        with self._changing() as state:
+            previous = state.get(engine) if isinstance(state.get(engine), dict) else {}
+            streak = int(previous.get("streak", 1)) + 1 if self._again(previous, now) else 1
+            if parsed is not None:
+                until = parsed
+            else:
+                hours = DEFAULT_HOURS * 2 ** (streak - 1)
+                until = now + min(timedelta(hours=hours), UNNAMED_MAX)
+            until = min(until, now + MAX_PAUSE)
+            state[engine] = self._record(until, "usage limit", text, now, parsed=parsed is not None, streak=streak)
+        return until
 
-    def failing(self, engine: str, text: str) -> tuple[int, datetime | None]:
+    def _again(self, previous: dict, now: datetime) -> bool:
+        """The same kind of limit, met again soon after the last pause ended (not a new episode)."""
+        if previous.get("kind", "usage limit") != "usage limit" or not previous.get("until"):
+            return False
+        try:
+            return now - datetime.fromisoformat(previous["until"]) < timedelta(hours=2)
+        except (TypeError, ValueError):
+            return False
+
+    def streak(self, engine: str) -> int:
+        """How many limits in a row this episode has had (1: a new one, worth telling the student)."""
+        record = self._state().get(engine)
+        return int(record.get("streak", 1)) if isinstance(record, dict) else 0
+
+    def failing(self, engine: str, text: str, login: str = "") -> tuple[int, datetime | None]:
         """One more turn that failed before doing any work (a lost login, a broken CLI): the count in a row,
         and the pause it earns (none for a first failure, then FAILURE_PAUSES). Failures within
-        FAILURE_WINDOW of the last one (several projects' slices in one short outage) count once."""
-        record = self._state().get(f"{engine}:failures")
-        count = record.get("count", 0) if isinstance(record, dict) else 0
+        FAILURE_WINDOW of the last one (several projects' slices in one short outage) count once.
+        `login` is the engine's credential fingerprint then: a new sign-in ends the pause (relogged)."""
         now = self.now()
-        try:
-            recent = now - datetime.fromisoformat(record["last"]) < FAILURE_WINDOW  # type: ignore[index]
-        except (TypeError, KeyError, ValueError):
-            recent = False
-        if recent and count:
-            return count, self.until(engine)
-        count += 1
-        state = {**self._state(), f"{engine}:failures": {"count": count, "last": now.isoformat(timespec="seconds"),
-                                                          "reason": (text or "")[-300:]}}
-        write_json_atomic(self.path, state)
-        pause = FAILURE_PAUSES[min(count, len(FAILURE_PAUSES)) - 1]
-        if not pause:
-            return count, None
-        return count, self._pause(engine, now + pause, "failing", text)
+        with self._changing() as state:
+            record = state.get(f"{engine}:failures") if isinstance(state.get(f"{engine}:failures"), dict) else {}
+            count = int(record.get("count", 0))
+            try:
+                recent = now - datetime.fromisoformat(record["last"]) < FAILURE_WINDOW
+            except (TypeError, KeyError, ValueError):
+                recent = False
+            if recent and count:
+                return count, self._until(state.get(engine), now)
+            count += 1
+            state[f"{engine}:failures"] = {"count": count, "last": now.isoformat(timespec="seconds"),
+                                           "reason": (text or "")[-300:], "login": login}
+            pause = FAILURE_PAUSES[min(count, len(FAILURE_PAUSES)) - 1]
+            if not pause:
+                return count, None
+            state[engine] = self._record(now + pause, "failing", text, now, login=login)
+        return count, now + pause
+
+    def relogged(self, engine: str, login: str) -> bool:
+        """The engine is paused as failing, and its login changed since (the student signed in again):
+        the pause and the count end now. True if that happened."""
+        with self._changing() as state:
+            record = state.get(engine)
+            if not isinstance(record, dict) or record.get("kind") != "failing" or not login:
+                return False
+            if record.get("login", "") == login:
+                return False
+            state.pop(engine, None)
+            state.pop(f"{engine}:failures", None)
+        return True
 
     def answered(self, engine: str) -> None:
         """A turn did work: failures in a row start again from zero."""
-        state = self._state()
-        if f"{engine}:failures" in state:
-            write_json_atomic(self.path, {k: v for k, v in state.items() if k != f"{engine}:failures"})
+        with self._changing() as state:
+            state.pop(f"{engine}:failures", None)
 
-    def _pause(self, engine: str, until: datetime, kind: str, text: str, parsed: bool = False) -> datetime:
-        now = self.now()
-        state = {**self._state(), engine: {"until": until.isoformat(timespec="seconds"), "parsed": parsed,
-                                           "kind": kind, "marked": now.isoformat(timespec="seconds"),
-                                           "reason": (text or "")[-300:]}}
-        write_json_atomic(self.path, state)
-        return until
+    def clear(self, engine: str, only_failing: bool = False) -> None:
+        """The engine answered (a probe), or the student started the goal again: its pause ends now
+        (`only_failing`: a usage limit stays)."""
+        with self._changing() as state:
+            record = state.get(engine)
+            if only_failing and not (isinstance(record, dict) and record.get("kind") == "failing"):
+                state.pop(f"{engine}:failures", None)
+                return
+            state.pop(engine, None)
+            state.pop(f"{engine}:failures", None)
 
-    def clear(self, engine: str) -> None:
-        """The engine answered (a probe): its pause ends before the time the limit named."""
-        state = self._state()
-        gone = (engine, f"{engine}:failures")
-        if any(key in state for key in gone):
-            write_json_atomic(self.path, {k: v for k, v in state.items() if k not in gone})
+    @staticmethod
+    def _record(until: datetime, kind: str, text: str, now: datetime, **extra: object) -> dict:
+        return {"until": until.isoformat(timespec="seconds"), "kind": kind, "marked": now.isoformat(timespec="seconds"),
+                "reason": (text or "")[-300:], **{"parsed": False, **extra}}
 
     def kind(self, engine: str) -> str:
         """Why the engine is paused: "usage limit" or "failing"."""
         record = self._state().get(engine)
         return str(record.get("kind") or "usage limit") if isinstance(record, dict) else ""
 
-    def until(self, engine: str) -> datetime | None:
-        record = self._state().get(engine)
+    def _until(self, record: object, now: datetime) -> datetime | None:
         if not isinstance(record, dict):
             return None
         try:
             until = datetime.fromisoformat(record["until"])
         except (KeyError, TypeError, ValueError):
             return None
-        return until if until > self.now() else None
+        return until if until > now else None
+
+    def until(self, engine: str) -> datetime | None:
+        return self._until(self._state().get(engine), self.now())
 
     def ready(self, engine: str) -> bool:
         return self.until(engine) is None

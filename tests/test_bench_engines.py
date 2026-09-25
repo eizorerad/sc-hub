@@ -362,3 +362,18 @@ def test_only_real_actions_count_as_codex_work() -> None:
     assert Codex().parse(notice, "", 1).details["tool_calls"] == 0
     called = notice.replace('"type": "error", "message": "MCP server failed to start"', '"type": "mcp_tool_call"')
     assert Codex().parse(called, "", 1).details["tool_calls"] == 1
+
+
+def test_the_probe_is_due_only_for_engines_in_use(settings: Settings) -> None:
+    """After the owner narrowed the policy, an old record of the other engine must not make every watchdog run probe."""
+    from schub.bench.engines import probe as probe_module
+
+    fresh = datetime.now(timezone.utc).isoformat()
+    settings.bench_dir.mkdir(parents=True, exist_ok=True)
+    engine_policy.set_mode(settings.bench_dir / "engine-policy.json", "claude-only")
+    (settings.bench_dir / "engine-probe.json").write_text(json.dumps({
+        "claude": {"ok": True, "status": "ok", "at": fresh}, "codex": {"ok": True, "status": "ok", "at": "2026-01-01T00:00:00+00:00"}}))
+    assert probe_module.due(settings) is False
+    assert [line.split(":")[0] for line in summary(settings)] == ["claude"]
+    engine_policy.set_mode(settings.bench_dir / "engine-policy.json", "mixed")
+    assert probe_module.due(settings) is True

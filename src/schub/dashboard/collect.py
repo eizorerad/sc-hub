@@ -132,6 +132,7 @@ class Snapshot(Frozen):
     versions: dict[str, str]
     jobs: tuple[QueueJob, ...]
     jobs_error: str = ""
+    job_prefix: str = "schub"  # this sc-hub folder's job names (another folder's are "other jobs")
     runs: tuple[RunView, ...]
     projects: tuple[ProjectSummary, ...]
     datasets: tuple[DatasetEntry, ...]
@@ -434,6 +435,7 @@ def collect(hub: Any) -> Snapshot:
         generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         user=os.environ.get("USER", ""),
         library_mode=library_mode(hub.settings),
+        job_prefix=hub.settings.job_prefix,
         env_id=env_id(),
         versions={p: _version(p) for p in KEY_PACKAGES},
         jobs=tuple(jobs),

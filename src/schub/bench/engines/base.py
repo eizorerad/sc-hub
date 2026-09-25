@@ -169,6 +169,11 @@ def version(binary: str) -> str:
     return (done.stdout or done.stderr).strip().splitlines()[0][:80] if (done.stdout or done.stderr).strip() else ""
 
 
+LABELS = {"claude": "Claude Code", "codex": "Codex"}
+SIGN_IN_HOW = ("ask your assistant in the sc-hub setup folder to run `sh onboard/start.sh`, then "
+               "`sh onboard/start.sh retry agents` (the setup page asks your cluster password once)")
+
+
 def credential_fingerprint(engine: str) -> str:
     """Which login an engine used, without reading it: size and modification time of its files, hashed."""
     parts = []

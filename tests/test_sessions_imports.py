@@ -120,7 +120,7 @@ def test_seurat_import_requests_are_checked(hub, settings, tmp_path):
         check_request(settings, str(rds), "../evil")
     outside = tmp_path / "outside.rds"
     outside.write_bytes(b"x")
-    with pytest.raises(SeuratImportError, match="inside the sc-hub areas"):
+    with pytest.raises(SeuratImportError, match="inside your sc-hub folder"):
         check_request(settings, str(outside), "ok")
     with pytest.raises(HubError, match="not installed"):
         hub.import_seurat("data/obj.rds", "pbmc_seurat")
@@ -332,3 +332,24 @@ def test_a_failed_r_build_says_why(settings, tmp_path, monkeypatch):
     monkeypatch.setattr(seurat, "BUILD_TOOLS", tmp_path / "missing.sh")
     with pytest.raises(RuntimeError, match="ask the library owner"):
         kernel_api.import_seurat(settings.data_dir / "obj.rds", "tcells")
+
+
+def test_import_seurat_reads_project_paths_and_explains_r_errors(settings, tmp_path, monkeypatch):
+    import sys
+
+    from schub.bench import kernel_api
+
+    tools = settings.local_library / "tools" / "r-seurat"
+    (tools / "1.0" / "bin").mkdir(parents=True)
+    rscript = tools / "1.0" / "bin" / "Rscript"
+    rscript.write_text(f"#!{sys.executable}\nimport sys\nprint('Error: not a Seurat object', file=sys.stderr)\nsys.exit(1)\n")
+    rscript.chmod(0o755)
+    (tools / "current").symlink_to("1.0")
+    project = settings.projects_dir / "p"
+    (project / "data").mkdir(parents=True)
+    (project / "data" / "obj.rds").write_bytes(b"x")
+    monkeypatch.setenv("SCHUB_ROOT", str(settings.root))
+    monkeypatch.delenv("SCHUB_LIBRARY", raising=False)
+    monkeypatch.setenv("SCHUB_PROJECT_DIR", str(project))
+    with pytest.raises(RuntimeError, match="R could not read obj.rds as a Seurat object .*not a Seurat object"):
+        kernel_api.import_seurat("data/obj.rds", "tcells")  # found in the project, not the sc-hub folder

@@ -23,7 +23,7 @@ from .clock import stamp
 from .fsio import create_json_exclusive, read_json
 from .journal import Journal, JournalError
 
-FINAL_JOB_STATES = frozenset({"COMPLETED", "FAILED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY", "NODE_FAIL",
+FINAL_JOB_STATES = frozenset({"COMPLETED", "FAILED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY", "NODE_FAIL", "NOT_STARTED",
                               "PREEMPTED", "BOOT_FAIL", "DEADLINE", "ENDED"})
 
 
@@ -81,6 +81,16 @@ LOG_ENDINGS = (("due to time limit", "TIMEOUT"), ("oom-kill", "OUT_OF_MEMORY"), 
                ("oom killed", "OUT_OF_MEMORY"), ("out of memory", "OUT_OF_MEMORY"), ("due to preemption", "PREEMPTED"),
                ("due to node failure", "NODE_FAIL"), ("cancelled at", "CANCELLED"))
 
+# How a job that ended without its result is explained to the agent and the student (nothing it would write exists)
+BAD_ENDINGS = {
+    "OUT_OF_MEMORY": "ran out of memory: send it again with a larger --mem",
+    "TIMEOUT": "hit its time limit: send it again with a longer --time, or save checkpoints and resume",
+    "NOT_STARTED": "never started (cancelled or not launched while queued): nothing ran; send it again if needed",
+    "NODE_FAIL": "lost its node: send it again",
+    "BOOT_FAIL": "lost its node: send it again",
+    "DEADLINE": "passed its deadline: send it again",
+    "FAILED": "failed before reporting (see its log)",
+}
 
 def _reported(record: JobRecord) -> bool:
     return (Path(record.job_dir) / "result.json").exists()
@@ -129,7 +139,7 @@ def _final_state(slurm: Slurm, record: JobRecord) -> tuple[str, str]:
             tail = handle.read().decode(errors="replace").lower()
             tail = tail.replace("cuda out of memory", "cuda oom").replace("cuda error: out of memory", "cuda oom")
     except FileNotFoundError:
-        return "ENDED (never started: cancelled or not launched while queued)", ""
+        return "NOT_STARTED", ""  # cancelled while queued, or it could not launch: nothing ran
     except OSError:
         return "ENDED", str(log)
     return next((state for marker, state in LOG_ENDINGS if marker in tail), "ENDED"), str(log)

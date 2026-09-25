@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from schub.project_env import EnvError, build_script, built, check_packages, kernel_ready
+from schub.projects import ProjectStore
 from schub.service import Hub, HubError
 from schub.slurm import Slurm
 
@@ -65,7 +66,7 @@ def test_packages_build_on_what_is_installed_and_can_be_removed(hub, settings, c
 FAKE_BUILD = """set -euo pipefail
 echo "resolving {pip}"
 mkdir -p {root}/{stamp}
-printf '%s\\n' '{{"pip": {pip_json}, "conda": [], "built": "{stamp}"}}' > {root}/{stamp}/packages.json
+printf '%s\\n' '{{"pip": {pip_json}, "conda": {conda_json}, "built": "{stamp}"}}' > {root}/{stamp}/packages.json
 ln -sfn {stamp} {root}/current
 """
 
@@ -76,7 +77,8 @@ def fake_build(settings, project, pip, conda, stamp):  # the real one needs uv a
     root = settings.root / "envs" / project.replace("/", ".")
     if "broken" in pip:
         return "echo 'No solution found when resolving dependencies'; exit 1\n"
-    return FAKE_BUILD.format(pip=" ".join(pip), pip_json=json.dumps(list(pip)), root=root, stamp=stamp)
+    return FAKE_BUILD.format(pip=" ".join(pip), pip_json=json.dumps(list(pip)), conda_json=json.dumps(list(conda)),
+                             root=root, stamp=stamp)
 
 
 def test_bench_packages_builds_in_the_cell_and_keeps_the_old_build_on_failure(hub, settings, monkeypatch, capsys):
@@ -176,3 +178,54 @@ def test_a_kernel_started_while_the_build_was_unreadable_is_not_restarted_for_it
     first = worker._ensure_kernel(settings.projects_dir / "crispr")
     assert worker._ensure_kernel(settings.projects_dir / "crispr") is first
     assert worker._ensure_kernel(settings.projects_dir / "crispr") is first and worker.kernel_env == ("python3", "")
+
+
+def test_conda_packages_bring_their_own_micromamba(settings, monkeypatch, tmp_path, capsys):
+    """A student's own install has no micromamba: the first conda request installs it (checked), once."""
+    from schub import project_env, seurat
+    from schub.bench import kernel_api
+
+    (settings.root / "bin").mkdir(parents=True, exist_ok=True)
+    (settings.root / "bin" / "uv").write_text("#!/bin/sh\n")
+    installer = tmp_path / "build_tools.sh"
+    installer.write_text('[ "$SCHUB_TOOLS" = micromamba ] || exit 2\nmkdir -p "$1/bin" && touch "$1/bin/micromamba" '
+                         '&& echo installed micromamba\n')
+    monkeypatch.setattr(seurat, "BUILD_TOOLS", installer)
+    monkeypatch.setattr(project_env, "build_script", fake_build)
+    monkeypatch.setenv("SCHUB_ROOT", str(settings.root))
+    monkeypatch.delenv("SCHUB_LIBRARY", raising=False)
+    monkeypatch.setenv("SCHUB_PROJECT", "crispr")
+    ProjectStore(settings).create("crispr")
+    assert kernel_api.packages(conda="samtools")["conda"] == ["samtools"]
+    assert "installed micromamba" in capsys.readouterr().out
+    assert (settings.local_library / "bin" / "micromamba").exists()
+    installer.write_text("echo must not run again; exit 1\n")
+    assert kernel_api.packages(conda=["bedtools"])["conda"] == ["samtools", "bedtools"]
+
+
+def test_builds_ignore_a_kernels_forced_colour_and_keep_its_path(hub, settings):
+    """A Jupyter kernel sets FORCE_COLOR: uv then wrote escape codes into constraints.txt and every
+    in-cell build failed; a conda kernel's own PATH used to drop the guards and sbatch."""
+    script = build_script(settings, "crispr", ["harmonypy"], ["samtools"], "20260925-000000")
+    assert "unset FORCE_COLOR CLICOLOR_FORCE; export NO_COLOR=1" in script.splitlines()[1]
+    assert '--env PATH "$NEW/conda/bin:\\${PATH}"' in script
+
+
+def test_a_queued_slurm_job_keeps_its_python_after_old_builds_go(settings, monkeypatch):
+    from schub.bench import slurm_cell
+
+    build = settings.root / "envs" / "crispr" / "20260925-000000" / "venv" / "bin"
+    build.mkdir(parents=True)
+    (build / "python").write_text("")
+    (settings.root / "envs" / "crispr" / "current").symlink_to("20260925-000000")
+    monkeypatch.setattr(slurm_cell.sys, "executable", str(build / "python"))
+    assert slurm_cell._stable_python(settings, "crispr") == str(settings.root / "envs/crispr/current/venv/bin/python")
+    monkeypatch.setattr(slurm_cell.sys, "executable", "/usr/bin/python3")
+    assert slurm_cell._stable_python(settings, "crispr") == "/usr/bin/python3"
+
+
+def test_the_project_kernel_is_looked_for_where_jupyter_installs_it(tmp_path, monkeypatch):
+    from schub.project_env import kernel_dir
+
+    monkeypatch.setenv("JUPYTER_DATA_DIR", str(tmp_path / "jupyter"))
+    assert kernel_dir("crispr/screen") == tmp_path / "jupyter" / "kernels" / "schub-crispr.screen"

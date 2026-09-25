@@ -17,7 +17,10 @@ same release folder; the dataset's own gene ids must match (symbols vs Ensembl i
 MSigDB is CC BY 4.0, but some C2 sets (KEGG) carry their own terms: name the
 collection and its license in the cell's `why`.
 
-## Scoring (decoupler 2, in the environment)
+## Scoring (decoupler 2)
+
+decoupler is in sc-hub's environment; an environment built before it was added lacks it:
+if `import decoupler` fails, `bench.packages(pip=["decoupler>=2"])` and run the next cell.
 
 ```
 import decoupler as dc

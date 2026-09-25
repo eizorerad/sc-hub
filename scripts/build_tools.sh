@@ -2,6 +2,7 @@
 # Build the library's standalone tools, each in its own environment, once:
 #   tools/cellxgene/<version>   cellxgene (pins numpy 2.0.1, so not in the main env)
 #   tools/r-seurat/<version>    R + Seurat, to import .rds objects
+#   bin/micromamba              alone (SCHUB_TOOLS=micromamba): for a project's conda packages
 # Called by publish_library.sh inside its Slurm job:  build_tools.sh <library root>
 # Environments are not relocatable, so they are built in place; `current` moves
 # to a version only after it works.
@@ -33,6 +34,7 @@ build_cellxgene() {
 install_micromamba() {
   local bin="$LIB/bin/micromamba" tmp
   if [ -x "$bin" ] && "$bin" --version | grep -q "^${MICROMAMBA_VERSION%-*}"; then return; fi
+  mkdir -p "$LIB/bin"  # a student's own library has none yet
   tmp="$(mktemp)"
   curl -fsSL -o "$tmp" "https://github.com/mamba-org/micromamba-releases/releases/download/$MICROMAMBA_VERSION/micromamba-linux-64"
   echo "$MICROMAMBA_SHA256  $tmp" | sha256sum -c --quiet - || { rm -f "$tmp"; log "micromamba checksum mismatch"; exit 1; }
@@ -58,6 +60,7 @@ for tool in $TOOLS; do
   case "$tool" in
     cellxgene) build_cellxgene ;;
     r-seurat) build_seurat ;;
+    micromamba) install_micromamba ;;  # alone: for a project's conda packages
     *) log "unknown tool $tool"; exit 1 ;;
   esac
 done

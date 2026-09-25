@@ -5,9 +5,8 @@ from __future__ import annotations
 
 from ..overview import Overview
 from .html import esc, listing, pill, table
+from .views_activity import reason
 
-REASONS = {"QOSMaxJobsPerUserLimit": "waiting for a free job slot (per-user limit above)", "Dependency": "waiting for the previous step",
-           "BeginTime": "scheduled to start later", "Resources": "waiting for free nodes", "Priority": "queued", "None": ""}
 
 
 def _fmt(value: float, unit: str) -> str:
@@ -62,7 +61,7 @@ def _jobs(ov: Overview) -> str:
         (f"{j.job_id} {j.name} {j.state} {j.partition} {j.node}",
          f"<td><code>{esc(j.job_id)}</code></td><td>{esc(j.name)}</td><td>{pill(j.state)}</td><td>{esc(j.partition)}</td>"
          f"<td class=num>{j.cpus}</td><td class=num>{j.mem_gb:g} GB</td><td class=num>{j.gpus or '–'}</td>"
-         f"<td>{esc(j.elapsed)} / {esc(j.time_limit)}</td><td>{esc(j.node or REASONS.get(j.reason, j.reason))}</td>")
+         f"<td>{esc(j.elapsed)} / {esc(j.time_limit)}</td><td>{esc(j.node or reason(j.reason))}</td>")
         for j in ov.jobs
     ]
     headers = ("Job", "Name", "State", "Partition", "CPUs", "Memory", "GPUs", "Time", "Node or why it waits")

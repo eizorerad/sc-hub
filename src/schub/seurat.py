@@ -30,7 +30,9 @@ from .state import Frozen
 from .streaming import run_streamed
 
 R_SCRIPT = Path(__file__).with_name("seurat_export.R")
-BUILD_TOOLS = Path(__file__).resolve().parents[2] / "scripts" / "build_tools.sh"  # in a source checkout
+BUILD_TOOLS = next((p for p in (Path(__file__).resolve().parents[2] / "scripts" / "build_tools.sh",  # a checkout
+                                 Path(__file__).with_name("build_tools.sh"))  # a wheel (force-include)
+                    if p.is_file()), Path(__file__).with_name("build_tools.sh"))
 NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
 
@@ -89,7 +91,8 @@ def check_request(settings: Settings, rds: str, name: str) -> tuple[Path, Path]:
     path = (path if path.is_absolute() else settings.root / path).resolve()
     roots = [r.resolve() for r in settings.allowed_roots if r.exists()]
     if path.suffix.lower() != ".rds" or not path.is_file() or not any(path.is_relative_to(r) for r in roots):
-        raise SeuratImportError(f"'{rds}' is not an .rds file inside the sc-hub areas; copy it into {settings.data_dir}")
+        raise SeuratImportError(f"'{rds}' is not an .rds file inside your sc-hub folder (or a library); copy it into "
+                                f"{settings.data_dir} or the project's data/")
     target = settings.data_dir / name
     if target.exists():
         raise SeuratImportError(f"{target} already exists; choose another name")
@@ -163,7 +166,11 @@ def run_import(settings: Settings, rds: str, name: str) -> Path:
     path, target = check_request(settings, rds, name)
     work = settings.cache_dir / f"seurat-{name}-{secrets.token_hex(3)}"
     try:
-        subprocess.run([str(_rscript(settings)), str(R_SCRIPT), str(path), str(work)], check=True)
+        done = subprocess.run([str(_rscript(settings)), str(R_SCRIPT), str(path), str(work)], capture_output=True,
+                              text=True)
+        if done.returncode != 0:
+            raise SeuratImportError(f"R could not read {path.name} as a Seurat object (exit {done.returncode}): "
+                                    + (done.stderr or done.stdout).strip()[-800:])
         adata = assemble(work)
         kind = adata.uns["schub_import"].get("kind", "counts")
         return _publish_dataset(adata, target, {

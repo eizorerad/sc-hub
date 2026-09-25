@@ -161,7 +161,7 @@ def submit_cell(settings: Settings, slurm: Slurm, project: str, project_dir: Pat
     (job_dir / "SHA256SUMS").write_text("".join(f"{hashlib.sha256(f.read_bytes()).hexdigest()}  {f.name}\n"
                                                 for f in (body, frozen)))
     comment = f"schub-{slug(project).replace('.', '-')[:40]}-{cid}-{key}"
-    python = sys.executable  # jobrun needs sc-hub; a foreign interpreter only runs the cell's body
+    python = _stable_python(settings, project)  # jobrun needs sc-hub; a foreign interpreter only runs the body
     meta = {"project": project, "ref": ref, "cid": cid, "spec": spec.model_dump(), "checks": checks,
             "python": python, "body_python": spec.python, "comment": comment, "created": stamp(),
             "body": body.name}
@@ -191,6 +191,21 @@ def _slot_warning(settings: Settings, slurm: Slurm, spec: SlurmCellSpec, job_id:
 def _job_name(settings: Settings, project: str, cid: str) -> str:
     return f"{settings.job_prefix}-cell-{slug(project)}-{cid}"[:120]
 
+
+def _stable_python(settings: Settings, project: str) -> str:
+    """This kernel's Python, by a path that outlives its build: a project kernel runs from
+    envs/<p>/<build>/venv, and only the two newest builds are kept, so a job still queued when a third
+    build lands would lose its interpreter. envs/<p>/current always points at a working build."""
+    from ..project_env import env_root
+
+    own = Path(sys.executable)
+    root = env_root(settings, project)
+    try:
+        inside = own.parent.parent.parent.parent == root and own.parent.parent.name == "venv"
+    except (IndexError, ValueError):
+        inside = False
+    stable = root / "current" / "venv" / "bin" / own.name
+    return str(stable) if inside and stable.exists() else str(own)
 
 def _job_spec(settings: Settings, project: str, project_dir: Path, job_dir: Path, spec: SlurmCellSpec,
               python: str, comment: str, cid: str) -> JobSpec:
