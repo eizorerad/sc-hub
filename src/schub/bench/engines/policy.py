@@ -10,7 +10,8 @@ error, never permission to call another engine.
     <engine>_model / <engine>_effort   pinned for every run ("" = the CLI's default)
     weekly_turns at most this many lab-agent turns per 7 days across projects (0 = no cap)
     claude_weekly_ceiling  Claude stands down while its seven-day usage window is at least this full,
-                 as the last rate_limit_event reported (the owner's own work shares that window; 0 = off)
+                 as the last rate_limit_event reported (0.8 by default: the student's own chats share
+                 that window, and a lab agent must not spend their whole week; 0 = off)
     grants       per project, engines allowed beyond the mode: {"engines": [...], "granted": ..., "note": ...}
 """
 
@@ -44,7 +45,7 @@ class EnginePolicy:
     codex_model: str = ""
     codex_effort: str = ""
     weekly_turns: int = 0
-    claude_weekly_ceiling: float = 0.0  # Claude stands down when its seven-day window is this full (0 = off)
+    claude_weekly_ceiling: float = 0.8  # Claude stands down when its seven-day window is this full (0 = off)
     grants: dict = field(default_factory=dict)
     updated: str = ""
     reason: str = ""

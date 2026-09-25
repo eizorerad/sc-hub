@@ -4,6 +4,9 @@ Seurat is the R ecosystem's standard; sc-hub works in AnnData. R (the library's
 r-seurat tool) writes counts, metadata and embeddings as plain files; Python
 assembles them into data.h5ad with raw counts in X when the object has them.
 Runs as a Slurm job:  python -m schub.seurat --rds <file> --name <name>
+or from a bench cell: bench.import_seurat(rds, name). Without R + Seurat in the shared
+library, the first import builds them once into the student's own library
+(scripts/build_tools.sh, conda-forge; about 2 GB and 10-20 minutes).
 """
 
 from __future__ import annotations
@@ -12,17 +15,22 @@ import argparse
 import re
 import secrets
 import shutil
+import os
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Sequence
 
 from .bricks import Resources
 from .config import Settings
 from .library import find_tool
+from .locking import LockTimeout, exclusive
 from .slurm import JobSpec, Slurm, render_script
 from .state import Frozen
+from .streaming import run_streamed
 
 R_SCRIPT = Path(__file__).with_name("seurat_export.R")
+BUILD_TOOLS = Path(__file__).resolve().parents[2] / "scripts" / "build_tools.sh"  # in a source checkout
 NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
 
@@ -43,6 +51,35 @@ def _rscript(settings: Settings) -> Path:
     if found is None:
         raise SeuratImportError("R + Seurat is not installed in the library (tools/r-seurat); ask the library owner")
     return found
+
+
+def ensure_r(settings: Settings, out=None) -> Path:
+    """Rscript with Seurat: the library's, else built once into the student's own library (streamed to `out`)."""
+    found = find_tool(settings.library_roots, "r-seurat", "bin/Rscript")
+    if found is not None:
+        return found
+    if not BUILD_TOOLS.is_file():
+        raise SeuratImportError("R + Seurat is not installed in the library (tools/r-seurat), and this sc-hub has no "
+                                "scripts/build_tools.sh to build it; ask the library owner")
+    settings.local_library.mkdir(parents=True, exist_ok=True)
+    code, tail = 0, []
+    try:  # one build at a time (two projects importing at once would remove each other's half-built folder)
+        with exclusive(settings.local_library / ".r-seurat.lock", wait_s=3600, stale_after_s=300, heartbeat_s=30):
+            if find_tool(settings.library_roots, "r-seurat", "bin/Rscript") is None:  # not built while we waited
+                code, tail = _build_r(settings, out or sys.stdout)
+    except LockTimeout as exc:
+        raise SeuratImportError(f"another import has been building R + Seurat for an hour: {exc}") from None
+    found = find_tool(settings.library_roots, "r-seurat", "bin/Rscript")
+    if code != 0 or found is None:
+        raise SeuratImportError(f"building R + Seurat failed (exit {code}). Last lines:\n" + "".join(tail))
+    return found
+
+
+def _build_r(settings: Settings, out) -> tuple[int, list[str]]:
+    out.write("[sc-hub] R + Seurat are not installed yet: building them once into your own library "
+              "(conda-forge, about 2 GB, 10-20 minutes)\n")
+    return run_streamed(["bash", str(BUILD_TOOLS), str(settings.local_library)], out,
+                        env={**os.environ, "SCHUB_TOOLS": "r-seurat"}, keep=30)
 
 
 def check_request(settings: Settings, rds: str, name: str) -> tuple[Path, Path]:

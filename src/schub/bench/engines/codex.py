@@ -20,7 +20,12 @@ from .base import Engine, Outcome, Turn, classify
 # engines' logins included). Names from `codex features list` (codex-cli 0.155).
 BUILT_IN_TOOLS = ("shell_tool", "browser_use", "browser_use_external", "computer_use", "in_app_browser", "apps",
                   "multi_agent", "image_generation")
-MISSING = re.compile(r"no (saved )?(session|conversation|thread|rollout)|(session|thread) .*not found", re.I)
+# a thread that cannot go on: lost, or too long to resume (a new one starts from the hand-over)
+MISSING = re.compile(r"no (saved )?(session|conversation|thread|rollout)|(session|thread) .*not found|"
+                     r"context.?length.?exceeded|context window|maximum context length", re.I)
+
+
+WORK_ITEMS = ("mcp_tool_call", "command_execution", "file_change", "web_search")
 
 
 def _toml(value: object) -> str:
@@ -64,7 +69,7 @@ class Codex(Engine):
         return [*head, "--json", "--skip-git-repo-check", *options, turn.prompt]
 
     def parse(self, stdout: str, stderr: str, returncode: int) -> Outcome:
-        thread, messages, errors, completed, usage = None, [], [], False, {}
+        thread, messages, errors, completed, usage, tools = None, [], [], False, {}, 0
         for line in stdout.splitlines():
             try:
                 event = json.loads(line)
@@ -83,8 +88,10 @@ class Codex(Engine):
                 errors.append(str(event.get("message", "error")))
             elif kind == "item.completed" and (event.get("item") or {}).get("type") == "agent_message":
                 messages.append(str(event["item"].get("text", "")))
+            elif kind == "item.completed" and (event.get("item") or {}).get("type") in WORK_ITEMS:
+                tools += 1  # the turn did work even if it then failed (an "error" item is only a notice)
         ok = returncode == 0 and completed  # an "error" event before completion can be a retried reconnect
         error = "" if ok else ("\n".join(errors) or stderr.strip() or f"exit code {returncode}")[-2000:]
         return Outcome(self.name, classify(ok, error, bool(MISSING.search(error))), session_id=thread,
                        text=(messages[-1] if messages else "")[-4000:], error=error, returncode=returncode,
-                       details={"usage": usage})
+                       details={"usage": usage, "tool_calls": tools})

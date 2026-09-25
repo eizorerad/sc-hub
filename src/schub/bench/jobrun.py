@@ -52,6 +52,7 @@ def _bench(meta: dict[str, Any]):
     from . import kernel_api
 
     kernel_api.set_cell(meta.get("ref", ""), json.dumps(meta.get("checks", [])))
+    kernel_api.alias()
     return kernel_api
 
 

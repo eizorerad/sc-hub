@@ -3,6 +3,10 @@
 The wording is matched broadly on purpose (the VCC2026 lesson): a missed limit costs
 a wasted slice, a false positive only moves the turn to the other engine. Only a time
 attached to reset wording counts; without one the pause lasts DEFAULT_HOURS.
+
+An engine whose turns fail before doing any work (a lost login, a broken CLI) pauses too,
+longer each time in a row (FAILURE_PAUSES), so it does not spend a slice and write an
+incident every hour; a probe that gets an answer ends the pause early.
 """
 
 from __future__ import annotations
@@ -27,6 +31,14 @@ ISO = re.compile(r"\b(?:resets?|try again)\s+(?:(?:at|on)\s+)?(20\d\d-\d\d-\d\d[
 RELATIVE = re.compile(r"\b(?:resets?|try again)\s+in\s+(?:(\d+)\s*d(?:ays?)?)?[\s,]*(?:(\d+)\s*h(?:(?:ou)?rs?)?)?"
                       r"[\s,]*(?:(\d+)\s*m(?:in(?:ute)?s?)?)?", re.I)
 CLOCK = re.compile(r"\b(?:resets?|try again)\s+(?:at\s+)?(\d{1,2})(?::(\d\d))?\s*(am|pm)?\b(?:\s*\(([^()\n]+)\))?", re.I)
+MONTHS = ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
+# "resets Sep 14, 10pm (Asia/Dubai)" (Claude's weekly limit, VCC2026 A164), "try again at Sep 20th, 2026 3:05 PM"
+# (Codex), "resets on Sep 14 2026 at 22:00"
+CALENDAR = re.compile(r"\b(?:resets?|try again)\s+(?:(?:on|at)\s+)?(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)"
+                      r"[a-z]*\.?\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s+(20\d\d))?\s*,?\s+(?:at\s+)?(\d{1,2})(?::(\d\d))?"
+                      r"\s*(am|pm)?\b(?:\s*\(([^()\n]+)\))?", re.I)
+FAILURE_PAUSES = (timedelta(0), timedelta(hours=1), timedelta(hours=6), timedelta(hours=24))
+FAILURE_WINDOW = timedelta(minutes=30)
 
 
 def is_limit(text: str) -> bool:
@@ -48,25 +60,66 @@ def parse_reset(text: str, now: datetime) -> datetime | None:
             return None  # "2026-02-30": not a date
         value = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
         return value.astimezone(timezone.utc) if value > now else None
+    match = CALENDAR.search(text or "")
+    if match:
+        return _calendar(match, now)
     match = CLOCK.search(text or "")
     if not match:
         return None
-    hour, minute, ampm, zone = int(match.group(1)), int(match.group(2) or 0), (match.group(3) or "").lower(), match.group(4)
+    clock = _clock(match.group(1), match.group(2), match.group(3))
+    if clock is None:
+        return None
+    tz = _zone(match.group(4))
+    local_now = now.astimezone(tz)
+    candidate = local_now.replace(hour=clock[0], minute=clock[1], second=0, microsecond=0)
+    if candidate <= local_now:
+        candidate += timedelta(days=1)
+    return candidate.astimezone(timezone.utc)
+
+
+def _clock(hour_text: str, minute_text: str | None, ampm_text: str | None) -> tuple[int, int] | None:
+    hour, minute, ampm = int(hour_text), int(minute_text or 0), (ampm_text or "").lower()
     if ampm:
         if not 1 <= hour <= 12:
             return None
         hour = hour % 12 + (12 if ampm == "pm" else 0)
-    if hour > 23 or minute > 59:
+    return None if hour > 23 or minute > 59 else (hour, minute)
+
+
+def _zone(name: str | None) -> timezone | ZoneInfo:
+    try:
+        return ZoneInfo(name.strip()) if name else timezone.utc
+    except (ZoneInfoNotFoundError, ValueError):
+        return timezone.utc
+
+
+def _calendar(match: re.Match, now: datetime) -> datetime | None:
+    """A named day, only if still ahead. Without a year: this year's, or next year's when this year's is long
+    gone ("Jan 2" read in late December); one just passed is stale, not a reset a year away."""
+    month, day, year = MONTHS.index(match.group(1).lower()) + 1, int(match.group(2)), match.group(3)
+    clock = _clock(match.group(4), match.group(5), match.group(6))
+    if clock is None:
+        return None
+    local_now = now.astimezone(_zone(match.group(7)))
+    try:
+        candidate = local_now.replace(year=int(year) if year else local_now.year, month=month, day=day,
+                                      hour=clock[0], minute=clock[1], second=0, microsecond=0)
+        if not year and local_now - candidate > timedelta(days=180):
+            candidate = candidate.replace(year=candidate.year + 1)
+    except ValueError:
+        return None  # "Feb 30"
+    return candidate.astimezone(timezone.utc) if candidate > local_now else None
+
+
+def reset_hint(details: dict) -> datetime | None:
+    """The reset Claude's own rate_limit_event names for a refused turn (more exact than its message)."""
+    info = details.get("rate_limit") if isinstance(details, dict) else None
+    if not isinstance(info, dict) or info.get("status") != "rejected":
         return None
     try:
-        tz = ZoneInfo(zone.strip()) if zone else timezone.utc
-    except (ZoneInfoNotFoundError, ValueError):
-        tz = timezone.utc
-    local_now = now.astimezone(tz)
-    candidate = local_now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-    if candidate <= local_now:
-        candidate += timedelta(days=1)
-    return candidate.astimezone(timezone.utc)
+        return datetime.fromtimestamp(float(info["resetsAt"]), timezone.utc)
+    except (KeyError, TypeError, ValueError, OverflowError, OSError):
+        return None
 
 
 class Cooldown:
@@ -78,20 +131,61 @@ class Cooldown:
         data = read_json(self.path)
         return data if isinstance(data, dict) else {}
 
-    def mark(self, engine: str, text: str) -> datetime:
+    def mark(self, engine: str, text: str, resets: datetime | None = None) -> datetime:
+        """Pause after a usage limit: until `resets` (the engine's own number), the time its message
+        names, or DEFAULT_HOURS."""
         now = self.now()
-        parsed = parse_reset(text, now)
+        parsed = resets if resets is not None and resets > now else parse_reset(text, now)
         until = min(parsed or now + timedelta(hours=DEFAULT_HOURS), now + MAX_PAUSE)
-        state = {**self._state(), engine: {"until": until.isoformat(timespec="seconds"), "parsed": parsed is not None,
-                                           "marked": now.isoformat(timespec="seconds"), "reason": (text or "")[-300:]}}
+        return self._pause(engine, until, "usage limit", text, parsed=parsed is not None)
+
+    def failing(self, engine: str, text: str) -> tuple[int, datetime | None]:
+        """One more turn that failed before doing any work (a lost login, a broken CLI): the count in a row,
+        and the pause it earns (none for a first failure, then FAILURE_PAUSES). Failures within
+        FAILURE_WINDOW of the last one (several projects' slices in one short outage) count once."""
+        record = self._state().get(f"{engine}:failures")
+        count = record.get("count", 0) if isinstance(record, dict) else 0
+        now = self.now()
+        try:
+            recent = now - datetime.fromisoformat(record["last"]) < FAILURE_WINDOW  # type: ignore[index]
+        except (TypeError, KeyError, ValueError):
+            recent = False
+        if recent and count:
+            return count, self.until(engine)
+        count += 1
+        state = {**self._state(), f"{engine}:failures": {"count": count, "last": now.isoformat(timespec="seconds"),
+                                                          "reason": (text or "")[-300:]}}
+        write_json_atomic(self.path, state)
+        pause = FAILURE_PAUSES[min(count, len(FAILURE_PAUSES)) - 1]
+        if not pause:
+            return count, None
+        return count, self._pause(engine, now + pause, "failing", text)
+
+    def answered(self, engine: str) -> None:
+        """A turn did work: failures in a row start again from zero."""
+        state = self._state()
+        if f"{engine}:failures" in state:
+            write_json_atomic(self.path, {k: v for k, v in state.items() if k != f"{engine}:failures"})
+
+    def _pause(self, engine: str, until: datetime, kind: str, text: str, parsed: bool = False) -> datetime:
+        now = self.now()
+        state = {**self._state(), engine: {"until": until.isoformat(timespec="seconds"), "parsed": parsed,
+                                           "kind": kind, "marked": now.isoformat(timespec="seconds"),
+                                           "reason": (text or "")[-300:]}}
         write_json_atomic(self.path, state)
         return until
 
     def clear(self, engine: str) -> None:
         """The engine answered (a probe): its pause ends before the time the limit named."""
         state = self._state()
-        if engine in state:
-            write_json_atomic(self.path, {k: v for k, v in state.items() if k != engine})
+        gone = (engine, f"{engine}:failures")
+        if any(key in state for key in gone):
+            write_json_atomic(self.path, {k: v for k, v in state.items() if k not in gone})
+
+    def kind(self, engine: str) -> str:
+        """Why the engine is paused: "usage limit" or "failing"."""
+        record = self._state().get(engine)
+        return str(record.get("kind") or "usage limit") if isinstance(record, dict) else ""
 
     def until(self, engine: str) -> datetime | None:
         record = self._state().get(engine)

@@ -15,7 +15,7 @@ from schub.bench.engines import policy as engine_policy
 from schub.bench.engines.base import GUARD_DIR, McpServer, Turn
 from schub.bench.engines.claude import Claude
 from schub.bench.engines.codex import Codex
-from schub.bench.engines.cooldown import Cooldown, is_limit, parse_reset
+from schub.bench.engines.cooldown import Cooldown, is_limit, parse_reset, reset_hint
 from schub.bench.engines.guard import REFUSED, main as guard_main, pinned
 from schub.bench.engines.policy import EnginePolicy, PolicyError, load, order
 from schub.bench.engines.probe import probe, summary
@@ -102,6 +102,62 @@ def test_limits_are_recognised_and_resets_parsed() -> None:
     assert parse_reset("try again in 45 minutes", NOW) == NOW + timedelta(minutes=45)
 
 
+def test_a_named_day_is_parsed() -> None:
+    """Claude's weekly limit names a day (VCC2026 A164): it used to fall back to a five-hour pause."""
+    before = datetime(2026, 9, 13, 12, 0, tzinfo=timezone.utc)
+    assert parse_reset("You've hit your limit · resets Sep 14, 10pm (Asia/Dubai)", before) == \
+        datetime(2026, 9, 14, 18, 0, tzinfo=timezone.utc)
+    assert parse_reset("resets on September 14 2026 at 22:30", before) == datetime(2026, 9, 14, 22, 30,
+                                                                                    tzinfo=timezone.utc)
+    assert parse_reset("resets Jan 2, 9am", datetime(2026, 12, 30, tzinfo=timezone.utc)) == \
+        datetime(2027, 1, 2, 9, 0, tzinfo=timezone.utc)  # read in late December: next year's
+    assert parse_reset("resets Sep 12, 10pm", before) is None  # just passed: stale, not a reset a year away
+    assert parse_reset("resets Sep 14 2025, 10pm", before) is None  # a day gone by is not a reset
+    assert parse_reset("You've hit your usage limit. Try again at Sep 20th, 2026 3:05 PM.", before) == \
+        datetime(2026, 9, 20, 15, 5, tzinfo=timezone.utc)  # Codex's wording
+    assert parse_reset("resets Feb 30, 10pm", before) is None
+    assert parse_reset("resets Sep 14, 25pm", before) is None
+
+
+def test_claudes_own_reset_time_wins(tmp_path: Path) -> None:
+    at = datetime(2026, 9, 30, 6, 0, tzinfo=timezone.utc)
+    refused = {"rate_limit": {"status": "rejected", "rateLimitType": "seven_day", "resetsAt": at.timestamp()}}
+    assert reset_hint(refused) == at
+    assert reset_hint({"rate_limit": {"status": "allowed", "resetsAt": at.timestamp()}}) is None
+    assert reset_hint({"rate_limit": {"status": "rejected", "resetsAt": "soon"}}) is None and reset_hint({}) is None
+    cooldown = Cooldown(tmp_path / "cooldown.json", now=lambda: NOW)
+    assert cooldown.mark("claude", "You've hit your limit · resets 3pm (Asia/Dubai)", resets=at) == at
+    assert cooldown.mark("codex", "resets at 10am", resets=NOW - timedelta(hours=1)) == \
+        datetime(2026, 9, 24, 10, 0, tzinfo=timezone.utc)  # a past hint: the message decides
+
+
+def test_an_engine_failing_in_a_row_pauses_longer_each_time(tmp_path: Path) -> None:
+    clock = {"now": NOW}
+    cooldown = Cooldown(tmp_path / "cooldown.json", now=lambda: clock["now"])
+    pauses = []
+    for _ in range(5):  # one failure per slice, an hour apart
+        pauses.append(cooldown.failing("claude", "Invalid API key")[1])
+        clock["now"] += timedelta(hours=1)
+    start = NOW
+    assert pauses == [None, start + timedelta(hours=2), start + timedelta(hours=8), start + timedelta(hours=27),
+                      start + timedelta(hours=28)]
+    assert cooldown.kind("claude") == "failing" and cooldown.ready("codex")
+    cooldown.answered("claude")  # a turn did work: the count starts again
+    assert cooldown.failing("claude", "x") == (1, None)
+
+
+def test_failures_in_one_short_outage_count_once(tmp_path: Path) -> None:
+    clock = {"now": NOW}
+    cooldown = Cooldown(tmp_path / "cooldown.json", now=lambda: clock["now"])
+    assert cooldown.failing("claude", "API Error: 529 Overloaded") == (1, None)
+    clock["now"] += timedelta(minutes=5)  # another project's slice, same outage
+    assert cooldown.failing("claude", "API Error: 529 Overloaded") == (1, None) and cooldown.ready("claude")
+    clock["now"] += timedelta(minutes=40)
+    assert cooldown.failing("claude", "API Error: 529 Overloaded") == (2, clock["now"] + timedelta(hours=1))
+    cooldown.mark("claude", "usage limit")
+    assert cooldown.kind("claude") == "usage limit"
+
+
 def test_a_paused_engine_is_ready_again_after_its_reset(tmp_path: Path) -> None:
     clock = {"now": NOW}
     cooldown = Cooldown(tmp_path / "cooldown.json", now=lambda: clock["now"])
@@ -134,7 +190,8 @@ def test_claude_new_session_then_resume(fakes, tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("mode,status", [("limit", "usage_limited"), ("missing", "session_missing"),
-                                         ("garbage", "failed")])
+                                         ("garbage", "failed"), ("broken", "failed"), ("failwork", "failed"),
+                                         ("toolong", "session_missing")])
 def test_claude_failures_are_classified(fakes, tmp_path: Path, monkeypatch, mode: str, status: str) -> None:
     monkeypatch.setenv("FAKE_CLAUDE", mode)
     outcome = Claude().run(turn(tmp_path, session_id="s-1"))
@@ -156,6 +213,14 @@ def test_codex_thread_resume_and_limit(fakes, tmp_path: Path, monkeypatch) -> No
     assert limited.status == "usage_limited" and "2099-01-01" in limited.error
     monkeypatch.setenv("FAKE_CODEX", "missing")
     assert Codex().run(turn(tmp_path, session_id="gone")).status == "session_missing"
+
+
+def test_a_codex_thread_that_no_longer_fits_is_started_again() -> None:
+    full = json.dumps({"type": "turn.failed", "error": {"message": "Codex ran out of room in the model's context "
+                                                                   "window. Start a new conversation."}})
+    assert Codex().parse(full, "", 1).status == "session_missing"
+    assert Codex().parse(json.dumps({"type": "error", "message": "context_length_exceeded"}), "", 1).status == \
+        "session_missing"
 
 
 def test_a_turn_past_its_time_is_stopped(fakes, tmp_path: Path, monkeypatch) -> None:
@@ -257,6 +322,7 @@ def test_claude_reports_its_weekly_window(fakes, tmp_path: Path, monkeypatch) ->
 
 
 def test_a_weekly_ceiling_is_a_policy_field() -> None:
+    assert EnginePolicy().claude_weekly_ceiling == 0.8  # on by default: the student's own chats share the week
     assert EnginePolicy(claude_weekly_ceiling=0.8).claude_weekly_ceiling == 0.8
     for bad in (1.5, -0.1, "high"):
         with pytest.raises(PolicyError):
@@ -285,3 +351,14 @@ def test_codex_keeps_its_sqlite_files_per_host(tmp_path: Path) -> None:
         "/set/by/owner"
     assert Claude().environment(None) is None  # only Codex has the NFS problem
 
+
+
+def test_only_real_actions_count_as_codex_work() -> None:
+    """A notice ("error" item) before a failure is not work: a broken login must still pause the engine."""
+    notice = "\n".join(json.dumps(e) for e in (
+        {"type": "thread.started", "thread_id": "t"},
+        {"type": "item.completed", "item": {"id": "i0", "type": "error", "message": "MCP server failed to start"}},
+        {"type": "turn.failed", "error": {"message": "unauthorized"}}))
+    assert Codex().parse(notice, "", 1).details["tool_calls"] == 0
+    called = notice.replace('"type": "error", "message": "MCP server failed to start"', '"type": "mcp_tool_call"')
+    assert Codex().parse(called, "", 1).details["tool_calls"] == 1

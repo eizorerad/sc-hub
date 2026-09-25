@@ -20,7 +20,7 @@ import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from pydantic import ValidationError
 
@@ -155,6 +155,26 @@ class Inbox:
 
     def reject(self, item: Claimed, reason: str) -> None:
         self._reject(item.path, reason)
+
+    def withdraw(self, project: str, reason: str, which: Callable[[CellRequest], bool] = lambda request: True,
+                 cid: str | None = None) -> list[str]:
+        """Take back requests of `project` no runner has claimed yet (all that `which` picks, or one cid):
+        rejected with `reason`, which wait() and the journal then show. Returns their cids."""
+        gone = []
+        for path in sorted(self._folder("inbox").glob("*.json")):
+            request = _parse(read_json(path))
+            if request is None or request.project != project or (cid is not None and request.cid != cid):
+                continue
+            if not which(request):
+                continue
+            target = self._folder("rejected") / path.name
+            try:
+                os.rename(path, target)  # atomic: a runner claiming it at the same moment wins or loses whole
+            except FileNotFoundError:
+                continue
+            write_json_atomic(target.with_suffix(".reason.json"), {"reason": reason})
+            gone.append(request.cid)
+        return gone
 
     def rejected_reason(self, project: str, cid: str) -> str | None:
         for path in self._folder("rejected").glob("*.reason.json"):

@@ -26,6 +26,10 @@ Where your cells run and what limits them (measured 2026-09).
   does not fit; plan a reduced or released-weights reproduction instead.
 - The node driver supports CUDA up to 12.8: install torch from the cu118–cu128
   wheels. The default cu130 wheels import fine but silently see no GPU.
+- Never set or unset `CUDA_VISIBLE_DEVICES`: Slurm sets it to the GPUs the job was
+  given (none for a CPU cell). Ask for a GPU with `%%slurm --gpus 1`.
+- A package the environment lacks: `bench.packages(pip=["name"])` in a cell (conda
+  tools with `conda=[...]`); the next cell runs in a fresh kernel with it.
 - Storage: your folder on Lustre (`/l/users/<you>`, 3 TB quota). Do heavy reading
   and writing inside cells and jobs, never on the login node. Lustre sometimes fails
   a write with EFAULT or EIO; the same write usually works when retried.

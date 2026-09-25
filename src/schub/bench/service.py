@@ -123,9 +123,13 @@ class BenchService:
         project, cid = self._cell_ref(ref)
         journal = self.journal(project)
         deadline = self.monotonic() + (self.settings.bench.run_wait_s if wait_s is None else wait_s)
-        queue_checked, jobs_open = -JOB_POLL_S, True
+        queue_checked, jobs_open, rejected_checked = -JOB_POLL_S, True, -JOB_POLL_S
         while True:
             entry = journal.cell(cid)
+            if entry is None and self.monotonic() - rejected_checked >= JOB_POLL_S:  # the folder only grows
+                rejected_checked = self.monotonic()
+                if self.inbox.rejected_reason(project, cid) is not None:
+                    break  # refused or withdrawn before it started: nothing more will happen to it
             if entry is not None and entry.final:
                 if not for_jobs or not _unreported(entry):
                     break
@@ -166,7 +170,7 @@ class BenchService:
 
     def _live_jobs(self, entry: CellEntry) -> CellEntry:
         """Current Slurm states of the cell's jobs that have not reported yet (not stored)."""
-        open_jobs = [j.job_id for j in entry.jobs if j.state not in FINAL_JOB_STATES]
+        open_jobs = [j.job_id for j in entry.jobs if j.state not in FINAL_JOB_STATES and not j.state.startswith("ENDED")]
         if not open_jobs:
             return entry
         try:
@@ -192,6 +196,8 @@ class BenchService:
     def interrupt(self, ref: str) -> str:
         project, cid = self._cell_ref(ref)
         self.journal(project)
+        if self.inbox.withdraw(project, "interrupted before it started", cid=cid):
+            return f"{ref} had not started: it was taken out of the queue"
         self.inbox.control(project, cid, "interrupt")
         return f"asked the workbench to interrupt {ref}"
 

@@ -161,6 +161,8 @@ main() {
     build_private_env
   fi
   cp "$SRC_DIR/templates/AGENTS.cluster.md" "$ROOT/AGENTS.md"
+  # Claude Code reads CLAUDE.md, not AGENTS.md; a student's own CLAUDE.md is left alone
+  if [ ! -e "$ROOT/CLAUDE.md" ]; then printf '@AGENTS.md\n' > "$ROOT/CLAUDE.md"; fi
   "$ROOT/bin/schub" doctor
   "$ROOT/bin/schub" dashboard >/dev/null && log "dashboard written to $ROOT/view"
   log "done. MCP command for Codex:  ssh -T mbzuai-schub $ROOT/bin/schub-mcp"

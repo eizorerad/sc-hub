@@ -34,6 +34,8 @@ Inside a cell, `bench` offers:
 | `%%slurm --gpus 1 --time 6h ...` | the cell as its own Slurm job, frozen with a checksum; its state, files and checks come back to the same entry |
 | `bench.run_brick(name, ...)` | one of sc-hub's checked single-cell steps ([bricks](bricks.md)) |
 | `bench.clone(url, ref)`, `bench.repo_env(...)` | a paper's code at a recorded commit, in its own uv environment (torch from the cu118–cu128 builds) |
+| `bench.packages(pip=[...], conda=[...])` | what the shared environment lacks, built in the cell for this project; its next cell starts a fresh kernel with it |
+| `bench.import_seurat(rds, name)` | a Seurat object as `data/<name>/data.h5ad`; R + Seurat come from the library or are built once into the student's own |
 | `from schub_ckpt import Run` | checkpoints that survive time limits: fsynced files, complete.json, latest.json; resume refuses another registration |
 | `bench.compare(ours, paper, source=...)` | our numbers next to a paper's, with a tolerance per metric |
 
@@ -68,7 +70,12 @@ are journal entries too, marked with the engine). The owner's engine policy
 (`schub engine-policy set mixed|claude-only|codex-only`, per-project grants,
 pinned models) decides which engine may run; a usage limit pauses that engine
 until its reset and, in `mixed`, the other takes the turn, starting from the
-journal's hand-over. The watchdog re-arms a broken chain and probes the engines.
+journal's hand-over. Claude stands down while its seven-day window is 80% full
+(`claude_weekly_ceiling`; the student's own chats share it). A turn that fails before
+doing any work (a lost sign-in) is not counted; failures in a row pause the engine
+1 h, 6 h, then 24 h, with one note telling the student to sign in again. A finished
+or stopped goal takes its queued cells back, and a job Slurm will never start wakes
+the model instead of an endless wait. The watchdog re-arms a broken chain and probes the engines.
 When a turn hands the work over as complete, a writer turn (a fresh session that
 reads only the journal and cannot reopen the work) publishes the report; after two
 turns without one the goal ends anyway and a note says so. `report: no` in

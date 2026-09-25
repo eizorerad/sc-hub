@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping
@@ -128,6 +130,24 @@ def _default_root(env: Mapping[str, str]) -> Path:
     return Path.home() / "schub"
 
 
+def job_prefix_for(root: Path, env: Mapping[str, str]) -> str:
+    """Slurm job names start with this. "schub" for the usual folder; any other sc-hub folder of the same
+    account gets its own ("schub-<4 hex>"), so one folder's watchdog, workbench or `stop` never takes the
+    other's jobs for its own (they are found by name). SCHUB_JOB_PREFIX overrides it."""
+    chosen = env.get("SCHUB_JOB_PREFIX", "")
+    if chosen:
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,23}", chosen):
+            raise ValueError(f"SCHUB_JOB_PREFIX must be a short name (letters, digits, - and _), got {chosen!r}")
+        return chosen
+    try:
+        usual = root.resolve() == _default_root(env).resolve()
+    except OSError:
+        usual = root == _default_root(env)
+    if usual:
+        return "schub"
+    return "schub-" + hashlib.sha256(str(root.resolve()).encode()).hexdigest()[:4]
+
+
 def _number(env: Mapping[str, str], key: str, default: float) -> float:
     raw = env.get(key)
     if raw is None or raw == "":
@@ -157,6 +177,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         python=python,
         library=Path(library).expanduser() if library else None,
         partition=env.get("SCHUB_PARTITION", DEFAULT_PARTITION),
+        job_prefix=job_prefix_for(root, env),
         limits=limits,
         extra_roots=extra,
         bench=load_bench_config(env),

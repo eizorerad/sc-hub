@@ -39,3 +39,20 @@ def test_settings_carry_bench_config_and_legacy_flag(tmp_path: Path) -> None:
     assert settings.legacy_tools is True
     assert settings.bench_dir == tmp_path / "bench"
     assert load_settings({"SCHUB_ROOT": str(tmp_path)}).legacy_tools is False
+
+
+def test_each_sc_hub_folder_of_an_account_has_its_own_job_names(tmp_path: Path, monkeypatch) -> None:
+    """Jobs are found by name: a second folder (the owner's test root) must not stop or adopt the first's."""
+    from schub import config
+
+    usual = tmp_path / "schub"
+    usual.mkdir()
+    (tmp_path / "link").symlink_to(usual)
+    monkeypatch.setattr(config, "_default_root", lambda env: usual)
+    assert load_settings({"SCHUB_ROOT": str(usual)}).job_prefix == "schub"
+    assert load_settings({"SCHUB_ROOT": str(tmp_path / "link")}).job_prefix == "schub"  # ~/schub is a link
+    other = load_settings({"SCHUB_ROOT": str(tmp_path / "test-root")}).job_prefix
+    assert other.startswith("schub-") and other == load_settings({"SCHUB_ROOT": str(tmp_path / "test-root")}).job_prefix
+    assert load_settings({"SCHUB_ROOT": str(tmp_path / "x"), "SCHUB_JOB_PREFIX": "sbt"}).job_prefix == "sbt"
+    with pytest.raises(ValueError, match="SCHUB_JOB_PREFIX"):
+        load_settings({"SCHUB_ROOT": str(tmp_path / "x"), "SCHUB_JOB_PREFIX": "a b"})

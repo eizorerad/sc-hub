@@ -26,6 +26,7 @@ import argparse
 import dataclasses
 import json
 import os
+import re
 import secrets
 import signal
 import sys
@@ -47,10 +48,11 @@ from .engines.base import Engine, McpServer, Outcome, Turn, credential_fingerpri
 from .engines.claude import Claude
 from .engines.codex import Codex
 from .engines import window
-from .engines.cooldown import Cooldown
+from .engines.cooldown import Cooldown, reset_hint
 from .engines.policy import PolicyError, load as load_policy, order
 from .fsio import read_json, write_json_atomic
 from .goal import Goal, GoalConfig, GoalError, parse_goal
+from .inbox import Inbox
 from .journal import Journal
 from .clock import stamp
 from .models import Actor, Checkpoint
@@ -59,18 +61,24 @@ from .workbench import PASS_THROUGH
 
 ADAPTERS: dict[str, Engine] = {"claude": Claude(), "codex": Codex()}
 TERMINAL = ("complete", "blocked")
-WORKED = ("ok", "timed_out", "failed")  # outcomes of a turn in which the engine did (or may have done) work
+SIGN_IN = {"claude": "claude auth login", "codex": "codex login --device-auth"}
+# Slurm will never start a job waiting for one of these: the model must hear of it, not wait forever
+# (JobHeldUser is left out: a hold the student placed on purpose)
+STUCK = re.compile(r"JobHeldAdmin|requeued.?held|held.?state|DependencyNeverSatisfied|BadConstraints|PartitionConfig|"
+                   r"PartitionTimeLimit|QOSMaxWallDurationPerJobLimit|Invalid(?:Account|QOS)|launch.?failed", re.I)
 MIN_TURN_S = 600  # the other engine takes over only with at least this much of the slice left
 REPORT_TURNS = 2  # writer turns for one report; then the goal ends without it (an incident says so)
 WRITING = ("due", "writing", "requested")
 
 
 def did_work(outcome: Outcome) -> bool:
-    """A usage limit can arrive mid-turn, after real work: that turn counts and its session is kept."""
-    if outcome.status in WORKED:
+    """A usage limit, a failure or a full context can arrive mid-turn, after real work (tool calls, model
+    turns, cost): that turn counts. One that failed before any work (a lost login, a broken CLI) is not
+    counted against the budget."""
+    if outcome.status in ("ok", "timed_out"):
         return True
-    return outcome.status == "usage_limited" and ((outcome.turns or 0) > 1 or bool(outcome.cost_usd)
-                                                  or bool(outcome.text))
+    return ((outcome.turns or 0) > 1 or bool(outcome.cost_usd) or bool(outcome.text)
+            or bool((outcome.details or {}).get("tool_calls")))
 ACTIVE = ("PENDING", "RUNNING", "CONFIGURING", "COMPLETING", "SUSPENDED", "REQUEUED")
 SYSTEM = Actor(kind="system", client="sc-hub lab agent")
 
@@ -137,6 +145,7 @@ class Slice:
         self.goal = Goal(settings, project)
         self.adapters = adapters
         self.cooldown = Cooldown(settings.bench_dir / "engine-cooldown.json")
+        self.stuck: list[str] = []  # waited-for jobs Slurm will never start (said in the prompt)
 
     # ---- the slice ----------------------------------------------------------------------
 
@@ -149,10 +158,12 @@ class Slice:
             return "invalid"
         if goal.stopped():
             goal.event("stop", job=self.job)
+            self._withdraw_queued("the lab agent was stopped")
             return "stopped"
         checkpoint = CheckpointStore(goal.project_dir).read()
         if report_since(goal, checkpoint) is None and (checkpoint.disposition in TERMINAL or goal.report_only):
             goal.event("terminal", job=self.job, disposition=checkpoint.disposition)
+            self._withdraw_queued(f"the lab agent's goal is {checkpoint.disposition or 'over'}")
             return "done"
         try:
             with self._lock():
@@ -163,6 +174,8 @@ class Slice:
 
     def _locked(self, config: GoalConfig, checkpoint) -> str:
         goal = self.goal
+        if report_since(goal, checkpoint) is None and goal.turns() >= config.max_turns:
+            return self._budget_spent(config)  # before arming: a successor would only find the goal over
         successor, created = self.arm_successor(config)
         self.successor = successor
         goal.event("successor", job=self.job, successor=successor, created=created)
@@ -184,6 +197,8 @@ class Slice:
             return "done"
         status = self._engine_turns(config, "research")
         checkpoint = store.read()
+        if checkpoint.disposition in TERMINAL:  # its research cells still queued have no reader now
+            self._withdraw_queued(f"the lab agent's goal is {checkpoint.disposition}")
         if config.report and checkpoint.disposition == "complete" and \
                 self.goal.report_state().get("for") != checkpoint.updated:
             self.goal.save_report_state({"for": checkpoint.updated, "status": "due", "writer_turns": 0,
@@ -196,11 +211,7 @@ class Slice:
     def _engine_turns(self, config: GoalConfig, role: str) -> str:
         goal = self.goal
         if role == "research" and goal.turns() >= config.max_turns:
-            CheckpointStore(goal.project_dir).write("blocked", reason=f"the goal's budget of {config.max_turns} "
-                                                    "turns is spent", actor=SYSTEM)
-            self._incident(f"The lab agent stopped: its budget of {config.max_turns} turns is spent. Raise "
-                           "max_turns in goal/goal.md and start it again to continue.")
-            return "budget"
+            return self._budget_spent(config)
         if role == "writer":
             self._start_writing()
         try:
@@ -229,9 +240,11 @@ class Slice:
                 break
             outcome = self.turn(engine, config, policy, role=role)
             status = outcome.status
+            if status == "failed" and not did_work(outcome):
+                continue  # nothing was done: the other engine may still answer
             if status != "usage_limited":
                 break
-            until = self.cooldown.mark(engine, outcome.error)
+            until = self.cooldown.mark(engine, outcome.error, resets=reset_hint(outcome.details))
             written = role == "writer" and self.goal.report_state().get("status") != "writing"
             self._incident(f"{engine} hit its usage limit; it pauses until {until.isoformat(timespec='minutes')}"
                            + (" and the other engine takes over." if len(engines) > 1 and not written else "."))
@@ -265,25 +278,48 @@ class Slice:
         if engine == "claude":
             window.record(self.settings.bench_dir, outcome.details.get("rate_limit"))
         write_json_atomic(run_dir / "outcome.json", dataclasses.asdict(outcome))
-        goal.event("turn_finished", job=self.job, engine=engine, status=outcome.status, role=role,
-                   session=outcome.session_id, cost_usd=outcome.cost_usd, turns=outcome.turns)
-        if outcome.status == "session_missing" and not rotated:
-            self._save_sessions(role, {**sessions, engine: None})
-            return self.turn(engine, config, policy, rotated=True, role=role)
         worked = did_work(outcome)
-        if worked:  # a turn refused for a usage limit before doing anything is neither counted nor kept
+        goal.event("turn_finished", job=self.job, engine=engine, status=outcome.status, role=role,
+                   session=outcome.session_id, cost_usd=outcome.cost_usd, turns=outcome.turns, worked=worked)
+        missing = outcome.status == "session_missing"
+        if worked:  # a turn refused (a usage limit, a failure) before doing anything is neither counted nor kept
             if not writing:
                 goal.count_turn(engine, self.job)
             self._log_usage(engine)
-        if outcome.session_id and worked:
+            self.cooldown.answered(engine)
+        if missing and not rotated:  # lost, or too full to go on (counted above if it worked first): a new one
+            self._save_sessions(role, {**sessions, engine: None})
+            if not writing and goal.turns() >= config.max_turns:
+                return outcome  # that turn spent the budget: the next slice ends the goal
+            return self.turn(engine, config, policy, rotated=True, role=role)
+        if outcome.session_id and worked and not missing:
             last = {} if writing else {"last": engine}
             self._save_sessions(role, {**sessions, engine: {"session_id": outcome.session_id,
                                                             "since": saved.get("since") or self.job}, **last})
         if writing and worked:
             self._after_writing()
-        if outcome.status == "failed":
+        if outcome.status == "failed" and worked:
             self._incident(f"The lab agent's {engine} turn failed: {outcome.error[-400:]}")
+        elif outcome.status == "failed":
+            self._engine_failing(engine, outcome)
+        elif missing:
+            self._incident(f"The lab agent's {engine} turn could not go on in a new session either: "
+                           f"{outcome.error[-300:]}")
         return outcome
+
+    def _engine_failing(self, engine: str, outcome: Outcome) -> None:
+        """A turn that failed before any work: paused longer each time in a row, one incident per pause."""
+        count, until = self.cooldown.failing(engine, outcome.error)
+        self.goal.event("engine_failing", job=self.job, engine=engine, in_a_row=count,
+                        paused_until=until.isoformat(timespec="minutes") if until else None)
+        if until is None:
+            return
+        self._incident(
+            f"{engine} failed {count} turns in a row before doing any work ({outcome.error[-300:].strip()}). "
+            f"The lab agent pauses it until {until.isoformat(timespec='minutes')} and tries again then; no turn "
+            f"is counted. If its sign-in on the cluster expired, sign in again (the setup page's \"Codex and "
+            f"Claude Code on the cluster\" step, or `{SIGN_IN[engine]}` on the cluster): the engine check then "
+            "ends the pause early.")
 
     def _ready(self, engine: str, policy) -> bool:
         """Not paused after a usage limit, and (Claude) not above the owner's weekly ceiling."""
@@ -376,6 +412,10 @@ class Slice:
         if missed:
             text += ["", "Since your last turn another engine worked on this goal: read the journal's new entries "
                      "and the hand-over before acting; your memory of the work is out of date."]
+        if self.stuck:
+            text += ["", "Slurm will never start the job(s) you wait for as they are: " + ", ".join(self.stuck)
+                     + ". Find out why (jobs view), then cancel and resubmit them fixed, or hand over as "
+                     "\"blocked\" when the student must act."]
         return "\n".join(text)
 
     def writer_prompt(self, config: GoalConfig) -> str:
@@ -477,11 +517,43 @@ class Slice:
             states = self.slurm.states(ids)
         except SlurmError:
             return ids  # Slurm did not answer: keep waiting rather than wake the model for nothing
-        if all(states.get(i, "").split(" ")[0] in ACTIVE for i in ids):
+        if not all(states.get(i, "").split(" ")[0] in ACTIVE for i in ids):
+            return []
+        try:
+            stuck = [f"{j.job_id} ({j.reason.strip('()')})" for j in self.slurm.my_jobs()
+                     if j.job_id in ids and j.state == "PENDING" and STUCK.search(j.reason)]
+        except SlurmError:
             return ids
-        return []
+        if stuck:  # waiting on these would last forever: the model decides (cancel and resubmit, or hand over)
+            self.stuck = stuck
+            self.goal.event("stuck_jobs", job=self.job, jobs=stuck)
+            return []
+        return ids
 
     # ---- records ----------------------------------------------------------------------
+
+    def _budget_spent(self, config: GoalConfig) -> str:
+        CheckpointStore(self.goal.project_dir).write("blocked", reason=f"the goal's budget of {config.max_turns} "
+                                                     "turns is spent", actor=SYSTEM)
+        self._incident(f"The lab agent stopped: its budget of {config.max_turns} turns is spent. Raise "
+                       "max_turns in goal/goal.md and start it again to continue.")
+        self._withdraw_queued("the lab agent's budget of turns is spent")
+        return "budget"
+
+    def _withdraw_queued(self, why: str) -> None:
+        """Research cells the lab agent queued that no workbench took yet: withdrawn, so no node runs them
+        for nobody. The student's own cells and the report writer's stay."""
+        def mine(request) -> bool:
+            return request.actor.kind == "lab_agent" and request.actor.role != "writer"
+
+        try:
+            gone = Inbox(self.settings.bench_dir).withdraw(
+                self.project, f"withdrawn before it started: {why}", mine)
+        except OSError as exc:
+            self.goal.event("withdraw_failed", job=self.job, error=str(exc)[:300])
+            return
+        if gone:
+            self.goal.event("withdrawn", job=self.job, cells=gone, why=why)
 
     def _incident(self, text: str) -> None:
         Journal(self.goal.project_dir, self.project).add_note("incident", text, audience="both", actor=SYSTEM)

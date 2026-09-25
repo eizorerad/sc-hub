@@ -75,8 +75,11 @@ def close(settings: Settings, job_id: str) -> None:
         pass
 
 
-LOG_ENDINGS = (("DUE TO TIME LIMIT", "TIMEOUT"), ("oom-kill", "OUT_OF_MEMORY"), ("Out Of Memory", "OUT_OF_MEMORY"),
-               ("DUE TO PREEMPTION", "PREEMPTED"), ("DUE TO NODE FAILURE", "NODE_FAIL"), ("CANCELLED AT", "CANCELLED"))
+# matched in lower case: this cluster's Slurm writes "Detected 1 oom_kill event ... OOM Killed", others "oom-kill"
+# (a GPU's "CUDA out of memory" is the cell's own error, not Slurm's memory limit)
+LOG_ENDINGS = (("due to time limit", "TIMEOUT"), ("oom-kill", "OUT_OF_MEMORY"), ("oom_kill", "OUT_OF_MEMORY"),
+               ("oom killed", "OUT_OF_MEMORY"), ("out of memory", "OUT_OF_MEMORY"), ("due to preemption", "PREEMPTED"),
+               ("due to node failure", "NODE_FAIL"), ("cancelled at", "CANCELLED"))
 
 
 def _reported(record: JobRecord) -> bool:
@@ -104,35 +107,40 @@ def reap(settings: Settings, slurm: Slurm) -> list[str]:
     for record in waiting:
         if record.job_id in active or _reported(record):  # still queued, or it reported just now
             continue
-        _record_end(settings, record, _final_state(slurm, record))
+        _record_end(settings, record, *_final_state(slurm, record))
         close(settings, record.job_id)
         ended.append(record.job_id)
     return ended
 
 
-def _final_state(slurm: Slurm, record: JobRecord) -> str:
+def _final_state(slurm: Slurm, record: JobRecord) -> tuple[str, str]:
+    """(state, log): Slurm's word if it still knows the job, else the log's last lines. A job without a log
+    never started (cancelled while queued, or it could not launch)."""
+    log = Path(record.job_dir) / f"slurm-{record.job_id}.log"
     try:
         known = slurm.states([record.job_id]).get(record.job_id)
     except SlurmError:
         known = None
     if known and known not in ACTIVE_STATES:
-        return known
-    log = Path(record.job_dir) / f"slurm-{record.job_id}.log"
+        return known, str(log) if log.exists() else ""
     try:
         with log.open("rb") as handle:
             handle.seek(max(0, log.stat().st_size - 8192))
-            tail = handle.read().decode(errors="replace")
+            tail = handle.read().decode(errors="replace").lower()
+            tail = tail.replace("cuda out of memory", "cuda oom").replace("cuda error: out of memory", "cuda oom")
+    except FileNotFoundError:
+        return "ENDED (never started: cancelled or not launched while queued)", ""
     except OSError:
-        return "ENDED"
-    return next((state for marker, state in LOG_ENDINGS if marker in tail), "ENDED")
+        return "ENDED", str(log)
+    return next((state for marker, state in LOG_ENDINGS if marker in tail), "ENDED"), str(log)
 
 
-def _record_end(settings: Settings, record: JobRecord, state: str) -> None:
+def _record_end(settings: Settings, record: JobRecord, state: str, log: str) -> None:
     cid = record.ref.partition("#")[2]
     journal = Journal(settings.projects_dir / record.project, record.project)
     try:
         journal.add_addendum(cid, f"jobend-{record.job_id}", {"kind": "job", "source": "watchdog", "job": {
             "job_id": record.job_id, "state": state if state != "COMPLETED" else "ENDED", "finished": stamp(),
-            "log": str(Path(record.job_dir) / f"slurm-{record.job_id}.log")}})
+            "log": log}})
     except (JournalError, OSError):
         pass

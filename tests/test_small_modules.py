@@ -90,3 +90,47 @@ def test_storage_hiccups_are_retried_but_real_errors_are_not():
     assert not transient(ValueError("errno = 14,"))
     with pytest.raises(ValueError):
         _run_with_retries(lambda: (_ for _ in ()).throw(ValueError("bad params")), pause_s=0)
+
+
+def test_import_bench_works_unless_the_project_has_its_own(tmp_path, monkeypatch):
+    """Agents write `import bench` (three cells on the test root failed on it)."""
+    import sys
+
+    from schub.bench import kernel_api
+
+    monkeypatch.delitem(sys.modules, "bench", raising=False)
+    kernel_api.alias()
+    import bench
+
+    assert bench is kernel_api
+    monkeypatch.delitem(sys.modules, "bench")
+    (tmp_path / "bench.py").write_text("OWN = True\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    kernel_api.alias()
+    assert "bench" not in sys.modules  # the project's own bench.py is left to import
+    import bench as own
+
+    assert own.OWN is True
+
+
+def test_an_interrupted_build_stops_everything_it_started(tmp_path):
+    """A cell interrupted during bench.packages / import_seurat must not leave uv or micromamba running."""
+    import time
+
+    import pytest
+
+    from schub.streaming import run_streamed
+
+    marker = tmp_path / "still-running"
+
+    class Interrupting:
+        def write(self, line):
+            raise KeyboardInterrupt
+
+    script = f"(sleep 2; touch {marker}) & echo started; wait"
+    with pytest.raises(KeyboardInterrupt):
+        run_streamed(["bash", "-c", script], Interrupting())
+    time.sleep(3)
+    assert not marker.exists()
+    assert run_streamed(["bash", "-c", "echo one; echo two; exit 3"], tmp_path.joinpath("log").open("w"), keep=1) == \
+        (3, ["two\n"])

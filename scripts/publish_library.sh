@@ -40,6 +40,25 @@ CREATED=0
 PUBLISHED=0
 
 log() { printf '[sc-hub library] %s\n' "$*"; }
+# The first folder on the way to $1 that other accounts cannot pass (no o+x; ACLs are not looked at).
+blocked_dir() {
+  local dir mode
+  dir="$(cd "$1" 2>/dev/null && pwd -P || printf '%s' "$1")"  # absolute: dirname of a relative path ends at "."
+  while [ -n "$dir" ] && [ "$dir" != "/" ] && [ "$dir" != "." ]; do
+    if [ -d "$dir" ]; then
+      mode="$(stat -c %a "$dir")"
+      if [ $(( 0$mode & 1 )) -eq 0 ]; then echo "$dir ($mode)"; return; fi
+    fi
+    dir="$(dirname "$dir")"
+  done
+}
+warn_if_unreachable() {
+  local blocked
+  blocked="$(blocked_dir "$LIB")"
+  [ -z "$blocked" ] || log "WARNING: students cannot reach $LIB: $blocked is closed to other accounts. Publish
+  into a folder whose parents are open (o+x), e.g. a course or project area; opening your home instead lets
+  others reach everything readable inside it."
+}
 die() { printf '[sc-hub library] ERROR: %s\n' "$*" >&2; exit 1; }
 
 layout() {
@@ -140,12 +159,14 @@ missing is downloaded into their own \$SCHUB_ROOT/library-local instead.
 EOF
   chmod 644 "$LIB/README.md"
   log "published $VERSION at $LIB"
+  warn_if_unreachable
 }
 
 main() {
   command -v sbatch >/dev/null || die "run this on the cluster login node"
   trap cleanup_on_failure EXIT
   layout
+  warn_if_unreachable
   install_uv
   snapshot_source
   build_in_job

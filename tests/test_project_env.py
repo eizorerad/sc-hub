@@ -60,3 +60,119 @@ def test_packages_build_on_what_is_installed_and_can_be_removed(hub, settings, c
     assert gone.job_id == "" and not (settings.root / "envs" / "crispr").exists()  # moved aside, deleted in the background
     with pytest.raises(HubError, match="not a package"):
         hub.add_project_packages("crispr", pip=["x; y"])
+
+
+FAKE_BUILD = """set -euo pipefail
+echo "resolving {pip}"
+mkdir -p {root}/{stamp}
+printf '%s\\n' '{{"pip": {pip_json}, "conda": [], "built": "{stamp}"}}' > {root}/{stamp}/packages.json
+ln -sfn {stamp} {root}/current
+"""
+
+
+def fake_build(settings, project, pip, conda, stamp):  # the real one needs uv and the network
+    import json
+
+    root = settings.root / "envs" / project.replace("/", ".")
+    if "broken" in pip:
+        return "echo 'No solution found when resolving dependencies'; exit 1\n"
+    return FAKE_BUILD.format(pip=" ".join(pip), pip_json=json.dumps(list(pip)), root=root, stamp=stamp)
+
+
+def test_bench_packages_builds_in_the_cell_and_keeps_the_old_build_on_failure(hub, settings, monkeypatch, capsys):
+    """From a bench cell: no job slot, the build's output in the cell, then the next cell's fresh kernel."""
+    from schub import project_env
+    from schub.bench import kernel_api
+
+    monkeypatch.setattr(project_env, "build_script", fake_build)
+    monkeypatch.setenv("SCHUB_ROOT", str(settings.root))
+    monkeypatch.setenv("SCHUB_PROJECT", "crispr")
+    assert kernel_api.packages() == {"pip": [], "conda": [], "built": ""}
+    first = kernel_api.packages(pip=["decoupler>=2"])
+    assert first["pip"] == ["decoupler>=2"] and "fresh kernel" in first["next"]
+    assert "resolving decoupler>=2" in capsys.readouterr().out
+    assert kernel_api.packages()["pip"] == ["decoupler>=2"]
+    with pytest.raises(RuntimeError, match="No solution found"):
+        kernel_api.packages(pip=["broken"])
+    assert built(settings, "crispr").pip == ("decoupler>=2",)  # the previous build stays
+    with pytest.raises(RuntimeError, match="not a package"):
+        kernel_api.packages(pip=["x; rm -rf ~"])
+    assert kernel_api.packages(pip="scvelo")["pip"] == ["decoupler>=2", "scvelo"]  # one name, not six letters
+    monkeypatch.delenv("SCHUB_PROJECT")
+    with pytest.raises(RuntimeError, match="bench cell"):
+        kernel_api.packages(pip=["decoupler"])
+
+
+def test_a_new_build_moves_the_projects_next_cell_to_a_fresh_kernel(hub, settings, monkeypatch):
+    from types import SimpleNamespace
+
+    from schub.bench import worker as worker_module
+    from schub.bench.worker import ProjectWorker
+
+    started = []
+
+    class Kernel:
+        def __init__(self, name, cwd, env, epoch):
+            self.name, self.epoch, self.up = name, epoch, False
+
+        def start(self):
+            self.up = True
+            started.append((self.name, self.epoch))
+
+        def alive(self):
+            return self.up
+
+        def shutdown(self):
+            self.up = False
+
+    kernels = settings.root / "jupyter-kernels"  # stands in for ~/.local/share/jupyter/kernels
+    monkeypatch.setattr(worker_module, "kernel_dir", lambda project: kernels / f"schub-{project}")
+    monkeypatch.setattr(worker_module, "prime", lambda kernel: True)
+    host = SimpleNamespace(settings=settings, job_id="9", kernel_factory=Kernel, now=lambda: "2026-09-25T00:00:00Z")
+    worker = ProjectWorker(host, "crispr")  # type: ignore[arg-type]
+    project_dir = settings.projects_dir / "crispr"
+    first = worker._ensure_kernel(project_dir)
+    assert first.name == "python3" and worker._ensure_kernel(project_dir) is first  # the same kernel, variables kept
+    build = settings.root / "envs" / "crispr" / "20260925-000000"
+    build.mkdir(parents=True)
+    (build / "packages.json").write_text('{"pip": ["decoupler"], "conda": [], "built": "20260925-000000"}')
+    (settings.root / "envs" / "crispr" / "current").symlink_to(build.name)
+    (kernels / "schub-crispr").mkdir(parents=True)
+    (kernels / "schub-crispr" / "kernel.json").write_text("{}")
+    second = worker._ensure_kernel(project_dir)
+    assert second is not first and not first.up and second.name == "schub-crispr"
+    assert [e for _, e in started] == ["9.1", "9.2"]
+    notes = [e.text for e in worker_module.Journal(project_dir, "crispr").entries(kinds=("incident",), limit=5)]
+    assert any("environment changed" in n for n in notes)
+    (build / "packages.json").unlink()
+    (build / "packages.json").mkdir()  # reading it now fails (as a file-server error would): no restart
+    assert worker._ensure_kernel(project_dir) is second and second.up
+
+
+def test_a_kernel_started_while_the_build_was_unreadable_is_not_restarted_for_it(hub, settings, monkeypatch):
+    from types import SimpleNamespace
+
+    from schub.bench import worker as worker_module
+    from schub.bench.worker import ProjectWorker
+
+    class Kernel:
+        def __init__(self, name, cwd, env, epoch):
+            self.name, self.up = name, False
+
+        def start(self):
+            self.up = True
+
+        def alive(self):
+            return self.up
+
+        def shutdown(self):
+            self.up = False
+
+    readings = iter([None, None, ("python3", "")])  # unreadable at start, then read fine
+    monkeypatch.setattr(ProjectWorker, "_environment", lambda self: next(readings))
+    monkeypatch.setattr(worker_module, "prime", lambda kernel: True)
+    host = SimpleNamespace(settings=settings, job_id="9", kernel_factory=Kernel, now=lambda: "2026-09-25T00:00:00Z")
+    worker = ProjectWorker(host, "crispr")  # type: ignore[arg-type]
+    first = worker._ensure_kernel(settings.projects_dir / "crispr")
+    assert worker._ensure_kernel(settings.projects_dir / "crispr") is first
+    assert worker._ensure_kernel(settings.projects_dir / "crispr") is first and worker.kernel_env == ("python3", "")

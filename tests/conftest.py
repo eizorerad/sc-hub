@@ -105,6 +105,7 @@ class FakeCluster:
         self.comments: dict[str, str] = {}
         self.updates: list[dict[str, str]] = []
         self.slurm_down = False  # squeue/scontrol time out, as when the controller restarts
+        self.reasons: dict[str, str] = {}  # squeue's reason of a job (default "None")
 
     def _ok(self, args: Sequence[str], out: str = "") -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(list(args), 0, out, "")
@@ -145,8 +146,8 @@ class FakeCluster:
             return self._ok(args, "".join(rows))
         if "--me" in args:
             wide = args[args.index("-o") + 1].count("|") >= 5
-            extra = "|0:42|None|ws-ia|1:00:00|N/A" if wide else ""
-            rows = [f"{i}|{self.names[i]}|{s}{extra}\n" for i, s in self.jobs.items() if s in self.ACTIVE]
+            rows = [f"{i}|{self.names[i]}|{s}" + (f"|0:42|{self.reasons.get(i, 'None')}|ws-ia|1:00:00|N/A" if wide else "")
+                    + "\n" for i, s in self.jobs.items() if s in self.ACTIVE]
             return self._ok(args, "".join(rows))
         ids = args[args.index("-j") + 1].split(",")
         if args[args.index("-o") + 1] == "%N|%P":  # Slurm.node_of
