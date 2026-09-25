@@ -28,6 +28,10 @@ if mode == "missing":
     print("No conversation found with session ID: " + session, file=sys.stderr); sys.exit(1)
 if mode == "broken":
     print("Invalid API key · Please run /login", file=sys.stderr); sys.exit(1)
+if mode == "toolhang":  # one tool call, then the turn runs past its deadline
+    print(json.dumps({"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "mcp__schub__run"}]}}),
+          flush=True)
+    time.sleep(60)
 if mode in ("failwork", "toolong", "fullwork"):
     print(json.dumps({"type": "result", "subtype": "error_during_execution", "is_error": True,
                       "result": "API Error: 500 Internal server error" if mode == "failwork" else "Prompt is too long",

@@ -160,7 +160,8 @@ class Cooldown:
         parsed = resets if resets is not None and resets > now else parse_reset(text, now)
         with self._changing() as state:
             previous = state.get(engine) if isinstance(state.get(engine), dict) else {}
-            streak = int(previous.get("streak", 1)) + 1 if self._again(previous, now) else 1
+            unnamed = parsed is None and not previous.get("parsed")  # a named reset starts a new episode
+            streak = int(previous.get("streak", 1)) + 1 if unnamed and self._again(previous, now) else 1
             if parsed is not None:
                 until = parsed
             else:

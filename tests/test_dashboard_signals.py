@@ -64,3 +64,12 @@ def test_cells_that_never_ran_are_not_counted(settings: Settings) -> None:
                                  created=journal.now(), status="ok"))
     [card] = [c for c in journal_cards(settings, queue=()) if c.project == "p"]
     assert card.cells == 1 and card.total_entries == 1 and withdrawn == "c0002"
+
+
+def test_every_ending_without_a_result_is_explained() -> None:
+    from schub.bench.jobs import bad_ending
+
+    assert bad_ending("ENDED (never started: cancelled or not launched while queued)") == bad_ending("NOT_STARTED")
+    assert bad_ending("FAILED").startswith("failed: its log and this entry's outputs")
+    assert bad_ending("ENDED (no result yet)").startswith("ended without reporting")
+    assert bad_ending("COMPLETED") is None and bad_ending("RUNNING") is None and bad_ending("CANCELLED") is None

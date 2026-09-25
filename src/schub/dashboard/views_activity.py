@@ -16,7 +16,9 @@ REASONS = {
     "QOSMaxJobsPerUserLimit": "waiting for a free slot (max 2 running jobs per user on ws-ia)",
     "QOSMaxCpuPerUserLimit": "waiting: your jobs already use the per-user CPU limit",
     "QOSMaxMemoryPerUser": "waiting: your jobs already use the per-user memory limit",
-    "QOSMaxGRESPerUser": "waiting: your jobs already use your GPU",
+    "QOSMaxGRESPerUser": "waiting: your jobs already use your GPU limit",
+    "AssocGrpGRES": "waiting: your group's GPUs are all in use",
+    "JobArrayTaskLimit": "waiting: the array's other tasks run first",
     "Dependency": "waiting for the previous step",
     "DependencyNeverSatisfied": "blocked: a previous step failed; cancel this job",
     "Resources": "waiting for free nodes",
@@ -45,7 +47,7 @@ def reason(raw: str) -> str:
 OTHER_FOLDER = re.compile(r"[0-9a-f]{4}-")  # "schub-8aec-...": another sc-hub folder of this account
 
 
-def _is_ours(snap: Snapshot, job: QueueJob) -> bool:
+def is_ours(snap: Snapshot, job: QueueJob) -> bool:
     """A job of this sc-hub folder: its prefix and a dash; with the usual prefix, not another folder's."""
     if not job.name.startswith(snap.job_prefix + "-"):
         return False
@@ -73,7 +75,7 @@ def _job_rows(jobs: list[QueueJob]) -> list[tuple[str, str]]:
 
 
 def _ours(snap: Snapshot) -> list[QueueJob]:
-    return [j for j in snap.jobs if _is_ours(snap, j)]
+    return [j for j in snap.jobs if is_ours(snap, j)]
 
 
 def live_counts(snap: Snapshot) -> tuple[int, int]:
@@ -102,7 +104,7 @@ def render_queue(snap: Snapshot) -> str:
     if snap.jobs_error:
         return f'<p class="note bad">The queue could not be read: {esc(snap.jobs_error)}</p>'
     ours = _ours(snap)
-    others = [j for j in snap.jobs if not _is_ours(snap, j)]
+    others = [j for j in snap.jobs if not is_ours(snap, j)]
     headers = ("Job", "Name", "State", "Partition", "Progress or why it waits")
     html = (listing(headers, _job_rows(ours), "Filter jobs", key="jobs-schub") if ours
             else '<p class="empty">No sc-hub jobs in the queue.</p>')

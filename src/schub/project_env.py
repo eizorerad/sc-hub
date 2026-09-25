@@ -32,6 +32,7 @@ from .bricks import Resources
 from .config import Settings
 from .slurm import JobSpec, Slurm, render_script
 from .state import Frozen
+from .locking import LockTimeout, exclusive
 from .streaming import run_streamed
 
 # A requirement like "harmonypy", "decoupler>=1.6", "r-seurat=5.1" (no URLs or paths).
@@ -134,8 +135,14 @@ def _install_micromamba(settings: Settings, out=None) -> None:
         raise EnvError("micromamba is not available and this sc-hub cannot install it; ask the library owner, or "
                        "use pip packages")
     settings.local_library.mkdir(parents=True, exist_ok=True)
-    code, tail = run_streamed(["bash", str(BUILD_TOOLS), str(settings.local_library)], out,
-                              env={**os.environ, "SCHUB_TOOLS": "micromamba"}, keep=10)
+    try:  # the R + Seurat build installs it too: one writer at a time
+        with exclusive(settings.local_library / ".r-seurat.lock", wait_s=3600, stale_after_s=300, heartbeat_s=30):
+            if _tool(settings, "micromamba") is not None:
+                return  # installed while this build waited
+            code, tail = run_streamed(["bash", str(BUILD_TOOLS), str(settings.local_library)], out,
+                                      env={**os.environ, "SCHUB_TOOLS": "micromamba"}, keep=10)
+    except LockTimeout:
+        raise EnvError("another build has been installing micromamba for an hour; ask again later") from None
     if code != 0 or _tool(settings, "micromamba") is None:
         raise EnvError(f"installing micromamba failed (exit {code}):\n" + "".join(tail))
 
@@ -218,7 +225,7 @@ def build_script(settings: Settings, project: str, pip: Sequence[str], conda: Se
     display = f"sc-hub: {project}"
     # ${PATH} is filled in by Jupyter from the launching process: the runner's PATH (engine guards, sbatch)
     # stays, the project's conda tools come first
-    path_env = ' --env PATH "$NEW/conda/bin:\${PATH}"' if conda else ""
+    path_env = r' --env PATH "$NEW/conda/bin:\${PATH}"' if conda else ""
     lines += [
         '"$NEW/venv/bin/python" -c "import scanpy, sys; print(\'environment works on\', sys.version.split()[0])"',
         f"printf '%s\\n' {q(record)} > packages.json",

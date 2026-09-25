@@ -209,7 +209,7 @@ def test_a_new_sign_in_ends_the_pause_at_the_next_slice(lab: Settings, cluster: 
     [delay] = [u for u in cluster.updates if "StartTime" in u]
     assert result == "paused" and delay["StartTime"] in ("now+60minutes", "now+61minutes")
     monkeypatch.setenv("FAKE_CLAUDE", "ok")
-    monkeypatch.setattr(goal_agent, "credential_fingerprint", lambda engine: "a-new-login")  # the student signed in
+    monkeypatch.setattr(goal_agent, "sign_in_fingerprint", lambda engine: "a-new-login")  # the student signed in
     _, result = next_slice(lab, cluster, fourth)
     assert result == "ok" and cooldown(lab).ready("claude") and Goal(lab, "p").turns() == 1
     assert any(e["event"] == "signed_in_again" for e in Goal(lab, "p").events())
@@ -240,9 +240,17 @@ def test_a_wait_of_more_than_a_day_wakes_the_model(lab: Settings, cluster: FakeC
     data = json.loads(path.read_text())
     data["updated"] = (datetime.now(timezone.utc) - timedelta(hours=30)).isoformat()
     path.write_text(json.dumps(data))
-    _, result = next_slice(lab, cluster, first)
+    second, result = next_slice(lab, cluster, first)
     prompt = engine_calls()[-1]["argv"][engine_calls()[-1]["argv"].index("-p") + 1]
-    assert result == "ok" and "waited on for over 24 hours" in prompt
+    assert result == "ok" and "pending for over 24 hours" in prompt and "hand over as \"waiting\" again" in prompt
+    cluster.jobs["777"] = "RUNNING"  # a long job that runs: nothing to look at, the wait goes on
+    store.write("waiting", next_action="x", waiting_jobs=[WaitingJob(job_id="777")])
+    data = json.loads(path.read_text())
+    data["updated"] = (datetime.now(timezone.utc) - timedelta(hours=30)).isoformat()
+    path.write_text(json.dumps(data))
+    calls = len(engine_calls())
+    _, result = next_slice(lab, cluster, second)
+    assert result == "waiting" and len(engine_calls()) == calls
 
 
 def test_a_hanging_engine_is_treated_like_a_failing_one(lab: Settings, cluster: FakeCluster, monkeypatch) -> None:

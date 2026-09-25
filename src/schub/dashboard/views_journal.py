@@ -21,7 +21,7 @@ from typing import Any, Iterable
 from urllib.parse import quote
 
 from ..bench.inbox import slug
-from ..bench.jobs import BAD_ENDINGS
+from ..bench.jobs import bad_ending
 from .collect_journal import BenchPanel, JournalCard
 from .html import esc, hint, pill
 
@@ -320,14 +320,14 @@ def _job_word(state: str) -> str:
 
 
 def _job_css(state: str) -> str:
-    if state in BAD_ENDINGS:
-        return "FAILED"  # it ended without its result: nothing it would have written exists
+    if bad_ending(state):
+        return "FAILED"  # it ended without its result, or its code failed
     return state if state in ("COMPLETED", "RUNNING", "PENDING") else "CANCELLED"
 
 
 def _failed(entry: dict[str, Any]) -> bool:
     return (entry["status"] in ("error", "lost") or any(c["status"] in ("fail", "error") for c in entry["checks"])
-            or any(j["state"] in BAD_ENDINGS for j in entry["jobs"]))
+            or any(bad_ending(j["state"]) for j in entry["jobs"]))
 
 
 def _summary_marks(entry: dict[str, Any]) -> str:

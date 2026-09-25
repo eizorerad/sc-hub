@@ -45,7 +45,7 @@ from ..projects import ProjectError, ProjectStore
 from ..slurm import JobSpec, Slurm, SlurmError, render_script
 from .checkpoint import CheckpointStore
 from .engines.base import (LABELS, SIGN_IN_HOW, Engine, McpServer, Outcome, Turn, credential_fingerprint,
-                           install_guards)
+                           install_guards, sign_in_fingerprint)
 from .engines.claude import Claude
 from .engines.codex import Codex
 from .engines import window
@@ -160,6 +160,7 @@ class Slice:
         self.adapters = adapters
         self.cooldown = Cooldown(settings.bench_dir / "engine-cooldown.json")
         self.stuck: list[str] = []  # waited-for jobs Slurm will never start (said in the prompt)
+        self.slow: list[str] = []  # waited-for jobs still pending after LONG_WAIT_H (said in the prompt)
 
     # ---- the slice ----------------------------------------------------------------------
 
@@ -328,20 +329,21 @@ class Slice:
     def _engine_failing(self, engine: str, outcome: Outcome) -> None:
         """A turn that failed before any work: paused longer each time in a row, one incident per pause."""
         count, until = self.cooldown.failing(engine, outcome.error or outcome.status,
-                                             login=credential_fingerprint(engine))
+                                             login=sign_in_fingerprint(engine))
         self.goal.event("engine_failing", job=self.job, engine=engine, in_a_row=count,
                         paused_until=until.isoformat(timespec="minutes") if until else None)
         if until is None:
             return
+        why = outcome.error[-300:].strip() if outcome.error else "no answer before the turn's time limit"
+        pace = self.goal.config().pace_minutes
         self._incident(
-            f"{LABELS[engine]} on the cluster failed {count} times in a row before doing any work "
-            f"({(outcome.error or outcome.status)[-300:].strip()}). No turn is counted; the lab agent tries it "
-            f"again at {when(until)}. If its sign-in expired, sign in again: {SIGN_IN_HOW}. The lab agent "
-            "notices a new sign-in within the hour.")
+            f"{LABELS[engine]} on the cluster failed {count} times in a row before doing any work ({why}). No turn "
+            f"is counted; the lab agent tries it again at {when(until)}. If its sign-in expired, sign in again: "
+            f"{SIGN_IN_HOW}. The lab agent notices a new sign-in within {pace} minutes.")
 
     def _ready(self, engine: str, policy) -> bool:
         """Not paused after a usage limit, and (Claude) not above the owner's weekly ceiling."""
-        if self.cooldown.relogged(engine, credential_fingerprint(engine)):
+        if self.cooldown.relogged(engine, sign_in_fingerprint(engine)):
             self.goal.event("signed_in_again", job=self.job, engine=engine)  # its failing pause ends
         if not self.cooldown.ready(engine):
             return False
@@ -440,6 +442,11 @@ class Slice:
                      "(e.g. a shorter --time), or hand over as \"blocked\" when the student must act. A hold "
                      "placed by the cluster's admins (JobHeldAdmin) is theirs: hand over as \"blocked\", do not "
                      "work around it."]
+        if self.slow:
+            text += ["", f"The job(s) you wait for have been pending for over {LONG_WAIT_H} hours: "
+                     + ", ".join(self.slow) + ". Look at them with cluster(). If they only queue behind other "
+                     "work, hand over as \"waiting\" again; if they can never start as they are, cancel with "
+                     "stop(<job id>) and resubmit them fixed."]
         return "\n".join(text)
 
     def writer_prompt(self, config: GoalConfig) -> str:
@@ -548,11 +555,14 @@ class Slice:
                      if j.job_id in ids and j.state == "PENDING" and STUCK.search(j.reason)]
         except SlurmError:
             return ids
-        if not stuck and _hours_since(checkpoint.updated) > LONG_WAIT_H:  # e.g. behind a parent that is stuck
-            stuck = [f"{i} (waited on for over {LONG_WAIT_H} hours)" for i in ids]
         if stuck:  # waiting on these would last forever: the model decides (cancel and resubmit, or hand over)
             self.stuck = stuck
             self.goal.event("stuck_jobs", job=self.job, jobs=stuck)
+            return []
+        pending = [i for i in ids if states.get(i, "").split(" ")[0] == "PENDING"]
+        if pending and _hours_since(checkpoint.updated) > LONG_WAIT_H:  # e.g. behind a parent that is stuck
+            self.slow = pending
+            self.goal.event("long_wait", job=self.job, jobs=pending)
             return []
         return ids
 

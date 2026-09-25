@@ -90,6 +90,8 @@ def check_request(settings: Settings, rds: str, name: str) -> tuple[Path, Path]:
     path = Path(rds).expanduser()
     path = (path if path.is_absolute() else settings.root / path).resolve()
     roots = [r.resolve() for r in settings.allowed_roots if r.exists()]
+    if not path.exists():
+        raise SeuratImportError(f"{path} does not exist")
     if path.suffix.lower() != ".rds" or not path.is_file() or not any(path.is_relative_to(r) for r in roots):
         raise SeuratImportError(f"'{rds}' is not an .rds file inside your sc-hub folder (or a library); copy it into "
                                 f"{settings.data_dir} or the project's data/")

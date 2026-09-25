@@ -89,8 +89,17 @@ BAD_ENDINGS = {
     "NODE_FAIL": "lost its node: send it again",
     "BOOT_FAIL": "lost its node: send it again",
     "DEADLINE": "passed its deadline: send it again",
-    "FAILED": "failed before reporting (see its log)",
+    "FAILED": "failed: its log and this entry's outputs show the error; fix it and send the job again",
+    "PREEMPTED": "was preempted by a higher-priority job: send it again",
+    "ENDED": "ended without reporting its result: its log says why",
 }
+
+
+def bad_ending(state: str) -> str | None:
+    """Why a job left nothing, for a state that means so (None for a running or completed one)."""
+    if state.startswith("ENDED (never started"):  # the wording of records written before NOT_STARTED
+        return BAD_ENDINGS["NOT_STARTED"]
+    return BAD_ENDINGS.get(state.split(" (")[0])
 
 def _reported(record: JobRecord) -> bool:
     return (Path(record.job_dir) / "result.json").exists()

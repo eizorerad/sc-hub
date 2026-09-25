@@ -377,3 +377,21 @@ def test_the_probe_is_due_only_for_engines_in_use(settings: Settings) -> None:
     assert [line.split(":")[0] for line in summary(settings)] == ["claude"]
     engine_policy.set_mode(settings.bench_dir / "engine-policy.json", "mixed")
     assert probe_module.due(settings) is True
+
+
+def test_a_turn_that_ran_past_its_deadline_keeps_the_evidence_of_its_work(fakes, tmp_path: Path, monkeypatch) -> None:
+    """Killed at the slice's end after a tool call: it did work (counted), it did not fail to start."""
+    monkeypatch.setenv("FAKE_CLAUDE", "toolhang")
+    outcome = Claude().run(turn(tmp_path, session_id="s-1", timeout_s=2))
+    assert outcome.status == "timed_out" and outcome.details["tool_calls"] == 1
+    from schub.bench.goal_agent import did_work
+
+    assert did_work(outcome)
+
+
+def test_a_policy_file_from_before_the_ceiling_default_gets_it(tmp_path: Path) -> None:
+    path = tmp_path / "engine-policy.json"
+    path.write_text(json.dumps({"mode": "mixed", "claude_weekly_ceiling": 0.0}))  # written by an older sc-hub
+    assert load(path).claude_weekly_ceiling == 0.8
+    engine_policy.set_mode(path, "mixed", claude_weekly_ceiling=0.0)  # the owner's explicit choice now
+    assert load(path).claude_weekly_ceiling == 0.0 and json.loads(path.read_text())["version"] == 2
