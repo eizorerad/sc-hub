@@ -124,6 +124,13 @@ def test_the_whole_onboarding_from_the_page(helper) -> None:
     assert "Host mbzuai-schub-ide" not in config  # no editor, no shell into the job
     codex = (paths.home / ".codex" / "config.toml").read_text()
     assert "[mcp_servers.schub]" in codex and "/l/users/test.user/schub/bin/schub-mcp" in codex and str(paths.ssh_config) in codex
+    # sc-hub only where the student asks for it: off in general, on in the (trusted) workspace, a skill to start it
+    assert "enabled = false" in codex and f'[projects.{json.dumps(str(paths.workspace))}]' in codex
+    assert "enabled = true" in (paths.workspace / ".codex" / "config.toml").read_text()
+    skill = (paths.home / ".codex" / "skills" / "schub" / "SKILL.md").read_text()
+    assert skill.startswith("---\nname: schub\n") and "$schub" in skill and str(paths.workspace) in skill
+    assert "allow_implicit_invocation: false" in (paths.home / ".codex" / "skills" / "schub" / "agents" /
+                                                  "openai.yaml").read_text()
     assert (paths.workspace / "AGENTS.md").exists() and (paths.workspace / "schub-view").exists()
     # research there; the way back to fixing sc-hub names the folder the setup ran from
     assert f"(sc-hub setup folder: {ONBOARD.parent})" in (paths.workspace / "AGENTS.md").read_text()
@@ -391,3 +398,75 @@ def test_writing_the_block_twice_keeps_one(tmp_path: Path) -> None:
     write_block(config, "# >>> sc-hub >>>\nHost a\n# <<< sc-hub <<<\n")
     write_block(config, "# >>> sc-hub >>>\nHost b\n# <<< sc-hub <<<\n")
     assert config.read_text() == "# >>> sc-hub >>>\nHost b\n# <<< sc-hub <<<\nHost other\n    User me\n"
+
+
+
+def test_codex_keeps_what_the_student_wrote(tmp_path) -> None:
+    """A trust table the student already has is not defined twice (Codex would not start); a server they wrote
+    by hand is left alone."""
+    from sc_hub_onboard import assistants
+    from sc_hub_onboard.sshkit import Paths
+
+    paths = Paths(home=tmp_path / "home")
+    workspace = assistants.workspace(paths, ONBOARD.parent)
+    config = paths.home / ".codex" / "config.toml"
+    config.parent.mkdir(parents=True)
+    table = f'[projects.{json.dumps(str(workspace))}]'
+    config.write_text(f'model = "x"\n\n{table}\ntrust_level = "trusted"\n')
+    assistants.codex(paths, "/l/users/u/schub", workspace, ONBOARD.parent)
+    assert config.read_text().count(table) == 1 and "enabled = false" in config.read_text()
+    assistants.codex(paths, "/l/users/u/schub", workspace, ONBOARD.parent)  # a re-run replaces its own block
+    assert config.read_text().count("[mcp_servers.schub]") == 1
+    config.write_text('[mcp_servers.schub]\ncommand = "mine"\n')
+    assert "by hand" in assistants.codex(paths, "/l/users/u/schub", workspace, ONBOARD.parent)
+    assert config.read_text() == '[mcp_servers.schub]\ncommand = "mine"\n'
+
+
+def test_codex_trust_written_another_way_and_tables_codex_added_survive(tmp_path) -> None:
+    import sys
+
+    import pytest
+
+    from sc_hub_onboard import assistants
+    from sc_hub_onboard.sshkit import BEGIN, END, Paths
+
+    if sys.version_info < (3, 11):
+        pytest.skip("tomllib (Python 3.11+) tells the ways a table can be written apart")
+    import tomllib
+
+    paths = Paths(home=tmp_path / "home")
+    workspace = assistants.workspace(paths, ONBOARD.parent)
+    config = paths.home / ".codex" / "config.toml"
+    config.parent.mkdir(parents=True)
+    config.write_text(f"[projects.'{workspace}']\ntrust_level = \"trusted\"\n")  # single quotes: another spelling
+    assistants.codex(paths, "/l/users/u/schub", workspace, ONBOARD.parent)
+    tomllib.loads(config.read_text())  # still valid: the table was not defined twice
+    # Codex itself appended a table after sc-hub's last one, inside the block
+    text = config.read_text().replace(END, "[features]\nmulti_agent = true\n" + END)
+    config.write_text(text)
+    assistants.codex(paths, "/l/users/u/schub", workspace, ONBOARD.parent)
+    data = tomllib.loads(config.read_text())
+    assert data["features"]["multi_agent"] is True and config.read_text().count(BEGIN) == 1
+    config.write_text("model = \n")  # broken already: sc-hub does not touch it
+    assert "not valid TOML" in assistants.codex(paths, "/l/users/u/schub", workspace, ONBOARD.parent)
+    assert config.read_text() == "model = \n"
+
+
+
+def test_without_a_toml_parser_only_the_quoted_folder_counts_as_trusted(tmp_path, monkeypatch) -> None:
+    import builtins
+
+    from sc_hub_onboard import assistants
+
+    real_import = builtins.__import__
+
+    def no_tomllib(name, *args, **kwargs):  # Python 3.9/3.10: macOS's own python3 has none
+        if name == "tomllib":
+            raise ImportError(name)
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_tomllib)
+    workspace = tmp_path / "sc-hub-workspace"
+    assert assistants._trusted(f'[projects."{workspace}"]\n', workspace)
+    assert assistants._trusted(f"[projects.'{workspace}']\n", workspace)
+    assert not assistants._trusted(f'[projects."{workspace}-old"]\n', workspace)  # only a name that starts the same

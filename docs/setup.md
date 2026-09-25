@@ -30,8 +30,10 @@ something only where it has to:
    first time).
 4. **A first run**: a kernel cell and a small Slurm job with a check, in the
    project `hello`.
-5. **Your assistants**: Codex (also in the ChatGPT desktop app), Claude Code and
-   Claude Desktop get the sc-hub MCP server; `~/sc-hub-workspace` is created.
+5. **Your assistants**: `~/sc-hub-workspace` is created, and sc-hub is switched on
+   there only. Codex gets the skill `$schub` and Claude Code `/schub`; in other folders
+   they work without sc-hub. Claude Desktop (a chat app that reaches the cluster only
+   through sc-hub) gets the server as before.
 6. **VS Code in your workbench job**: the host `mbzuai-schub-ide` gives VS Code
    (Remote-SSH) a shell and files inside your own workbench job, which it starts
    if needed; set up once, it works for every later job.
@@ -105,10 +107,18 @@ must be open to other accounts (o+x): a private home (0700) is not, and
    node; at the end it limits the key to sc-hub (see below);
 2. copies sc-hub to `/l/users/LOGIN/schub` and sets up the workspace there in a
    Slurm job (its own environment, or a shared library's if one is set);
-3. connects sc-hub to every assistant it finds: **Codex** (also Codex inside the
-   ChatGPT desktop app), **Claude Code** and **Claude Desktop**;
-4. creates `~/sc-hub-workspace` with instructions for the assistant (`AGENTS.md`,
-   `CLAUDE.md`) and `schub-view` for the dashboard (`schub-view.cmd` on Windows).
+3. creates `~/sc-hub-workspace` with instructions for the assistant (`AGENTS.md`,
+   `CLAUDE.md`) and `schub-view` for the dashboard (`schub-view.cmd` on Windows);
+4. connects sc-hub there, and only there: **Codex** (its server is off in
+   `~/.codex/config.toml` and on in the workspace's `.codex/config.toml`, a trusted
+   folder; skill `~/.codex/skills/schub`, typed as `$schub`), **Claude Code** (server
+   registered for the workspace folder, `claude mcp add -s local`; skill
+   `~/.claude/skills/schub`, typed as `/schub`) and **Claude Desktop**.
+
+Working without sc-hub stays open: in any other folder the assistants do not see it,
+and on the cluster you can use your own login (`ssh LOGIN@login-student-lab.mbzu.ae`,
+your password) with Codex or Claude Code in your own folders. sc-hub's key opens only
+sc-hub, and sc-hub keeps to `/l/users/LOGIN/schub`.
 
 The key opens sc-hub only: its line in `~/.ssh/authorized_keys` on the cluster
 starts with `restrict,port-forwarding,command="<root>/bin/schub-gate"`, which

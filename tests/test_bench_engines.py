@@ -236,9 +236,10 @@ def test_pinned_replaces_the_callers_model() -> None:
     policy = EnginePolicy(claude_model="opus-x", claude_effort="high", codex_model="gpt-x")
     assert pinned("claude", ["-p", "hi", "--model", "cheap", "--effort=low"], policy) == \
         ["-p", "hi", "--model", "opus-x", "--effort", "high"]
-    assert pinned("claude", ["-p", "hi"], EnginePolicy()) == ["-p", "hi"]
+    assert pinned("claude", ["-p", "hi"], EnginePolicy(claude_effort="")) == ["-p", "hi"]
+    assert pinned("claude", ["-p", "hi"], EnginePolicy()) == ["-p", "hi", "--effort", "xhigh"]  # the default effort
     assert pinned("codex", ["exec", "-m", "cheap", "-c", 'model="cheap"', "--json", "go"], policy) == \
-        ["exec", "-c", 'model="gpt-x"', "--json", "go"]
+        ["exec", "-c", 'model="gpt-x"', "-c", 'model_reasoning_effort="xhigh"', "--json", "go"]
 
 
 def guard_env(settings: Settings, tmp_path: Path) -> dict[str, str]:
@@ -394,7 +395,7 @@ def test_a_policy_file_from_before_the_ceiling_default_gets_it(tmp_path: Path) -
     path.write_text(json.dumps({"mode": "mixed", "claude_weekly_ceiling": 0.0}))  # written by an older sc-hub
     assert load(path).claude_weekly_ceiling == 0.8
     engine_policy.set_mode(path, "mixed", claude_weekly_ceiling=0.0)  # the owner's explicit choice now
-    assert load(path).claude_weekly_ceiling == 0.0 and json.loads(path.read_text())["version"] == 2
+    assert load(path).claude_weekly_ceiling == 0.0 and json.loads(path.read_text())["version"] == 3
 
 
 def test_a_boolean_ceiling_is_still_refused(tmp_path: Path) -> None:
@@ -402,3 +403,14 @@ def test_a_boolean_ceiling_is_still_refused(tmp_path: Path) -> None:
     path.write_text(json.dumps({"mode": "mixed", "claude_weekly_ceiling": False}))
     with pytest.raises(PolicyError):
         load(path)
+
+
+def test_the_newest_model_at_xhigh_by_default_and_older_files_get_it(tmp_path: Path) -> None:
+    policy = EnginePolicy()
+    assert (policy.claude_model, policy.claude_effort, policy.codex_model, policy.codex_effort) == ("", "xhigh", "", "xhigh")
+    path = tmp_path / "engine-policy.json"
+    path.write_text(json.dumps({"mode": "mixed", "claude_effort": "", "codex_effort": "high", "version": 2}))
+    older = load(path)
+    assert older.claude_effort == "xhigh" and older.codex_effort == "high"  # an empty one was the old default
+    engine_policy.set_mode(path, "mixed", claude_effort="")  # an explicit "": the CLI's own default, kept
+    assert load(path).claude_effort == ""

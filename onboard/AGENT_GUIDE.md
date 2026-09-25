@@ -6,7 +6,8 @@ when something gets stuck: find the cause, fix it, check the fix, and send code
 fixes for review so the next student does not hit the same problem.
 
 This guide is for the setup only. When the page says Ready, the work is research in
-`~/sc-hub-workspace`, under that folder's own `AGENTS.md`. There, sc-hub problems
+`~/sc-hub-workspace` (`$schub` in Codex, `/schub` in Claude Code), under that folder's
+own `AGENTS.md`; elsewhere the student's assistants work without sc-hub. There, sc-hub problems
 are worked around and noted in `sc-hub-issues.md`. Come back to this guide when the
 student asks for a fix.
 
@@ -45,7 +46,7 @@ The steps run in this order. A step that is done is skipped on the next run.
 | `sign-in` | Login and password on the page. The password goes to ssh through askpass once, to install a dedicated key. On Windows 10, a console window asks for it. | `~/.ssh/config` block `# >>> sc-hub >>>`, `~/.ssh/mbzuai_schub_ed25519`, the cluster's `~/.ssh/authorized_keys` |
 | `cluster` | Uploads this checkout to `/l/users/LOGIN/schub/src/sc-hub`, then runs `scripts/bootstrap_cluster.sh`. That runs a Slurm job on ws-ia (1 GPU, 1 h) that builds the environment and downloads the starter datasets (about 6 GB, 10-20 min the first time). | cluster: `/l/users/LOGIN/schub` |
 | `hello` | Project `hello`: one kernel cell (starts the workbench job), then one small `%%slurm` job with a check | cluster: `schub/projects/hello` |
-| `assistants` | Adds the sc-hub MCP server to Codex, Claude Code and Claude Desktop | `~/.codex/config.toml` block, `claude mcp add`, Claude Desktop's config (backup `.bak-schub`), `~/sc-hub-workspace` |
+| `assistants` | Creates `~/sc-hub-workspace` and switches sc-hub on there only: Codex (`$schub`), Claude Code (`/schub`); Claude Desktop as before | `~/.codex/config.toml` block (server off, the workspace trusted), the workspace's `.codex/config.toml` (on), `claude mcp add -s local` in the workspace, skills in `~/.codex/skills/schub` and `~/.claude/skills/schub`, Claude Desktop's config (backup `.bak-schub`) |
 | `vscode` | `schub ide-setup` on the cluster, the `mbzuai-schub-ide` host, one test connection into the workbench job. Skipped without VS Code. | `~/.ssh/config` block, cluster `schub/ide` |
 | `agents` | Installs Codex and Claude Code on the login node and signs them in with the student's accounts: a device code for Codex (or the usual sign-in through a tunnel to 127.0.0.1:1455), a pasted code for Claude. Then the student confirms the accounts. | cluster: `~/.codex`, `~/.claude`, `~/.local/bin` |
 | `limit` | Limits the key to sc-hub: the key's line in `authorized_keys` gets `restrict,port-forwarding,command=".../schub-gate"` | cluster `~/.ssh/authorized_keys` (backup `.schub-backup`) |

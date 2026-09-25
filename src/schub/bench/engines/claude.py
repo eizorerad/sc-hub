@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import re
 
-from .base import Engine, Outcome, Turn, classify
+from .base import Engine, Outcome, Turn, classify, private_paths
 
 # a session that cannot go on: lost, held by a dead node, or too long to resume (a new one starts from the hand-over)
 MISSING = re.compile(r"no conversation found|session .* (not found|does not exist)|already in use|"
@@ -22,11 +22,14 @@ class Claude(Engine):
 
     def argv(self, binary: str, turn: Turn) -> list[str]:
         # stream-json: the result line plus rate_limit_event, which says how full the weekly window is
-        argv = [binary, "-p", turn.prompt, "--output-format", "stream-json", "--verbose", "--tools", ""]
+        argv = [binary, "-p", turn.prompt, "--output-format", "stream-json", "--verbose"]
+        argv += _free(turn) if turn.free else ["--tools", ""]
         if turn.mcp is not None:
             server = {"command": turn.mcp.command, "args": list(turn.mcp.args), "env": dict(turn.mcp.env)}
             argv += ["--mcp-config", json.dumps({"mcpServers": {"schub": server}}), "--strict-mcp-config",
-                     "--allowedTools", "mcp__schub__*"]
+                     "--allowedTools", *FREE_TOOLS, "mcp__schub__*"] if turn.free else \
+                ["--mcp-config", json.dumps({"mcpServers": {"schub": server}}), "--strict-mcp-config",
+                 "--allowedTools", "mcp__schub__*"]
         else:
             argv += ["--mcp-config", json.dumps({"mcpServers": {}}), "--strict-mcp-config"]  # a probe
         argv += ["--model", turn.model] if turn.model else []
@@ -51,6 +54,25 @@ class Claude(Engine):
                        cost_usd=result.get("total_cost_usd"), turns=result.get("num_turns"), returncode=returncode,
                        details={"models": sorted((result.get("modelUsage") or {}).keys()),
                                 "rate_limit": _rate_limit(stdout), "tool_calls": _tool_calls(stdout)})
+
+
+# A free lab agent's own tools, allowed without asking (no one is there to ask). Shell commands run in the OS
+# sandbox (writes only in its working folder and a temp folder). File edits are not listed: acceptEdits accepts
+# them only inside the working folder (a bare "Edit" here would allow them anywhere).
+FREE_TOOLS = ("Bash", "Read", "Glob", "Grep", "Task", "Agent", "TodoWrite", "WebFetch", "WebSearch")
+
+
+def _free(turn: Turn) -> list[str]:
+    private = private_paths()
+    settings = {
+        "sandbox": {"enabled": True, "failIfUnavailable": True, "autoAllowBashIfSandboxed": True,
+                    "allowUnsandboxedCommands": False,
+                    "network": {"allowedDomains": ["*"]},  # downloads, pip, git: open, as for the student
+                    "filesystem": {"denyRead": list(private)}},
+        "permissions": {"deny": [f"Read({p}/**)" for p in private] + [f"Read({p})" for p in private]},
+    }
+    # only the user's own settings besides these: a project's .claude/ (which the agent could write) is not read
+    return ["--permission-mode", "acceptEdits", "--setting-sources", "user", "--settings", json.dumps(settings)]
 
 
 def _tool_calls(stdout: str) -> int:

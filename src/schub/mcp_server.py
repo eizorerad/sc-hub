@@ -58,6 +58,9 @@ run(project, code, why, expect) runs a cell (Python; %%bash for shell):
 Record reasoning with note(): registration before a deciding test; decision with
 because=[cell refs] and reverses_if; finding with because; error for your own
 mistakes. Before you stop, handoff(project, text, disposition, next_action).
+Long, well-defined work can go to the lab agent on the cluster: agree the task with the
+student, then delegate(project, objective, deliverables, max_turns) (skills('delegating'));
+follow it with delegation(project).
 skills() lists playbooks (resume, rigor, mbzuai_slurm, ...): read the relevant one
 before a new kind of task.
 

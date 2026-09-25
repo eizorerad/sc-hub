@@ -14,18 +14,28 @@ import re
 import socket
 from pathlib import Path
 
-from .base import Engine, Outcome, Turn, classify
+from .base import Engine, Outcome, Turn, classify, private_paths
 
 # Codex's own tools, off: a read-only sandbox still lets its shell read any file of the account (other
 # engines' logins included). Names from `codex features list` (codex-cli 0.155).
 BUILT_IN_TOOLS = ("shell_tool", "browser_use", "browser_use_external", "computer_use", "in_app_browser", "apps",
                   "multi_agent", "image_generation")
 # a thread that cannot go on: lost, or too long to resume (a new one starts from the hand-over)
+FREE_TOOLS = ("shell_tool", "multi_agent")  # a free lab agent keeps these; no browser, computer use or apps
 MISSING = re.compile(r"no (saved )?(session|conversation|thread|rollout)|(session|thread) .*not found|"
                      r"context.?length.?exceeded|context window|maximum context length", re.I)
 
 
 WORK_ITEMS = ("mcp_tool_call", "command_execution", "file_change", "web_search")
+
+
+def _free_profile() -> list[str]:
+    """Read everything but the private paths, write only in the working folder and temp, network open."""
+    entries = {":root": "read", **{p: "none" for p in private_paths()}, ":tmpdir": "write", ":slash_tmp": "write"}
+    table = ", ".join(f"{_toml(k)} = {_toml(v)}" for k, v in entries.items())
+    return ['default_permissions="schub_free"',
+            f'permissions.schub_free.filesystem={{ {table}, ":workspace_roots" = {{ "." = "write" }} }}',
+            "permissions.schub_free.network={ enabled = true }"]
 
 
 def _toml(value: object) -> str:
@@ -52,8 +62,12 @@ class Codex(Engine):
 
     def argv(self, binary: str, turn: Turn) -> list[str]:
         head = [binary, "exec", "resume", turn.session_id] if turn.session_id else [binary, "exec"]
-        config = ['sandbox_mode="read-only"', 'approval_policy="never"']
-        config += [f"features.{name}=false" for name in BUILT_IN_TOOLS]  # the sc-hub MCP tools are its only tools
+        if turn.free:  # its shell and sub-agents too, in a permissions profile: see _free_profile
+            config = [*_free_profile(), 'approval_policy="never"']
+            config += [f"features.{name}=false" for name in BUILT_IN_TOOLS if name not in FREE_TOOLS]
+        else:
+            config = ['sandbox_mode="read-only"', 'approval_policy="never"']
+            config += [f"features.{name}=false" for name in BUILT_IN_TOOLS]  # the sc-hub MCP tools are its only tools
         config += [f"model={_toml(turn.model)}"] if turn.model else []
         config += [f"model_reasoning_effort={_toml(turn.effort)}"] if turn.effort else []
         if turn.mcp is not None:

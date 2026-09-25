@@ -7,7 +7,8 @@ error, never permission to call another engine.
 
     mode         codex-only | claude-only | mixed
     primary      in mixed, the engine tried first (the other takes over when it pauses)
-    <engine>_model / <engine>_effort   pinned for every run ("" = the CLI's default)
+    <engine>_model / <engine>_effort   pinned for every run (model "" = the CLI's default, its newest;
+                 effort "xhigh" by default, "" = the CLI's default)
     weekly_turns at most this many lab-agent turns per 7 days across projects (0 = no cap)
     claude_weekly_ceiling  Claude stands down while its seven-day usage window is at least this full,
                  as the last rate_limit_event reported (0.8 by default: the student's own chats share
@@ -40,16 +41,17 @@ class PolicyError(ValueError):
 class EnginePolicy:
     mode: str = "mixed"
     primary: str = "claude"
-    claude_model: str = ""
-    claude_effort: str = ""
+    claude_model: str = ""  # "": the CLI's own default, i.e. the newest model it ships with
+    claude_effort: str = "xhigh"
     codex_model: str = ""
-    codex_effort: str = ""
+    codex_effort: str = "xhigh"
     weekly_turns: int = 0
     claude_weekly_ceiling: float = 0.8  # Claude stands down when its seven-day window is this full (0 = off)
     grants: dict = field(default_factory=dict)
     updated: str = ""
     reason: str = ""
-    version: int = 2  # 1 (no field): written when the ceiling's default was 0, which then meant "never set"
+    # 1 (no field): written when the ceiling's default was 0 ("never set"); 2: when efforts defaulted to "" (the CLI's)
+    version: int = 3
 
     def __post_init__(self) -> None:
         if self.mode not in MODES:
@@ -101,6 +103,9 @@ def load(path: Path) -> EnginePolicy:
     old = data.get("claude_weekly_ceiling")
     if "version" not in data and type(old) in (int, float) and old == 0:  # (not a bool: that stays an error)
         data = {**data, "claude_weekly_ceiling": EnginePolicy.claude_weekly_ceiling}  # the old default, not a choice
+    if data.get("version", 1) in (1, 2):  # an empty effort then meant "not set": the new default applies
+        data = {**data, **{key: getattr(EnginePolicy, key) for key in ("claude_effort", "codex_effort")
+                           if data.get(key, "") == ""}}
     try:
         return EnginePolicy(**data)
     except TypeError as exc:
@@ -108,7 +113,7 @@ def load(path: Path) -> EnginePolicy:
 
 
 def save(path: Path, policy: EnginePolicy) -> EnginePolicy:
-    policy = dataclasses.replace(policy, updated=stamp())
+    policy = dataclasses.replace(policy, updated=stamp(), version=EnginePolicy.version)  # its values are this version's
     path.parent.mkdir(parents=True, exist_ok=True)
     write_json_atomic(path, dataclasses.asdict(policy))
     return policy

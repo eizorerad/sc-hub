@@ -63,7 +63,17 @@ warnings the reader sees at the end. `report(project, spec)` builds
 `reports/draft/`, `publish=true` keeps `reports/NN-<title>/` unchanged for good.
 
 **The lab agent.** A standing goal (`goal/goal.md`) can be worked on without a
-chat open: `schub goal-start <project> --goal goal.md` queues Slurm slices; each
+chat open. The student's own assistant hands it over with `delegate(project, objective,
+deliverables, max_turns)` after agreeing the task with the student, and follows it with
+`delegation(project)` (the owner can also run `schub goal-start <project> --goal goal.md`).
+In `mode: free` (what `delegate` writes) the agent also has its engine's own tools: the
+shell, file edits and subagents. It reads the whole project but writes only in the
+project's `work/` and a temp folder, never its `data/`, `journal/` or `goal/`: its shell
+runs in the engine's OS sandbox, which also hides keys, sign-in files, tokens and other
+chats' transcripts, and file edits are accepted only there. After each turn its commands,
+their output and the files it changed become one journal cell. `mode: bench` (a goal.md
+without `mode`, and the evaluation matrix) keeps it to the sc-hub tools. It runs the CLI's newest model at effort `xhigh`
+unless the owner's engine policy pins others. It queues Slurm slices; each
 arms its successor first, skips the model while it waits on its own jobs, and
 runs one turn of Claude Code or Codex through the same MCP tools (so its cells
 are journal entries too, marked with the engine). The owner's engine policy

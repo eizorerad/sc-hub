@@ -28,6 +28,18 @@ if mode == "missing":
     print("No conversation found with session ID: " + session, file=sys.stderr); sys.exit(1)
 if mode == "broken":
     print("Invalid API key · Please run /login", file=sys.stderr); sys.exit(1)
+if mode == "freework":  # a free agent's own shell command and a file it wrote in its working folder
+    Path("notes").mkdir(exist_ok=True)
+    Path("notes/plan.md").write_text("step 1\n")
+    print(json.dumps({"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls data | head", "description": "look"}},
+        {"type": "tool_use", "id": "t2", "name": "Write", "input": {"file_path": "notes/plan.md"}},
+        {"type": "tool_use", "id": "t3", "name": "Read", "input": {"file_path": "README"}},
+        {"type": "tool_use", "id": "t4", "name": "mcp__schub__journal", "input": {"project": "p"}}]}}))
+    print(json.dumps({"type": "user", "message": {"content": [
+        {"type": "tool_result", "tool_use_id": "t1", "content": [{"type": "text", "text": "kang.h5ad"}]},
+        {"type": "tool_result", "tool_use_id": "t2", "content": "ok"}]}}))
+    mode = "ok"
 if mode == "toolhang":  # one tool call, then the turn runs past its deadline
     print(json.dumps({"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "mcp__schub__run"}]}}),
           flush=True)
@@ -65,6 +77,14 @@ print(json.dumps({"type": "turn.started"}))
 if mode == "limit":
     print(json.dumps({"type": "turn.failed", "error": {"message": "You've hit your usage limit. Try again at 2099-01-01T10:00:00Z."}}))
     sys.exit(1)
+if mode == "freework":  # its shell ran a command and changed a file in its working folder
+    Path("notes").mkdir(exist_ok=True)
+    Path("notes/plan.md").write_text("step 1\n")
+    print(json.dumps({"type": "item.completed", "item": {"id": "c1", "type": "command_execution",
+                      "command": "bash -lc 'ls data'", "aggregated_output": "kang.h5ad\n", "exit_code": 0}}))
+    print(json.dumps({"type": "item.completed", "item": {"id": "f1", "type": "file_change",
+                      "changes": [{"path": "notes/plan.md", "kind": "add"}]}}))
+    mode = "ok"
 if mode == "workfail":  # two tool calls, then the stream breaks
     for index in range(2):
         print(json.dumps({"type": "item.completed", "item": {"id": f"t{index}", "type": "mcp_tool_call"}}))
@@ -80,7 +100,7 @@ HEADER = r'''
 import json, os, sys, time
 from pathlib import Path
 with open(os.environ["FAKE_LOG"], "a") as log:
-    log.write(json.dumps({"engine": ENGINE, "argv": sys.argv[1:], "pid": os.getpid(),
+    log.write(json.dumps({"engine": ENGINE, "argv": sys.argv[1:], "pid": os.getpid(), "cwd": os.getcwd(),
                           "env": {k: v for k, v in os.environ.items() if k.startswith("SCHUB_LAB")}}) + "\n")
 
 if os.environ.get("FAKE_HOOK") and Path(os.environ["FAKE_HOOK"]).exists():
