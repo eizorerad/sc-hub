@@ -84,6 +84,16 @@ def test_this_clusters_out_of_memory_wording_is_recognised(settings: Settings, c
     assert journal.cell("c0001").jobs[0].state == "OUT_OF_MEMORY"
 
 
+def test_a_gpu_out_of_memory_is_not_slurms_memory_limit(settings: Settings, cluster: FakeCluster, journal: Journal,
+                                                        tmp_path: Path) -> None:
+    job_dir = tmp_path / "jobdir"
+    job_dir.mkdir()
+    (job_dir / "slurm-700.log").write_text("torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 2 GiB\n")
+    register(settings, JobRecord(job_id="700", project="demo", ref="demo#c0001", job_dir=str(job_dir)))
+    assert reap(settings, Slurm(cluster)) == ["700"]
+    assert journal.cell("c0001").jobs[0].state == "ENDED"
+
+
 def test_a_job_cancelled_while_queued_says_it_never_started(settings: Settings, cluster: FakeCluster,
                                                             journal: Journal, tmp_path: Path) -> None:
     register(settings, JobRecord(job_id="700", project="demo", ref="demo#c0001", job_dir=str(tmp_path / "none")))

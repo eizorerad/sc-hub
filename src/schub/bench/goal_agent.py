@@ -63,20 +63,22 @@ ADAPTERS: dict[str, Engine] = {"claude": Claude(), "codex": Codex()}
 TERMINAL = ("complete", "blocked")
 SIGN_IN = {"claude": "claude auth login", "codex": "codex login --device-auth"}
 # Slurm will never start a job waiting for one of these: the model must hear of it, not wait forever
-STUCK = re.compile(r"held|DependencyNeverSatisfied|BadConstraints|PartitionConfig|PartitionTimeLimit|"
-                   r"QOSMaxWallDurationPerJobLimit|Invalid(?:Account|QOS)|launch.?failed", re.I)
+# (JobHeldUser is left out: a hold the student placed on purpose)
+STUCK = re.compile(r"JobHeldAdmin|requeued.?held|held.?state|DependencyNeverSatisfied|BadConstraints|PartitionConfig|"
+                   r"PartitionTimeLimit|QOSMaxWallDurationPerJobLimit|Invalid(?:Account|QOS)|launch.?failed", re.I)
 MIN_TURN_S = 600  # the other engine takes over only with at least this much of the slice left
 REPORT_TURNS = 2  # writer turns for one report; then the goal ends without it (an incident says so)
 WRITING = ("due", "writing", "requested")
 
 
 def did_work(outcome: Outcome) -> bool:
-    """A usage limit or a failure can arrive mid-turn, after real work: that turn counts and its session is
-    kept. One that failed before any work (a lost login, a broken CLI) is not counted against the budget."""
+    """A usage limit, a failure or a full context can arrive mid-turn, after real work (tool calls, model
+    turns, cost): that turn counts. One that failed before any work (a lost login, a broken CLI) is not
+    counted against the budget."""
     if outcome.status in ("ok", "timed_out"):
         return True
-    return outcome.status in ("usage_limited", "failed") and ((outcome.turns or 0) > 1 or bool(outcome.cost_usd)
-                                                              or bool(outcome.text))
+    return ((outcome.turns or 0) > 1 or bool(outcome.cost_usd) or bool(outcome.text)
+            or bool((outcome.details or {}).get("tool_calls")))
 ACTIVE = ("PENDING", "RUNNING", "CONFIGURING", "COMPLETING", "SUSPENDED", "REQUEUED")
 SYSTEM = Actor(kind="system", client="sc-hub lab agent")
 
@@ -279,15 +281,16 @@ class Slice:
         worked = did_work(outcome)
         goal.event("turn_finished", job=self.job, engine=engine, status=outcome.status, role=role,
                    session=outcome.session_id, cost_usd=outcome.cost_usd, turns=outcome.turns, worked=worked)
-        if outcome.status == "session_missing" and not rotated:
-            self._save_sessions(role, {**sessions, engine: None})
-            return self.turn(engine, config, policy, rotated=True, role=role)
+        missing = outcome.status == "session_missing"
         if worked:  # a turn refused (a usage limit, a failure) before doing anything is neither counted nor kept
             if not writing:
                 goal.count_turn(engine, self.job)
             self._log_usage(engine)
             self.cooldown.answered(engine)
-        if outcome.session_id and worked:
+        if missing and not rotated:  # lost, or too full to go on (counted above if it worked first): a new one
+            self._save_sessions(role, {**sessions, engine: None})
+            return self.turn(engine, config, policy, rotated=True, role=role)
+        if outcome.session_id and worked and not missing:
             last = {} if writing else {"last": engine}
             self._save_sessions(role, {**sessions, engine: {"session_id": outcome.session_id,
                                                             "since": saved.get("since") or self.job}, **last})
@@ -297,6 +300,9 @@ class Slice:
             self._incident(f"The lab agent's {engine} turn failed: {outcome.error[-400:]}")
         elif outcome.status == "failed":
             self._engine_failing(engine, outcome)
+        elif missing:
+            self._incident(f"The lab agent's {engine} turn could not go on in a new session either: "
+                           f"{outcome.error[-300:]}")
         return outcome
 
     def _engine_failing(self, engine: str, outcome: Outcome) -> None:

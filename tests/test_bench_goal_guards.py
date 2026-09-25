@@ -4,7 +4,11 @@ session too long to resume."""
 
 from __future__ import annotations
 
+import json
+from datetime import datetime, timedelta
 from pathlib import Path
+
+import pytest
 
 from schub.bench import goal_agent
 from schub.bench.checkpoint import CheckpointStore
@@ -27,6 +31,15 @@ def cooldown(settings: Settings) -> Cooldown:
     return Cooldown(settings.bench_dir / "engine-cooldown.json")
 
 
+def an_hour_later(settings: Settings, engine: str) -> None:
+    """The next slice comes about an hour later (pace_minutes): the last failure is that old."""
+    path = settings.bench_dir / "engine-cooldown.json"
+    state = json.loads(path.read_text())
+    last = datetime.fromisoformat(state[f"{engine}:failures"]["last"]) - timedelta(hours=1)
+    state[f"{engine}:failures"]["last"] = last.isoformat(timespec="seconds")
+    path.write_text(json.dumps(state))
+
+
 def test_a_broken_login_is_not_counted_and_pauses_the_engine(lab: Settings, cluster: FakeCluster,
                                                              monkeypatch) -> None:
     engine_policy.set_mode(lab.bench_dir / "engine-policy.json", "claude-only")
@@ -34,6 +47,7 @@ def test_a_broken_login_is_not_counted_and_pauses_the_engine(lab: Settings, clus
     first, result = start_and_run(lab, cluster)
     assert result == "failed" and Goal(lab, "p").turns() == 0
     assert incidents(lab) == [] and cooldown(lab).ready("claude")  # one failure may be a passing glitch
+    an_hour_later(lab, "claude")
     second, result = next_slice(lab, cluster, first)
     assert result == "failed" and Goal(lab, "p").turns() == 0
     [incident] = incidents(lab)
@@ -118,10 +132,11 @@ def test_a_job_slurm_will_never_start_wakes_the_model(lab: Settings, cluster: Fa
     assert "will never start" in prompt and "777 (DependencyNeverSatisfied)" in prompt
 
 
-def test_an_ordinary_wait_stays_quiet(lab: Settings, cluster: FakeCluster) -> None:
+@pytest.mark.parametrize("reason", ["(QOSMaxJobsPerUserLimit)", "(JobHeldUser)"])  # a free slot; the student's own hold
+def test_an_ordinary_wait_stays_quiet(lab: Settings, cluster: FakeCluster, reason: str) -> None:
     first, _ = start_and_run(lab, cluster)
     cluster.jobs["777"], cluster.names["777"] = "PENDING", "schub-cell-p-c0009"
-    cluster.reasons["777"] = "(QOSMaxJobsPerUserLimit)"  # it starts once a slot frees
+    cluster.reasons["777"] = reason
     CheckpointStore(lab.projects_dir / "p").write("waiting", next_action="x", waiting_jobs=[WaitingJob(job_id="777")])
     second, result = next_slice(lab, cluster, first)
     assert result == "waiting" and len(engine_calls()) == 1 and successor_of(cluster, second)
@@ -137,3 +152,35 @@ def test_a_session_too_long_to_resume_starts_a_new_one(lab: Settings, cluster: F
     _, full, fresh = [c["argv"] for c in engine_calls()]
     assert result == "ok" and "--resume" in full and "--session-id" in fresh
     assert "This is a new session" in fresh[fresh.index("-p") + 1]
+
+
+def test_a_codex_turn_that_called_tools_before_failing_counts(lab: Settings, cluster: FakeCluster,
+                                                              monkeypatch) -> None:
+    """Codex reports no turns or cost: its tool calls are the evidence of work (not a sign-in problem)."""
+    engine_policy.set_mode(lab.bench_dir / "engine-policy.json", "codex-only")
+    monkeypatch.setenv("FAKE_CODEX", "workfail")
+    _, result = start_and_run(lab, cluster)
+    assert result == "failed" and Goal(lab, "p").turns() == 1
+    [incident] = incidents(lab)
+    assert "turn failed" in incident and "sign in" not in incident and cooldown(lab).ready("codex")
+
+
+def test_a_session_that_fills_up_after_work_counts_then_starts_anew(lab: Settings, cluster: FakeCluster,
+                                                                    tmp_path: Path, monkeypatch) -> None:
+    first, _ = start_and_run(lab, cluster)
+    script = tmp_path / "claude-script"
+    script.write_text("fullwork\nok\n")
+    monkeypatch.setenv("FAKE_CLAUDE_SCRIPT", str(script))
+    _, result = next_slice(lab, cluster, first)
+    assert result == "ok" and Goal(lab, "p").turns() == 3  # the first slice, the full one, the fresh one
+
+
+def test_a_session_that_cannot_start_again_says_so(lab: Settings, cluster: FakeCluster, tmp_path: Path,
+                                                   monkeypatch) -> None:
+    engine_policy.set_mode(lab.bench_dir / "engine-policy.json", "claude-only")
+    first, _ = start_and_run(lab, cluster)
+    script = tmp_path / "claude-script"
+    script.write_text("toolong\ntoolong\n")
+    monkeypatch.setenv("FAKE_CLAUDE_SCRIPT", str(script))
+    _, result = next_slice(lab, cluster, first)
+    assert result == "session_missing" and any("new session either" in text for text in incidents(lab))

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import threading
+import time
 
 import pytest
 
@@ -97,8 +98,10 @@ def test_interrupting_a_queued_cell_takes_it_out_of_the_queue(bench: Settings, c
     assert "taken out of the queue" in svc.interrupt(ref)
     inbox = Inbox(bench.bench_dir)
     assert inbox.pending() == [] and inbox.take_controls() == []
-    result = svc.wait(ref, wait_s=0)
+    started = time.monotonic()
+    result = svc.wait(ref, wait_s=5)
     assert result.status == "rejected" and "interrupted before it started" in result.message
+    assert time.monotonic() - started < 2  # no waiting for a cell that will never run
 
 
 def test_rejected_requests_say_why(bench: Settings, cluster: FakeCluster) -> None:

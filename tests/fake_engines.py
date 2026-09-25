@@ -2,7 +2,8 @@
 
 Each fake appends its argv (one JSON line) to $FAKE_LOG and answers by $FAKE_<ENGINE>:
 ok, limit, missing (session not found), slow (sleeps), garbage; Claude also broken (a lost login:
-no result at all), failwork (an API error after real work) and toolong (the session no longer fits). A file
+no result at all), failwork (an API error after real work), toolong (the session no longer fits) and
+fullwork (it stops fitting after real work); Codex also workfail (tool calls, then a failure). A file
 $FAKE_<ENGINE>_SCRIPT
 may hold one mode per line, consumed in order (a turn per line). $FAKE_HOOK names a Python
 file run first: a test's stand-in for what the agent does through the MCP tools.
@@ -27,9 +28,9 @@ if mode == "missing":
     print("No conversation found with session ID: " + session, file=sys.stderr); sys.exit(1)
 if mode == "broken":
     print("Invalid API key · Please run /login", file=sys.stderr); sys.exit(1)
-if mode in ("failwork", "toolong"):
+if mode in ("failwork", "toolong", "fullwork"):
     print(json.dumps({"type": "result", "subtype": "error_during_execution", "is_error": True,
-                      "result": "Prompt is too long" if mode == "toolong" else "API Error: 500 Internal server error",
+                      "result": "API Error: 500 Internal server error" if mode == "failwork" else "Prompt is too long",
                       "session_id": session, "total_cost_usd": 0.0 if mode == "toolong" else 0.01,
                       "num_turns": 1 if mode == "toolong" else 5}))
     sys.exit(1)
@@ -59,6 +60,11 @@ print(json.dumps({"type": "thread.started", "thread_id": thread}))
 print(json.dumps({"type": "turn.started"}))
 if mode == "limit":
     print(json.dumps({"type": "turn.failed", "error": {"message": "You've hit your usage limit. Try again at 2099-01-01T10:00:00Z."}}))
+    sys.exit(1)
+if mode == "workfail":  # two tool calls, then the stream breaks
+    for index in range(2):
+        print(json.dumps({"type": "item.completed", "item": {"id": f"t{index}", "type": "mcp_tool_call"}}))
+    print(json.dumps({"type": "turn.failed", "error": {"message": "stream disconnected before completion"}}))
     sys.exit(1)
 prompt = args[-1]
 print(json.dumps({"type": "item.completed", "item": {"id": "i0", "type": "agent_message",

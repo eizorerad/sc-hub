@@ -109,18 +109,28 @@ def packages(pip: tuple[str, ...] | list[str] = (), conda: tuple[str, ...] | lis
     kernel with them: variables are lost, so re-run the setup cells. remove=True drops the listed ones.
     Without arguments: what the project has. A failed build keeps the previous kernel."""
     from ..config import load_settings
-    from ..project_env import EnvError, build_here, built, merged
+    from ..project_env import EnvError, build_here, built, merged, slug
+    from ..slurm import Slurm, SlurmError
 
+    pip = [pip] if isinstance(pip, str) else list(pip)  # packages("scvelo") is one package, not six letters
+    conda = [conda] if isinstance(conda, str) else list(conda)
     settings = load_settings()
     project = os.environ.get("SCHUB_PROJECT", "")
     if not project:
         raise RuntimeError("bench.packages works in a bench cell (SCHUB_PROJECT is not set)")
+    if pip or conda:  # a build the older tool queued as a job would race this one
+        try:
+            busy = [j.job_id for j in Slurm().my_jobs() if j.name == f"{settings.job_prefix}-env-{slug(project)}"]
+        except SlurmError:
+            busy = []
+        if busy:
+            raise RuntimeError(f"job {busy[0]} is building this project's environment; ask again when it has ended")
     if not pip and not conda:
         current = built(settings, project)
         return {"pip": list(current.pip) if current else [], "conda": list(current.conda) if current else [],
                 "built": current.built if current else ""}
     try:
-        new_pip, new_conda = merged(settings, project, list(pip), list(conda), remove)
+        new_pip, new_conda = merged(settings, project, pip, conda, remove)
         result = build_here(settings, project, new_pip, new_conda)
     except EnvError as exc:
         raise RuntimeError(str(exc)) from None

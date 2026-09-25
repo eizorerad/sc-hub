@@ -97,6 +97,7 @@ def test_bench_packages_builds_in_the_cell_and_keeps_the_old_build_on_failure(hu
     assert built(settings, "crispr").pip == ("decoupler>=2",)  # the previous build stays
     with pytest.raises(RuntimeError, match="not a package"):
         kernel_api.packages(pip=["x; rm -rf ~"])
+    assert kernel_api.packages(pip="scvelo")["pip"] == ["decoupler>=2", "scvelo"]  # one name, not six letters
     monkeypatch.delenv("SCHUB_PROJECT")
     with pytest.raises(RuntimeError, match="bench cell"):
         kernel_api.packages(pip=["decoupler"])
@@ -124,17 +125,25 @@ def test_a_new_build_moves_the_projects_next_cell_to_a_fresh_kernel(hub, setting
         def shutdown(self):
             self.up = False
 
+    kernels = settings.root / "jupyter-kernels"  # stands in for ~/.local/share/jupyter/kernels
+    monkeypatch.setattr(worker_module, "kernel_dir", lambda project: kernels / f"schub-{project}")
     monkeypatch.setattr(worker_module, "prime", lambda kernel: True)
     host = SimpleNamespace(settings=settings, job_id="9", kernel_factory=Kernel, now=lambda: "2026-09-25T00:00:00Z")
     worker = ProjectWorker(host, "crispr")  # type: ignore[arg-type]
     project_dir = settings.projects_dir / "crispr"
     first = worker._ensure_kernel(project_dir)
-    assert worker._ensure_kernel(project_dir) is first  # nothing changed: the same kernel, variables kept
+    assert first.name == "python3" and worker._ensure_kernel(project_dir) is first  # the same kernel, variables kept
     build = settings.root / "envs" / "crispr" / "20260925-000000"
     build.mkdir(parents=True)
     (build / "packages.json").write_text('{"pip": ["decoupler"], "conda": [], "built": "20260925-000000"}')
     (settings.root / "envs" / "crispr" / "current").symlink_to(build.name)
+    (kernels / "schub-crispr").mkdir(parents=True)
+    (kernels / "schub-crispr" / "kernel.json").write_text("{}")
     second = worker._ensure_kernel(project_dir)
-    assert second is not first and not first.up and [e for _, e in started] == ["9.1", "9.2"]
+    assert second is not first and not first.up and second.name == "schub-crispr"
+    assert [e for _, e in started] == ["9.1", "9.2"]
     notes = [e.text for e in worker_module.Journal(project_dir, "crispr").entries(kinds=("incident",), limit=5)]
     assert any("environment changed" in n for n in notes)
+    (build / "packages.json").unlink()
+    (build / "packages.json").mkdir()  # reading it now fails (as a file-server error would): no restart
+    assert worker._ensure_kernel(project_dir) is second and second.up

@@ -66,7 +66,7 @@ class Codex(Engine):
         return [*head, "--json", "--skip-git-repo-check", *options, turn.prompt]
 
     def parse(self, stdout: str, stderr: str, returncode: int) -> Outcome:
-        thread, messages, errors, completed, usage = None, [], [], False, {}
+        thread, messages, errors, completed, usage, tools = None, [], [], False, {}, 0
         for line in stdout.splitlines():
             try:
                 event = json.loads(line)
@@ -85,8 +85,10 @@ class Codex(Engine):
                 errors.append(str(event.get("message", "error")))
             elif kind == "item.completed" and (event.get("item") or {}).get("type") == "agent_message":
                 messages.append(str(event["item"].get("text", "")))
+            elif kind == "item.completed" and (event.get("item") or {}).get("type") not in (None, "reasoning"):
+                tools += 1  # an MCP tool call (or another action): the turn did work even if it then failed
         ok = returncode == 0 and completed  # an "error" event before completion can be a retried reconnect
         error = "" if ok else ("\n".join(errors) or stderr.strip() or f"exit code {returncode}")[-2000:]
         return Outcome(self.name, classify(ok, error, bool(MISSING.search(error))), session_id=thread,
                        text=(messages[-1] if messages else "")[-4000:], error=error, returncode=returncode,
-                       details={"usage": usage})
+                       details={"usage": usage, "tool_calls": tools})

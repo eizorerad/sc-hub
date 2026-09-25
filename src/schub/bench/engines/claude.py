@@ -42,7 +42,7 @@ class Claude(Engine):
         if result is None:
             error = (stderr or stdout).strip()[-2000:] or f"exit code {returncode} and no result"
             return Outcome(self.name, classify(False, error, bool(MISSING.search(error))), error=error,
-                           returncode=returncode)
+                           returncode=returncode, details={"tool_calls": _tool_calls(stdout)})
         text = str(result.get("result") or "")
         ok = returncode == 0 and result.get("subtype") == "success" and not result.get("is_error")
         error = "" if ok else (text or (stderr or "").strip())[-2000:]
@@ -50,7 +50,23 @@ class Claude(Engine):
                        session_id=result.get("session_id"), text=text[-4000:] if ok else "", error=error,
                        cost_usd=result.get("total_cost_usd"), turns=result.get("num_turns"), returncode=returncode,
                        details={"models": sorted((result.get("modelUsage") or {}).keys()),
-                                "rate_limit": _rate_limit(stdout)})
+                                "rate_limit": _rate_limit(stdout), "tool_calls": _tool_calls(stdout)})
+
+
+def _tool_calls(stdout: str) -> int:
+    """Tool calls the turn made (stream-json assistant events): work done, even when no result line follows."""
+    count = 0
+    for line in stdout.splitlines():
+        if '"tool_use"' not in line:
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict) and event.get("type") == "assistant":
+            content = (event.get("message") or {}).get("content") or []
+            count += sum(1 for block in content if isinstance(block, dict) and block.get("type") == "tool_use")
+    return count
 
 
 def _rate_limit(stdout: str) -> dict | None:

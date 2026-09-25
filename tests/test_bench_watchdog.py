@@ -83,16 +83,21 @@ def test_old_watchdog_logs_and_job_scripts_are_pruned(tmp_path) -> None:
     logs, scripts = tmp_path / "logs", tmp_path / "scripts"
     logs.mkdir()
     scripts.mkdir()
-    for index in range(14):  # one every hour, the oldest four days ago
-        path = logs / f"watchdog-{index}.log"
+
+    def make(folder, name, age_h):
+        path = folder / name
         path.write_text("x")
-        os.utime(path, (now - 4 * 86400 + index * 3600,) * 2)
-    for index, age_days in enumerate([3] * 12 + [1]):  # twelve scripts three days old, one from yesterday
-        path = scripts / f"watchdog-{index}.sbatch"
-        path.write_text("#!/bin/bash")
-        os.utime(path, (now - age_days * 86400 - index,) * 2)
-    (logs / "workbench-1.log").write_text("kept")
-    assert prune(tmp_path, now=now) == 7  # beyond the last ten of each: four old logs, three old scripts
-    assert len(list(logs.glob("watchdog-*.log"))) == 10 and (logs / "workbench-1.log").exists()
-    assert len(list(scripts.iterdir())) == 10 and (scripts / "watchdog-12.sbatch").exists()
-    assert prune(tmp_path, now=now) == 0
+        os.utime(path, (now - age_h * 3600,) * 2)
+
+    for hour in range(1, 12):  # eleven recent ones of each: the newest ten always stay
+        make(logs, f"watchdog-r{hour}.log", hour)
+        make(scripts, f"watchdog-r{hour}.sbatch", hour)
+    make(logs, "watchdog-60h.log", 60)  # under three days: kept
+    make(logs, "watchdog-84h.log", 84)  # over three days: removed
+    make(scripts, "watchdog-36h.sbatch", 36)  # under two days: kept
+    make(scripts, "watchdog-60h.sbatch", 60)  # over two days: removed
+    make(logs, "workbench-1.log", 500)  # not the watchdog's: never pruned
+    assert prune(tmp_path, now=now) == 2
+    assert not (logs / "watchdog-84h.log").exists() and (logs / "watchdog-60h.log").exists()
+    assert not (scripts / "watchdog-60h.sbatch").exists() and (scripts / "watchdog-36h.sbatch").exists()
+    assert (logs / "workbench-1.log").exists() and prune(tmp_path, now=now) == 0

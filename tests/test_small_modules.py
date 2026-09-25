@@ -111,3 +111,26 @@ def test_import_bench_works_unless_the_project_has_its_own(tmp_path, monkeypatch
     import bench as own
 
     assert own.OWN is True
+
+
+def test_an_interrupted_build_stops_everything_it_started(tmp_path):
+    """A cell interrupted during bench.packages / import_seurat must not leave uv or micromamba running."""
+    import time
+
+    import pytest
+
+    from schub.streaming import run_streamed
+
+    marker = tmp_path / "still-running"
+
+    class Interrupting:
+        def write(self, line):
+            raise KeyboardInterrupt
+
+    script = f"(sleep 2; touch {marker}) & echo started; wait"
+    with pytest.raises(KeyboardInterrupt):
+        run_streamed(["bash", "-c", script], Interrupting())
+    time.sleep(3)
+    assert not marker.exists()
+    assert run_streamed(["bash", "-c", "echo one; echo two; exit 3"], tmp_path.joinpath("log").open("w"), keep=1) == \
+        (3, ["two\n"])

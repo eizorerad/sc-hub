@@ -23,7 +23,6 @@ import re
 import shlex
 import shutil
 import subprocess
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence
@@ -32,6 +31,7 @@ from .bricks import Resources
 from .config import Settings
 from .slurm import JobSpec, Slurm, render_script
 from .state import Frozen
+from .streaming import run_streamed
 
 # A requirement like "harmonypy", "decoupler>=1.6", "r-seurat=5.1" (no URLs or paths).
 REQUIREMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}(\[[A-Za-z0-9_,-]+\])?([<>=!~]=?[A-Za-z0-9.*+!-]{1,40}(,[<>=!~]=?[A-Za-z0-9.*+!-]{1,40})*)?$")
@@ -108,19 +108,7 @@ def build_here(settings: Settings, project: str, pip: Sequence[str], conda: Sequ
     logs.mkdir(parents=True, exist_ok=True)
     script = logs / f"build-{slug(project)}-{stamp}.sh"
     script.write_text(build_script(settings, project, pip, conda, stamp))
-    process = subprocess.Popen(["bash", str(script)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                               cwd=str(settings.root))
-    out = out or sys.stdout  # looked up now: a kernel (or a test) replaces sys.stdout after import
-    tail: list[str] = []
-    try:
-        for line in process.stdout or ():
-            out.write(line)
-            tail = (tail + [line])[-40:]
-        code = process.wait()
-    except BaseException:  # an interrupted cell: stop the build (its trap removes the half-built folder)
-        process.terminate()
-        process.wait()
-        raise
+    code, tail = run_streamed(["bash", str(script)], out, cwd=str(settings.root))
     if code != 0:
         raise EnvError(f"the build failed (exit {code}); the project keeps its previous kernel. Last lines:\n"
                        + "".join(tail))

@@ -76,6 +76,7 @@ def close(settings: Settings, job_id: str) -> None:
 
 
 # matched in lower case: this cluster's Slurm writes "Detected 1 oom_kill event ... OOM Killed", others "oom-kill"
+# (a GPU's "CUDA out of memory" is the cell's own error, not Slurm's memory limit)
 LOG_ENDINGS = (("due to time limit", "TIMEOUT"), ("oom-kill", "OUT_OF_MEMORY"), ("oom_kill", "OUT_OF_MEMORY"),
                ("oom killed", "OUT_OF_MEMORY"), ("out of memory", "OUT_OF_MEMORY"), ("due to preemption", "PREEMPTED"),
                ("due to node failure", "NODE_FAIL"), ("cancelled at", "CANCELLED"))
@@ -125,7 +126,7 @@ def _final_state(slurm: Slurm, record: JobRecord) -> tuple[str, str]:
     try:
         with log.open("rb") as handle:
             handle.seek(max(0, log.stat().st_size - 8192))
-            tail = handle.read().decode(errors="replace").lower()
+            tail = handle.read().decode(errors="replace").lower().replace("cuda out of memory", "cuda oom")
     except FileNotFoundError:
         return "ENDED (never started: cancelled or not launched while queued)", ""
     except OSError:

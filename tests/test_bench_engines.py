@@ -109,8 +109,12 @@ def test_a_named_day_is_parsed() -> None:
         datetime(2026, 9, 14, 18, 0, tzinfo=timezone.utc)
     assert parse_reset("resets on September 14 2026 at 22:30", before) == datetime(2026, 9, 14, 22, 30,
                                                                                     tzinfo=timezone.utc)
-    assert parse_reset("resets Jan 2, 9am", before) == datetime(2027, 1, 2, 9, 0, tzinfo=timezone.utc)  # next year
+    assert parse_reset("resets Jan 2, 9am", datetime(2026, 12, 30, tzinfo=timezone.utc)) == \
+        datetime(2027, 1, 2, 9, 0, tzinfo=timezone.utc)  # read in late December: next year's
+    assert parse_reset("resets Sep 12, 10pm", before) is None  # just passed: stale, not a reset a year away
     assert parse_reset("resets Sep 14 2025, 10pm", before) is None  # a day gone by is not a reset
+    assert parse_reset("You've hit your usage limit. Try again at Sep 20th, 2026 3:05 PM.", before) == \
+        datetime(2026, 9, 20, 15, 5, tzinfo=timezone.utc)  # Codex's wording
     assert parse_reset("resets Feb 30, 10pm", before) is None
     assert parse_reset("resets Sep 14, 25pm", before) is None
 
@@ -128,13 +132,28 @@ def test_claudes_own_reset_time_wins(tmp_path: Path) -> None:
 
 
 def test_an_engine_failing_in_a_row_pauses_longer_each_time(tmp_path: Path) -> None:
-    cooldown = Cooldown(tmp_path / "cooldown.json", now=lambda: NOW)
-    pauses = [cooldown.failing("claude", "Invalid API key")[1] for _ in range(5)]
-    assert pauses == [None, NOW + timedelta(hours=1), NOW + timedelta(hours=6), NOW + timedelta(hours=24),
-                      NOW + timedelta(hours=24)]
+    clock = {"now": NOW}
+    cooldown = Cooldown(tmp_path / "cooldown.json", now=lambda: clock["now"])
+    pauses = []
+    for _ in range(5):  # one failure per slice, an hour apart
+        pauses.append(cooldown.failing("claude", "Invalid API key")[1])
+        clock["now"] += timedelta(hours=1)
+    start = NOW
+    assert pauses == [None, start + timedelta(hours=2), start + timedelta(hours=8), start + timedelta(hours=27),
+                      start + timedelta(hours=28)]
     assert cooldown.kind("claude") == "failing" and cooldown.ready("codex")
     cooldown.answered("claude")  # a turn did work: the count starts again
     assert cooldown.failing("claude", "x") == (1, None)
+
+
+def test_failures_in_one_short_outage_count_once(tmp_path: Path) -> None:
+    clock = {"now": NOW}
+    cooldown = Cooldown(tmp_path / "cooldown.json", now=lambda: clock["now"])
+    assert cooldown.failing("claude", "API Error: 529 Overloaded") == (1, None)
+    clock["now"] += timedelta(minutes=5)  # another project's slice, same outage
+    assert cooldown.failing("claude", "API Error: 529 Overloaded") == (1, None) and cooldown.ready("claude")
+    clock["now"] += timedelta(minutes=40)
+    assert cooldown.failing("claude", "API Error: 529 Overloaded") == (2, clock["now"] + timedelta(hours=1))
     cooldown.mark("claude", "usage limit")
     assert cooldown.kind("claude") == "usage limit"
 

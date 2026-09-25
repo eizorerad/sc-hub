@@ -32,11 +32,13 @@ RELATIVE = re.compile(r"\b(?:resets?|try again)\s+in\s+(?:(\d+)\s*d(?:ays?)?)?[\
                       r"[\s,]*(?:(\d+)\s*m(?:in(?:ute)?s?)?)?", re.I)
 CLOCK = re.compile(r"\b(?:resets?|try again)\s+(?:at\s+)?(\d{1,2})(?::(\d\d))?\s*(am|pm)?\b(?:\s*\(([^()\n]+)\))?", re.I)
 MONTHS = ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
-# "resets Sep 14, 10pm (Asia/Dubai)", "try again on Sep 14 2026 at 22:00" (Claude's weekly limit, VCC2026 A164)
-CALENDAR = re.compile(r"\b(?:resets?|try again)\s+(?:on\s+)?(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+"
-                      r"(\d{1,2})(?:,?\s+(20\d\d))?\s*,?\s+(?:at\s+)?(\d{1,2})(?::(\d\d))?\s*(am|pm)?\b"
-                      r"(?:\s*\(([^()\n]+)\))?", re.I)
+# "resets Sep 14, 10pm (Asia/Dubai)" (Claude's weekly limit, VCC2026 A164), "try again at Sep 20th, 2026 3:05 PM"
+# (Codex), "resets on Sep 14 2026 at 22:00"
+CALENDAR = re.compile(r"\b(?:resets?|try again)\s+(?:(?:on|at)\s+)?(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)"
+                      r"[a-z]*\.?\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s+(20\d\d))?\s*,?\s+(?:at\s+)?(\d{1,2})(?::(\d\d))?"
+                      r"\s*(am|pm)?\b(?:\s*\(([^()\n]+)\))?", re.I)
 FAILURE_PAUSES = (timedelta(0), timedelta(hours=1), timedelta(hours=6), timedelta(hours=24))
+FAILURE_WINDOW = timedelta(minutes=30)
 
 
 def is_limit(text: str) -> bool:
@@ -92,21 +94,21 @@ def _zone(name: str | None) -> timezone | ZoneInfo:
 
 
 def _calendar(match: re.Match, now: datetime) -> datetime | None:
-    """A named day: this year's or next year's (no year given), and only a time still ahead."""
+    """A named day, only if still ahead. Without a year: this year's, or next year's when this year's is long
+    gone ("Jan 2" read in late December); one just passed is stale, not a reset a year away."""
     month, day, year = MONTHS.index(match.group(1).lower()) + 1, int(match.group(2)), match.group(3)
     clock = _clock(match.group(4), match.group(5), match.group(6))
     if clock is None:
         return None
     local_now = now.astimezone(_zone(match.group(7)))
-    for candidate_year in [int(year)] if year else [local_now.year, local_now.year + 1]:
-        try:
-            candidate = local_now.replace(year=candidate_year, month=month, day=day, hour=clock[0], minute=clock[1],
-                                          second=0, microsecond=0)
-        except ValueError:
-            continue  # "Feb 30"
-        if candidate > local_now:
-            return candidate.astimezone(timezone.utc)
-    return None
+    try:
+        candidate = local_now.replace(year=int(year) if year else local_now.year, month=month, day=day,
+                                      hour=clock[0], minute=clock[1], second=0, microsecond=0)
+        if not year and local_now - candidate > timedelta(days=180):
+            candidate = candidate.replace(year=candidate.year + 1)
+    except ValueError:
+        return None  # "Feb 30"
+    return candidate.astimezone(timezone.utc) if candidate > local_now else None
 
 
 def reset_hint(details: dict) -> datetime | None:
@@ -139,10 +141,18 @@ class Cooldown:
 
     def failing(self, engine: str, text: str) -> tuple[int, datetime | None]:
         """One more turn that failed before doing any work (a lost login, a broken CLI): the count in a row,
-        and the pause it earns (none for a first failure, then FAILURE_PAUSES)."""
+        and the pause it earns (none for a first failure, then FAILURE_PAUSES). Failures within
+        FAILURE_WINDOW of the last one (several projects' slices in one short outage) count once."""
         record = self._state().get(f"{engine}:failures")
-        count = (record.get("count", 0) if isinstance(record, dict) else 0) + 1
+        count = record.get("count", 0) if isinstance(record, dict) else 0
         now = self.now()
+        try:
+            recent = now - datetime.fromisoformat(record["last"]) < FAILURE_WINDOW  # type: ignore[index]
+        except (TypeError, KeyError, ValueError):
+            recent = False
+        if recent and count:
+            return count, self.until(engine)
+        count += 1
         state = {**self._state(), f"{engine}:failures": {"count": count, "last": now.isoformat(timespec="seconds"),
                                                           "reason": (text or "")[-300:]}}
         write_json_atomic(self.path, state)

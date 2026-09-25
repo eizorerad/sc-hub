@@ -7,6 +7,7 @@ first, so the code does not keep running unseen behind the next cell.
 
 from __future__ import annotations
 
+import json
 import os
 import queue
 import sys
@@ -18,7 +19,7 @@ from typing import Any, Callable, Protocol
 from pydantic import ValidationError
 
 from ..config import Settings
-from ..project_env import built
+from ..project_env import env_root, kernel_dir, slug as env_slug
 from ..projects import ProjectError, ProjectStore
 from .clock import Clock, seconds_between
 from .checks import run_checks
@@ -26,7 +27,7 @@ from .executor import announce, drain_ledger, execute, prime
 from .filesnap import diff, scan
 from .inbox import Claimed, Inbox
 from .journal import FinalEntryError, Journal, JournalError
-from .kernels import ProjectKernel, kernel_env, kernel_name
+from .kernels import DEFAULT_KERNEL, ProjectKernel, kernel_env, kernel_name
 from .ledger import parse_user_expression
 from .models import Actor, CellEntry, CellRequest, Download, JobRef
 from .outputs import OutputCollector
@@ -306,11 +307,13 @@ class ProjectWorker:
     def _ensure_kernel(self, project_dir: Path) -> ProjectKernel:
         wanted = self._environment()
         if self.kernel is not None and self.kernel.alive():
-            if wanted == self.kernel_env:
+            if wanted is None or wanted == self.kernel_env:  # unchanged, or unreadable just now: keep the kernel
                 return self.kernel
             # bench.packages() built (or dropped) the project's own environment: move to it
             self.retire_note("the project's environment changed (bench.packages); this cell starts a new kernel")
         self._shutdown_kernel()
+        if wanted is None:  # a file-server error: the kernel a plain lookup finds
+            wanted = (kernel_name(self.host.settings, self.project), "")
         self.epochs += 1
         epoch = f"{self.host.job_id}.{self.epochs}"
         env = kernel_env(os.environ, {
@@ -325,10 +328,18 @@ class ProjectWorker:
         self.kernel = kernel
         return kernel
 
-    def _environment(self) -> tuple[str, str]:
-        """The kernel this project should run in now, and which build of its own environment."""
-        current = built(self.host.settings, self.project)
-        return kernel_name(self.host.settings, self.project), current.built if current else ""
+    def _environment(self) -> tuple[str, str] | None:
+        """The kernel this project should run in now and which build of its own environment; None when a
+        file-server error hides it (a passing error must not restart the kernel and lose its variables)."""
+        settings = self.host.settings
+        try:
+            record = json.loads((env_root(settings, self.project) / "current" / "packages.json").read_text())
+            os.stat(kernel_dir(self.project) / "kernel.json")
+        except FileNotFoundError:
+            return DEFAULT_KERNEL, ""
+        except (OSError, ValueError):
+            return None
+        return f"schub-{env_slug(self.project)}", str(record.get("built", "")) if isinstance(record, dict) else ""
 
     def _shutdown_kernel(self) -> None:
         kernel, self.kernel = self.kernel, None

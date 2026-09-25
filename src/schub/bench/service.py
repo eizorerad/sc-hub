@@ -126,6 +126,8 @@ class BenchService:
         queue_checked, jobs_open = -JOB_POLL_S, True
         while True:
             entry = journal.cell(cid)
+            if entry is None and self.inbox.rejected_reason(project, cid) is not None:
+                break  # refused or withdrawn before it started: nothing more will happen to it
             if entry is not None and entry.final:
                 if not for_jobs or not _unreported(entry):
                     break
@@ -166,7 +168,7 @@ class BenchService:
 
     def _live_jobs(self, entry: CellEntry) -> CellEntry:
         """Current Slurm states of the cell's jobs that have not reported yet (not stored)."""
-        open_jobs = [j.job_id for j in entry.jobs if j.state not in FINAL_JOB_STATES]
+        open_jobs = [j.job_id for j in entry.jobs if j.state not in FINAL_JOB_STATES and not j.state.startswith("ENDED")]
         if not open_jobs:
             return entry
         try:

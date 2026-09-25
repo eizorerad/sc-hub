@@ -42,8 +42,9 @@ PUBLISHED=0
 log() { printf '[sc-hub library] %s\n' "$*"; }
 # The first folder on the way to $1 that other accounts cannot pass (no o+x; ACLs are not looked at).
 blocked_dir() {
-  local dir="$1" mode
-  while [ -n "$dir" ] && [ "$dir" != "/" ]; do
+  local dir mode
+  dir="$(cd "$1" 2>/dev/null && pwd -P || printf '%s' "$1")"  # absolute: dirname of a relative path ends at "."
+  while [ -n "$dir" ] && [ "$dir" != "/" ] && [ "$dir" != "." ]; do
     if [ -d "$dir" ]; then
       mode="$(stat -c %a "$dir")"
       if [ $(( 0$mode & 1 )) -eq 0 ]; then echo "$dir ($mode)"; return; fi
