@@ -42,19 +42,27 @@ class DelegationAnswer(Frozen):
 
 
 def goal_text(objective: str, deliverables: str, max_turns: int, engine: str, mode: str, report: bool) -> str:
+    """goal.md; the hand-over's time is a comment of the settings, so the same task handed over again is the
+    same objective (its budget and sessions stay)."""
     body = objective.strip()
     if deliverables.strip():
         body += f"\n\nDeliverables: {deliverables.strip()}"
-    body += f"\n\n(Handed over by the student's assistant through delegate() on {stamp()[:16]} UTC.)"
-    return (f"---\nengine: {engine}\nmax_turns: {max_turns}\nmode: {mode}\nreport: {'yes' if report else 'no'}\n"
+    return (f"---\n# handed over by the student's assistant through delegate() on {stamp()[:16]} UTC\n"
+            f"engine: {engine}\nmax_turns: {max_turns}\nmode: {mode}\nreport: {'yes' if report else 'no'}\n"
             f"---\n{body}\n")
 
 
 def delegate(settings: Settings, slurm: Slurm, project: str, objective: str, deliverables: str = "",
              max_turns: int = 20, engine: Literal["auto", "claude", "codex"] = "auto",
-             mode: Literal["free", "bench"] = "free", report: bool = True, actor: Actor | None = None) -> DelegationAnswer:
+             mode: Literal["free", "bench"] = "free", report: bool = True, actor: Actor | None = None,
+             replace: bool = False) -> DelegationAnswer:
     if actor is not None and actor.kind == "lab_agent":
         raise DelegationError("a lab agent never hands work to another lab agent")
+    _project(settings, project)
+    current = delegation(settings, slurm, project)
+    if current.state in ("queued", "working", "waiting") and not replace:
+        raise DelegationError(f"the lab agent is already working on {project} ({current.turns} of {current.max_turns} "
+                              "turns): follow it with delegation(), stop it first, or delegate(..., replace=true)")
     if not 1 <= max_turns <= MAX_TURNS:
         raise DelegationError(f"max_turns must be from 1 to {MAX_TURNS}")
     if len(objective.strip()) < 20:
@@ -71,19 +79,34 @@ def delegate(settings: Settings, slurm: Slurm, project: str, objective: str, del
         "delegation(project, stop=true).")})
 
 
-def delegation(settings: Settings, slurm: Slurm, project: str, stop: bool = False) -> DelegationAnswer:
+def _project(settings: Settings, project: str) -> None:
+    from ..projects import ProjectError, ProjectStore
+
+    try:
+        ProjectStore(settings).require(project)
+    except ProjectError as exc:
+        raise DelegationError(str(exc)) from exc
+
+
+def delegation(settings: Settings, slurm: Slurm, project: str, stop: bool = False,
+               actor: Actor | None = None) -> DelegationAnswer:
+    _project(settings, project)
+    if stop and actor is not None and actor.kind == "lab_agent":
+        raise DelegationError("a lab agent does not stop lab agents; hand over as blocked to end your own work")
     if stop:
         goal_agent.stop(settings, project)
     status = goal_agent.status(settings, slurm, project)
     config, checkpoint = status.get("goal") or {}, status.get("checkpoint") or {}
-    if "error" in config:
+    if "error" in config or not (settings.projects_dir / project / "goal" / "goal.md").exists():
         return DelegationAnswer(project=project, state="not started", hint="Nothing was handed over for this "
                                 "project; delegate() does it.")
     slices = tuple({k: s.get(k) for k in ("job_id", "state", "start", "reason")} for s in status.get("slices") or ()
                    if "job_id" in s)
     disposition = str(checkpoint.get("disposition", ""))
+    running = any(s.get("state") == "RUNNING" for s in slices)
     state = "stopped" if status.get("stopped") else (
-        disposition if disposition in ("complete", "blocked", "waiting") else ("working" if slices else "queued"))
+        disposition if disposition in ("complete", "blocked", "waiting") else
+        ("working" if running else "queued" if slices else "idle"))
     recent = tuple(_event(e) for e in (status.get("events") or ())[-6:])
     report = status.get("report") or {}
     return DelegationAnswer(

@@ -20,10 +20,11 @@ from .engines.base import Outcome
 from .journal import Journal
 from .models import Actor, CellEntry, FileChange, OutputItem
 
-MAX_OUTPUT_CHARS = 1500  # of one command's output in the entry
+MAX_OUTPUT_CHARS = 1500  # of one command's output in the entry: its start and its end (where errors are)
+MAX_WHAT_CHARS = 2000  # of one command's text
 MAX_ACTIONS = 200
 EDITS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
-LOOKS = ("Read", "Glob", "Grep", "TodoWrite", "LS")
+LOOKS = ("Read", "Glob", "Grep", "TodoWrite", "LS", "ToolSearch")  # looking, or loading tools: only counted
 SUBAGENTS = ("Task", "Agent")
 
 
@@ -40,6 +41,11 @@ class Turn:
     actions: tuple[Action, ...]
     looks: int  # files read, searches
     bench_calls: int  # sc-hub tool calls (in the journal already)
+    dropped: int = 0  # actions beyond MAX_ACTIONS (in the transcript only)
+
+
+def _turn(actions: list[Action], looks: int, bench: int) -> Turn:
+    return Turn(tuple(actions[:MAX_ACTIONS]), looks, bench, max(0, len(actions) - MAX_ACTIONS))
 
 
 def _events(stdout: str) -> Iterator[dict]:
@@ -95,7 +101,7 @@ def claude_turn(stdout: str) -> Turn:
             looks += 1
         else:
             actions.append(Action("other", name, output, failed))
-    return Turn(tuple(actions[:MAX_ACTIONS]), looks, bench)
+    return _turn(actions, looks, bench)
 
 
 def codex_turn(stdout: str) -> Turn:
@@ -115,9 +121,11 @@ def codex_turn(stdout: str) -> Turn:
                     actions.append(Action("edit", f"{change.get('path', '')} ({change.get('kind', 'changed')})"))
         elif kind == "web_search":
             actions.append(Action("web", str(item.get("query", ""))))
+        elif kind == "collab_tool_call":  # a sub-agent
+            actions.append(Action("subagent", str(item.get("prompt") or item.get("tool") or "")[:300]))
         elif kind == "mcp_tool_call":
             bench += 1
-    return Turn(tuple(actions[:MAX_ACTIONS]), 0, bench)
+    return _turn(actions, 0, bench)
 
 
 def parse(engine: str, stdout: str) -> Turn:
@@ -125,9 +133,18 @@ def parse(engine: str, stdout: str) -> Turn:
 
 
 def _line(action: Action) -> str:
+    what = action.what if len(action.what) <= MAX_WHAT_CHARS else action.what[:MAX_WHAT_CHARS] + " [...]"
     if action.kind == "shell":
-        return f"$ {action.what}"
-    return f"# {action.kind}: {action.what}"
+        return f"$ {what}"
+    return f"# {action.kind}: {what}"
+
+
+def _cut(text: str) -> tuple[str, int]:
+    """Its start and its end: a traceback's last lines matter most."""
+    if len(text) <= MAX_OUTPUT_CHARS:
+        return text, 0
+    half = MAX_OUTPUT_CHARS // 2
+    return f"{text[:half]}\n[... {len(text) - 2 * half} characters left out ...]\n{text[-half:]}", len(text) - 2 * half
 
 
 def _outputs(actions: tuple[Action, ...]) -> tuple[OutputItem, ...]:
@@ -135,21 +152,21 @@ def _outputs(actions: tuple[Action, ...]) -> tuple[OutputItem, ...]:
     for action in actions:
         if not action.output and not action.failed:
             continue
-        text = action.output or "(failed)"
-        cut = max(0, len(text) - MAX_OUTPUT_CHARS)
+        text, cut = _cut(action.output or "(failed)")
         items.append(OutputItem(kind="stream", name="stderr" if action.failed else "stdout",
-                                text=f"{_line(action)}\n{text[:MAX_OUTPUT_CHARS]}", truncated=cut))
+                                text=f"{_line(action)}\n{text}", truncated=cut))
     return tuple(items)
 
 
 def record(journal: Journal, turn: Turn, files: tuple[FileChange, ...], outcome: Outcome, actor: Actor,
-           transcript: Path, started: str) -> str | None:
+           transcript: Path, started: str, files_truncated: bool = False) -> str | None:
     """One final journal cell for the turn's own actions; None when it used only the sc-hub tools."""
     if not turn.actions and not files:
         return None
     cid = journal.allocate("c")
     header = (f"# {actor.engine}'s own actions in this lab-agent turn (free mode), recorded by sc-hub after the turn.\n"
-              f"# Also: {turn.looks} file reads or searches, {turn.bench_calls} sc-hub tool calls (in the journal).\n"
+              f"# Also: {turn.looks} file reads or searches, {turn.bench_calls} sc-hub tool calls (in the journal)"
+              + (f", {turn.dropped} more actions (in the transcript)" if turn.dropped else "") + ".\n"
               f"# Full transcript: {transcript}\n")
     summary = " ".join((outcome.text or "").split())[:300]
     ok = outcome.status == "ok"
@@ -159,6 +176,7 @@ def record(journal: Journal, turn: Turn, files: tuple[FileChange, ...], outcome:
         expect="recorded after the turn: its commands with their output, and the files it changed",
         code=header + "\n".join(_line(a) for a in turn.actions), actor=actor, created=started, started=started,
         finished=stamp(), status="ok" if ok else "error", outputs=_outputs(turn.actions), files=files,
+        files_truncated=files_truncated,
         message="" if ok else f"the turn ended as {outcome.status}: {(outcome.error or '')[-300:]}",
     )
     journal.write_cell(entry)

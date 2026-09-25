@@ -420,3 +420,33 @@ def test_codex_keeps_what_the_student_wrote(tmp_path) -> None:
     config.write_text('[mcp_servers.schub]\ncommand = "mine"\n')
     assert "by hand" in assistants.codex(paths, "/l/users/u/schub", workspace, ONBOARD.parent)
     assert config.read_text() == '[mcp_servers.schub]\ncommand = "mine"\n'
+
+
+def test_codex_trust_written_another_way_and_tables_codex_added_survive(tmp_path) -> None:
+    import sys
+
+    import pytest
+
+    from sc_hub_onboard import assistants
+    from sc_hub_onboard.sshkit import BEGIN, END, Paths
+
+    if sys.version_info < (3, 11):
+        pytest.skip("tomllib (Python 3.11+) tells the ways a table can be written apart")
+    import tomllib
+
+    paths = Paths(home=tmp_path / "home")
+    workspace = assistants.workspace(paths, ONBOARD.parent)
+    config = paths.home / ".codex" / "config.toml"
+    config.parent.mkdir(parents=True)
+    config.write_text(f"[projects.'{workspace}']\ntrust_level = \"trusted\"\n")  # single quotes: another spelling
+    assistants.codex(paths, "/l/users/u/schub", workspace, ONBOARD.parent)
+    tomllib.loads(config.read_text())  # still valid: the table was not defined twice
+    # Codex itself appended a table after sc-hub's last one, inside the block
+    text = config.read_text().replace(END, "[features]\nmulti_agent = true\n" + END)
+    config.write_text(text)
+    assistants.codex(paths, "/l/users/u/schub", workspace, ONBOARD.parent)
+    data = tomllib.loads(config.read_text())
+    assert data["features"]["multi_agent"] is True and config.read_text().count(BEGIN) == 1
+    config.write_text("model = \n")  # broken already: sc-hub does not touch it
+    assert "not valid TOML" in assistants.codex(paths, "/l/users/u/schub", workspace, ONBOARD.parent)
+    assert config.read_text() == "model = \n"

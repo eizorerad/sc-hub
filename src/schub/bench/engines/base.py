@@ -48,9 +48,27 @@ class Turn:
     free: bool = False  # the engine's own tools and subagents too, writing only inside `cwd` (the project)
 
 
-# What a free lab agent may never read (its shell is sandboxed; its file tools are denied by rule)
-PRIVATE_PATHS = ("~/.ssh", "~/.claude/.credentials.json", "~/.claude.json", "~/.codex/auth.json", "~/.config/gh",
-                 "~/.netrc", "~/.git-credentials")
+# What a free lab agent may never read (its shell is sandboxed; its file tools are denied by rule): keys, sign-ins,
+# tokens, other chats' transcripts, shell histories. The engine CLIs themselves run outside the sandbox.
+# (Only the private parts of ~/.claude and ~/.codex: the CLIs' shell snapshots and helpers there must stay readable.)
+PRIVATE_PATHS = ("~/.ssh", "~/.claude/.credentials.json", "~/.claude/projects", "~/.claude/history.jsonl",
+                 "~/.claude.json", "~/.codex/auth.json", "~/.codex/sessions", "~/.codex/history.jsonl", "~/.codex/log",
+                 "~/.codex-sqlite", "~/.config/gh", "~/.config/gcloud", "~/.config/rclone", "~/.netrc",
+                 "~/.git-credentials", "~/.cache/huggingface", "~/.huggingface", "~/.aws", "~/.kaggle",
+                 "~/.docker/config.json", "~/.gnupg", "~/.pypirc", "~/.npmrc", "~/.local/share/keyrings",
+                 "~/.local/share/jupyter/runtime", "~/.bash_history", "~/.python_history", "~/.zsh_history",
+                 "~/.vscode-server")
+
+
+def private_paths(env: dict[str, str] | None = None) -> tuple[str, ...]:
+    """PRIVATE_PATHS as absolute paths, with the engines' own homes and sc-hub's session tokens when moved."""
+    env = dict(os.environ) if env is None else env
+    home = Path(env.get("HOME") or Path.home())
+    paths = [str(home / p[2:]) for p in PRIVATE_PATHS]
+    paths += [env[k] for k in ("CLAUDE_CONFIG_DIR", "CODEX_HOME") if env.get(k)]
+    if env.get("SCHUB_ROOT"):
+        paths.append(str(Path(env["SCHUB_ROOT"]) / "sessions"))
+    return tuple(dict.fromkeys(paths))
 
 
 @dataclass(frozen=True)

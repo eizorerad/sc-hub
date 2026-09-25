@@ -290,7 +290,9 @@ class Slice:
                    handover=handover, role=role, login=credential_fingerprint(engine))
         free = config.mode == "free" and not writing  # the writer only reads the journal and builds the report
         before, started = (self._snapshot() if free else None), stamp()
-        turn = Turn(prompt=prompt, cwd=goal.project_dir if free else run_dir, run_dir=run_dir,
+        if free:  # its writable folder: the project's work/, never goal/ (its controls, its transcript) or journal/
+            self.work_dir.mkdir(parents=True, exist_ok=True)
+        turn = Turn(prompt=prompt, cwd=self.work_dir if free else run_dir, run_dir=run_dir,
                     timeout_s=max(60, self.remaining_s(config)), session_id=resume, new_session_id=new_id,
                     model=policy.model(engine), effort=policy.effort(engine), free=free,
                     mcp=self.mcp_server(engine, policy.model(engine), policy.effort(engine), resume or new_id or "",
@@ -333,6 +335,10 @@ class Slice:
                            f"{outcome.error[-300:]}. The next turn tries again.")
         return outcome
 
+    @property
+    def work_dir(self) -> Path:
+        return self.goal.project_dir / "work"
+
     def _snapshot(self) -> Snapshot:
         return scan(self.goal.project_dir, self.settings.bench.snapshot_max_files, SKIP_DIRS | {"goal"})
 
@@ -343,10 +349,15 @@ class Slice:
             stdout = (run_dir / "stdout.txt").read_text(errors="replace")
             after = self._snapshot()
             files = diff(before, after, self.goal.project_dir, self.settings.bench.snapshot_hash_max_mb * 1024 * 1024)
+            journal = Journal(self.goal.project_dir, self.project)
+            by_cells = {f.path for e in journal.entries(limit=200) if getattr(e, "created", "") >= started
+                        for f in getattr(e, "files", ())}  # its run() cells already recorded theirs
+            files = tuple(f for f in files if f.path not in by_cells)
             actor = Actor(kind="lab_agent", client="sc-hub lab agent", engine=engine, model=policy.model(engine),
                           effort=policy.effort(engine), session_id=outcome.session_id or "")
-            cid = agent_record.record(Journal(self.goal.project_dir, self.project), agent_record.parse(engine, stdout),
-                                      files, outcome, actor, run_dir / "stdout.txt", started)
+            cid = agent_record.record(journal, agent_record.parse(engine, stdout),
+                                      files, outcome, actor, run_dir / "stdout.txt", started,
+                                      files_truncated=after.truncated)
         except (OSError, ValueError, JournalError) as exc:  # the record must never break the slice
             self.goal.event("own_work_not_recorded", job=self.job, engine=engine, error=str(exc)[:300])
             return
@@ -457,9 +468,10 @@ class Slice:
             "Never start another lab agent and never change the engine policy.",
         ]
         if config.mode == "free":
-            text += ["", f"You may also use your own tools: the shell, file edits and subagents, in the project folder "
-                     f"{self.goal.project_dir} (your working directory; writes elsewhere are blocked, except a temp "
-                     "folder). Use them to read and organise files, write code and notes, clone repositories and try "
+            text += ["", f"You may also use your own tools: the shell, file edits and subagents. Your working folder is "
+                     f"the project's work folder {self.work_dir}; you can read the whole project, but write only there "
+                     "(and in a temp folder): the project's data, journal and goal are read-only for you. Use them to "
+                     "read and organise files, write code and notes, clone repositories and try "
                      "things quickly. Computations the study's results rest on go through run() cells (%%slurm for "
                      "heavy or long work), so their outputs, files and checks are in the journal and findings can cite "
                      "them. Your own commands and file changes are recorded in the journal after each turn. Never "

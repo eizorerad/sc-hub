@@ -31,13 +31,64 @@ def codex_home(paths: Paths) -> Path:
     return Path(os.environ["CODEX_HOME"]) if os.environ.get("CODEX_HOME") and not paths.custom else paths.home / ".codex"
 
 
+def _toml_ok(text: str) -> bool | None:
+    """True/False when tomllib (Python 3.11+) can tell, None when it is not there."""
+    try:
+        import tomllib
+    except ImportError:
+        return None
+    try:
+        tomllib.loads(text)
+        return True
+    except tomllib.TOMLDecodeError:
+        return False
+
+
+def _trusted(text: str, workspace_dir: Path) -> bool:
+    """Whether the config already has the workspace under [projects], however it is written (defining it again
+    would make the file invalid, and Codex would then refuse it in every folder)."""
+    try:
+        import tomllib
+
+        return str(workspace_dir) in (tomllib.loads(text).get("projects") or {})
+    except ImportError:  # (Python 3.9, 3.10) no parser: any mention of the folder counts as there
+        return str(workspace_dir) in text or json.dumps(str(workspace_dir))[1:-1] in text
+    except ValueError:
+        return True  # not valid TOML already: add nothing to it
+
+
+def _foreign_tables(text: str, workspace_dir: Path) -> str:
+    """Tables another program wrote inside sc-hub's block (Codex adds its [features] or a newly trusted folder
+    after the last table): they are kept, outside the block, when the block is rewritten."""
+    start, end = text.find(BEGIN), text.find(END)
+    if start < 0 or end < start:
+        return ""
+    kept, current, ours = [], [], True
+    for line in text[start + len(BEGIN):end].splitlines():
+        if line.startswith("["):
+            if current and not ours:
+                kept.extend(current)
+            header = line.strip()
+            ours = header == "[mcp_servers.schub]" or (header.startswith("[projects.") and str(workspace_dir) in header)
+            current = [line]
+        elif current:
+            current.append(line)
+    if current and not ours:
+        kept.extend(current)
+    return "\n".join(line for line in kept).strip()
+
+
 def codex(paths: Paths, remote_root: str, workspace_dir: Path, repo: Path) -> str:
     folder = codex_home(paths)
     config = folder / "config.toml"
     config.parent.mkdir(parents=True, exist_ok=True)
-    text = strip_block(config.read_text() if config.exists() else "")
+    original = config.read_text() if config.exists() else ""
+    foreign = _foreign_tables(original, workspace_dir)
+    text = strip_block(original) + ("\n" + foreign + "\n" if foreign else "")
     if "[mcp_servers.schub]" in text:
         return "Codex: your config already defines [mcp_servers.schub] by hand; left as it is"
+    if _toml_ok(text) is False:
+        return f"Codex: {config} is not valid TOML; sc-hub left it as it is (fix it, then run this step again)"
     _, args = mcp_command(paths, remote_root)
     lines = [BEGIN, "[mcp_servers.schub]", 'command = "ssh"', f"args = {json.dumps(args)}",
              "startup_timeout_sec = 60", "tool_timeout_sec = 180",
@@ -45,10 +96,12 @@ def codex(paths: Paths, remote_root: str, workspace_dir: Path, repo: Path) -> st
              'default_tools_approval_mode = "approve"',
              "# Off everywhere but the sc-hub workspace, whose .codex/config.toml turns it on ($schub explains it).",
              "enabled = false"]
-    trust = f"[projects.{json.dumps(str(workspace_dir))}]"
-    if trust not in text:  # (a table the student already has must not be defined twice)
-        lines += ["", trust, 'trust_level = "trusted"']
-    config.write_text((text.rstrip("\n") + "\n\n" if text.strip() else "") + "\n".join(lines + [END]) + "\n")
+    if not _trusted(text, workspace_dir):  # (a table the student already has must not be defined twice)
+        lines += ["", f"[projects.{json.dumps(str(workspace_dir))}]", 'trust_level = "trusted"']
+    updated = (text.rstrip("\n") + "\n\n" if text.strip() else "") + "\n".join(lines + [END]) + "\n"
+    if _toml_ok(updated) is False:  # never leave Codex a config it refuses
+        return f"Codex: could not add sc-hub to {config} safely; add [mcp_servers.schub] by hand (docs/setup.md)"
+    config.write_text(updated)
     local = workspace_dir / ".codex" / "config.toml"
     local.parent.mkdir(parents=True, exist_ok=True)
     local.write_text("# sc-hub's workspace: its MCP server is on here (it is off elsewhere).\n"
@@ -72,7 +125,7 @@ def skill_text(repo: Path, workspace_dir: Path, app: str) -> str:
     head += ["disable-model-invocation: true"] if claude else []
     body = (repo / "templates" / "skill-schub.md").read_text().format(
         APP="Claude Code" if claude else "Codex", TOOL="/schub" if claude else "$schub", WORKSPACE=workspace_dir,
-        OPEN=f"cd {workspace_dir} && claude" if claude else f"codex -C {workspace_dir}")
+        OPEN=f"cd {workspace_dir}; claude" if claude else f"codex -C {workspace_dir}")  # (";": PowerShell 5 too)
     return "\n".join(head + ["---", ""]) + body
 
 

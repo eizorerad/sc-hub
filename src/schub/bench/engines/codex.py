@@ -14,7 +14,7 @@ import re
 import socket
 from pathlib import Path
 
-from .base import Engine, Outcome, Turn, classify
+from .base import Engine, Outcome, Turn, classify, private_paths
 
 # Codex's own tools, off: a read-only sandbox still lets its shell read any file of the account (other
 # engines' logins included). Names from `codex features list` (codex-cli 0.155).
@@ -27,6 +27,15 @@ MISSING = re.compile(r"no (saved )?(session|conversation|thread|rollout)|(sessio
 
 
 WORK_ITEMS = ("mcp_tool_call", "command_execution", "file_change", "web_search")
+
+
+def _free_profile() -> list[str]:
+    """Read everything but the private paths, write only in the working folder and temp, network open."""
+    entries = {":root": "read", **{p: "none" for p in private_paths()}, ":tmpdir": "write", ":slash_tmp": "write"}
+    table = ", ".join(f"{_toml(k)} = {_toml(v)}" for k, v in entries.items())
+    return ['default_permissions="schub_free"',
+            f'permissions.schub_free.filesystem={{ {table}, ":workspace_roots" = {{ "." = "write" }} }}',
+            "permissions.schub_free.network={ enabled = true }"]
 
 
 def _toml(value: object) -> str:
@@ -53,9 +62,8 @@ class Codex(Engine):
 
     def argv(self, binary: str, turn: Turn) -> list[str]:
         head = [binary, "exec", "resume", turn.session_id] if turn.session_id else [binary, "exec"]
-        if turn.free:  # its shell and sub-agents too: writes only in the project folder (and temp), network open
-            config = ['sandbox_mode="workspace-write"', "sandbox_workspace_write.network_access=true",
-                      'approval_policy="never"']
+        if turn.free:  # its shell and sub-agents too, in a permissions profile: see _free_profile
+            config = [*_free_profile(), 'approval_policy="never"']
             config += [f"features.{name}=false" for name in BUILT_IN_TOOLS if name not in FREE_TOOLS]
         else:
             config = ['sandbox_mode="read-only"', 'approval_policy="never"']

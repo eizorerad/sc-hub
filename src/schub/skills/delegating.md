@@ -44,8 +44,10 @@ journal(project)               # what it did, cell by cell
 delegation(project, stop=True) # stop it; the journal keeps everything
 ```
 
-- mode "free" (the default) lets it use its own shell, files and subagents inside the
-  project folder; "bench" limits it to the sc-hub tools.
+- mode "free" (the default) lets it use its own shell, files and subagents; it writes only
+  in the project's work/ folder. "bench" limits it to the sc-hub tools.
+- While it works on a project, a new task there is refused; `replace=True` starts the new
+  one instead (the same objective handed over again keeps its budget).
 - It runs with the newest model at high effort, and stands down while Claude's weekly
   window is 80% full, so the student's own chats keep their share.
 - When it hands over as "blocked", read its question in the journal, settle it with the

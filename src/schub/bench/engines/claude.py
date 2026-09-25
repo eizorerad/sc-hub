@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import re
 
-from .base import PRIVATE_PATHS, Engine, Outcome, Turn, classify
+from .base import Engine, Outcome, Turn, classify, private_paths
 
 # a session that cannot go on: lost, held by a dead node, or too long to resume (a new one starts from the hand-over)
 MISSING = re.compile(r"no conversation found|session .* (not found|does not exist)|already in use|"
@@ -56,18 +56,20 @@ class Claude(Engine):
                                 "rate_limit": _rate_limit(stdout), "tool_calls": _tool_calls(stdout)})
 
 
-# A free lab agent's own tools, allowed without asking (no one is there to ask): shell commands run in the OS
-# sandbox (writes only in the project folder and a temp folder), file edits are accepted only inside it.
-FREE_TOOLS = ("Bash", "Read", "Edit", "Write", "MultiEdit", "NotebookEdit", "Glob", "Grep", "Task", "Agent",
-              "TodoWrite", "WebFetch", "WebSearch")
+# A free lab agent's own tools, allowed without asking (no one is there to ask). Shell commands run in the OS
+# sandbox (writes only in its working folder and a temp folder). File edits are not listed: acceptEdits accepts
+# them only inside the working folder (a bare "Edit" here would allow them anywhere).
+FREE_TOOLS = ("Bash", "Read", "Glob", "Grep", "Task", "Agent", "TodoWrite", "WebFetch", "WebSearch")
 
 
 def _free(turn: Turn) -> list[str]:
+    private = private_paths()
     settings = {
-        "sandbox": {"enabled": True, "autoAllowBashIfSandboxed": True, "allowUnsandboxedCommands": False,
+        "sandbox": {"enabled": True, "failIfUnavailable": True, "autoAllowBashIfSandboxed": True,
+                    "allowUnsandboxedCommands": False,
                     "network": {"allowedDomains": ["*"]},  # downloads, pip, git: open, as for the student
-                    "filesystem": {"denyRead": list(PRIVATE_PATHS)}},
-        "permissions": {"deny": [f"Read({p}/**)" for p in PRIVATE_PATHS] + [f"Read({p})" for p in PRIVATE_PATHS]},
+                    "filesystem": {"denyRead": list(private)}},
+        "permissions": {"deny": [f"Read({p}/**)" for p in private] + [f"Read({p})" for p in private]},
     }
     return ["--permission-mode", "acceptEdits", "--settings", json.dumps(settings)]
 

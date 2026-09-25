@@ -6,8 +6,9 @@
     slice_minutes: 80     # one turn's time in its Slurm job
     pace_minutes: 60      # the next slice starts this long after the last one
     report: yes           # once complete, a writer turn publishes the study as a report notebook
-    mode: free            # free: its own shell, file tools and subagents in the project folder (sandboxed,
-                          # recorded in the journal each turn); bench: only the sc-hub tools
+    mode: free            # free: its own shell, file tools and subagents too (writing only in the project's
+                          # work/, sandboxed, recorded in the journal each turn); bench (when absent): only the
+                          # sc-hub tools. delegate() writes free.
     ---
     The objective, in the student's words.
 
@@ -66,7 +67,7 @@ class GoalConfig:
     slice_minutes: int = 80
     pace_minutes: int = 60
     report: bool = True
-    mode: str = "free"
+    mode: str = "bench"  # goals written before the free mode existed keep what they had
 
 
 def parse_goal(text: str) -> GoalConfig:
@@ -91,7 +92,7 @@ def parse_goal(text: str) -> GoalConfig:
             raise GoalError(f"goal.md: {key} must be from {low} to {high}")
     if values.get("engine", "auto") not in ("auto", "claude", "codex"):
         raise GoalError("goal.md: engine must be auto, claude or codex")
-    if values.get("mode", "free") not in MODES:
+    if values.get("mode", "bench") not in MODES:
         raise GoalError("goal.md: mode must be free or bench")
     objective = objective.strip()
     if not objective or len(objective) > 20_000:
