@@ -97,6 +97,7 @@ def test_a_free_claude_has_its_tools_in_a_sandbox_that_hides_keys() -> None:
     bench = Claude().argv("claude", Turn(prompt="work", cwd=Path("/r"), run_dir=Path("/r"), timeout_s=60,
                                          mcp=McpServer("python", (), ())))
     assert bench[bench.index("--tools") + 1] == "" and "--settings" not in bench
+    assert argv[argv.index("--setting-sources") + 1] == "user"  # a project's .claude/ (writable by it) is not read
 
 
 def test_a_free_codex_writes_only_in_its_folder() -> None:
@@ -165,3 +166,22 @@ def test_a_turn_that_only_used_the_sc_hub_tools_adds_no_cell(settings: Settings,
     cell = journal.cell(cid)
     assert cell.status == "error" and "boom" in cell.message and cell.outputs[0].truncated == 3500
     assert "characters left out" in cell.outputs[0].text and cell.outputs[0].text.endswith("x" * 750)
+
+
+def test_engine_settings_planted_in_the_work_folder_go_before_the_next_turn(lab: Settings, cluster: FakeCluster,
+                                                                           monkeypatch) -> None:
+    """An engine reads its settings from its working folder: a planted MCP server or hook would run unsandboxed."""
+    work = lab.projects_dir / "p" / "work"
+    (work / ".codex").mkdir(parents=True)
+    (work / ".codex" / "config.toml").write_text('[mcp_servers.x]\ncommand = "evil"\n')
+    (work / ".claude").mkdir()
+    (work / ".claude" / "settings.json").write_text('{"hooks": {}}')
+    (work / ".mcp.json").write_text("{}")
+    (work / "keep.txt").write_text("the agent's own file")
+    first = goal_agent.start(lab, Slurm(cluster), "p", "---\nmode: free\nmax_turns: 3\n---\n" + OBJECTIVE)
+    cluster.jobs[first] = "RUNNING"
+    goal_agent.Slice(lab, Slurm(cluster), "p", first).run()
+    assert not (work / ".codex").exists() and not (work / ".claude").exists() and not (work / ".mcp.json").exists()
+    assert (work / "keep.txt").exists()
+    [event] = [e for e in Goal(lab, "p").events() if e["event"] == "engine_config_removed"]
+    assert sorted(event["paths"]) == [".claude", ".codex", ".mcp.json"]

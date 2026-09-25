@@ -71,7 +71,8 @@ def _free(turn: Turn) -> list[str]:
                     "filesystem": {"denyRead": list(private)}},
         "permissions": {"deny": [f"Read({p}/**)" for p in private] + [f"Read({p})" for p in private]},
     }
-    return ["--permission-mode", "acceptEdits", "--settings", json.dumps(settings)]
+    # only the user's own settings besides these: a project's .claude/ (which the agent could write) is not read
+    return ["--permission-mode", "acceptEdits", "--setting-sources", "user", "--settings", json.dumps(settings)]
 
 
 def _tool_calls(stdout: str) -> int:

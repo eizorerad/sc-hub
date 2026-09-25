@@ -28,6 +28,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import signal
 import sys
 import time
@@ -292,6 +293,7 @@ class Slice:
         before, started = (self._snapshot() if free else None), stamp()
         if free:  # its writable folder: the project's work/, never goal/ (its controls, its transcript) or journal/
             self.work_dir.mkdir(parents=True, exist_ok=True)
+            self._clear_engine_configs()
         turn = Turn(prompt=prompt, cwd=self.work_dir if free else run_dir, run_dir=run_dir,
                     timeout_s=max(60, self.remaining_s(config)), session_id=resume, new_session_id=new_id,
                     model=policy.model(engine), effort=policy.effort(engine), free=free,
@@ -339,6 +341,19 @@ class Slice:
     def work_dir(self) -> Path:
         return self.goal.project_dir / "work"
 
+    def _clear_engine_configs(self) -> None:
+        """An engine reads its settings from the folder it works in: a free turn could plant them there (an MCP
+        server or a hook would then run outside the sandbox on the next turn). They go before every free turn."""
+        planted = [p for p in (self.work_dir / ".codex", self.work_dir / ".claude", self.work_dir / ".mcp.json")
+                   if p.exists() or p.is_symlink()]
+        for path in planted:
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path, ignore_errors=True)
+            else:
+                path.unlink(missing_ok=True)
+        if planted:
+            self.goal.event("engine_config_removed", job=self.job, paths=[p.name for p in planted])
+
     def _snapshot(self) -> Snapshot:
         return scan(self.goal.project_dir, self.settings.bench.snapshot_max_files, SKIP_DIRS | {"goal"})
 
@@ -350,14 +365,15 @@ class Slice:
             after = self._snapshot()
             files = diff(before, after, self.goal.project_dir, self.settings.bench.snapshot_hash_max_mb * 1024 * 1024)
             journal = Journal(self.goal.project_dir, self.project)
-            by_cells = {f.path for e in journal.entries(limit=200) if getattr(e, "created", "") >= started
-                        for f in getattr(e, "files", ())}  # its run() cells already recorded theirs
-            files = tuple(f for f in files if f.path not in by_cells)
+            by_cells = {f.path: (f.size, f.sha256) for e in journal.entries(limit=200)
+                        if getattr(e, "created", "") >= started for f in getattr(e, "files", ())}
+            # its run() cells recorded theirs; a file its shell changed again after that stays in
+            files = tuple(f for f in files if by_cells.get(f.path) != (f.size, f.sha256))
             actor = Actor(kind="lab_agent", client="sc-hub lab agent", engine=engine, model=policy.model(engine),
                           effort=policy.effort(engine), session_id=outcome.session_id or "")
             cid = agent_record.record(journal, agent_record.parse(engine, stdout),
                                       files, outcome, actor, run_dir / "stdout.txt", started,
-                                      files_truncated=after.truncated)
+                                      files_truncated=before.truncated or after.truncated)
         except (OSError, ValueError, JournalError) as exc:  # the record must never break the slice
             self.goal.event("own_work_not_recorded", job=self.job, engine=engine, error=str(exc)[:300])
             return

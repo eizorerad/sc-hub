@@ -450,3 +450,23 @@ def test_codex_trust_written_another_way_and_tables_codex_added_survive(tmp_path
     config.write_text("model = \n")  # broken already: sc-hub does not touch it
     assert "not valid TOML" in assistants.codex(paths, "/l/users/u/schub", workspace, ONBOARD.parent)
     assert config.read_text() == "model = \n"
+
+
+
+def test_without_a_toml_parser_only_the_quoted_folder_counts_as_trusted(tmp_path, monkeypatch) -> None:
+    import builtins
+
+    from sc_hub_onboard import assistants
+
+    real_import = builtins.__import__
+
+    def no_tomllib(name, *args, **kwargs):  # Python 3.9/3.10: macOS's own python3 has none
+        if name == "tomllib":
+            raise ImportError(name)
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_tomllib)
+    workspace = tmp_path / "sc-hub-workspace"
+    assert assistants._trusted(f'[projects."{workspace}"]\n', workspace)
+    assert assistants._trusted(f"[projects.'{workspace}']\n", workspace)
+    assert not assistants._trusted(f'[projects."{workspace}-old"]\n', workspace)  # only a name that starts the same

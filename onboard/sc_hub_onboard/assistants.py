@@ -51,8 +51,9 @@ def _trusted(text: str, workspace_dir: Path) -> bool:
         import tomllib
 
         return str(workspace_dir) in (tomllib.loads(text).get("projects") or {})
-    except ImportError:  # (Python 3.9, 3.10) no parser: any mention of the folder counts as there
-        return str(workspace_dir) in text or json.dumps(str(workspace_dir))[1:-1] in text
+    except ImportError:  # (Python 3.9, 3.10) no parser: the folder named as a quoted key counts as there
+        names = (str(workspace_dir), json.dumps(str(workspace_dir))[1:-1])
+        return any(f"{q}{name}{q}" in text for name in names for q in ('"', "'"))
     except ValueError:
         return True  # not valid TOML already: add nothing to it
 
