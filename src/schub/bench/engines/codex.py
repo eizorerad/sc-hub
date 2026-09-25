@@ -21,6 +21,7 @@ from .base import Engine, Outcome, Turn, classify
 BUILT_IN_TOOLS = ("shell_tool", "browser_use", "browser_use_external", "computer_use", "in_app_browser", "apps",
                   "multi_agent", "image_generation")
 # a thread that cannot go on: lost, or too long to resume (a new one starts from the hand-over)
+FREE_TOOLS = ("shell_tool", "multi_agent")  # a free lab agent keeps these; no browser, computer use or apps
 MISSING = re.compile(r"no (saved )?(session|conversation|thread|rollout)|(session|thread) .*not found|"
                      r"context.?length.?exceeded|context window|maximum context length", re.I)
 
@@ -52,8 +53,13 @@ class Codex(Engine):
 
     def argv(self, binary: str, turn: Turn) -> list[str]:
         head = [binary, "exec", "resume", turn.session_id] if turn.session_id else [binary, "exec"]
-        config = ['sandbox_mode="read-only"', 'approval_policy="never"']
-        config += [f"features.{name}=false" for name in BUILT_IN_TOOLS]  # the sc-hub MCP tools are its only tools
+        if turn.free:  # its shell and sub-agents too: writes only in the project folder (and temp), network open
+            config = ['sandbox_mode="workspace-write"', "sandbox_workspace_write.network_access=true",
+                      'approval_policy="never"']
+            config += [f"features.{name}=false" for name in BUILT_IN_TOOLS if name not in FREE_TOOLS]
+        else:
+            config = ['sandbox_mode="read-only"', 'approval_policy="never"']
+            config += [f"features.{name}=false" for name in BUILT_IN_TOOLS]  # the sc-hub MCP tools are its only tools
         config += [f"model={_toml(turn.model)}"] if turn.model else []
         config += [f"model_reasoning_effort={_toml(turn.effort)}"] if turn.effort else []
         if turn.mcp is not None:

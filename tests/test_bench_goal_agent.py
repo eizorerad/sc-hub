@@ -137,7 +137,9 @@ def test_a_usage_limit_hands_the_turn_to_the_other_engine(lab: Settings, cluster
     monkeypatch.setenv("FAKE_CLAUDE", "ok")
     _, result = next_slice(lab, cluster, first)
     third = engine_calls()[-1]
-    assert result == "ok" and third["engine"] == "codex" and third["argv"][:2] == ["exec", "resume"]
+    argv = third["argv"]
+    assert result == "ok" and third["engine"] == "codex" and argv[0] == "exec" and argv[argv.index("resume") - 1] != "-c"
+    assert 'model_reasoning_effort="xhigh"' in argv[:argv.index("resume")]  # pinned by the guard before the resume
 
 
 def test_the_owners_policy_is_the_limit(lab: Settings, cluster: FakeCluster) -> None:

@@ -6,6 +6,8 @@
     slice_minutes: 80     # one turn's time in its Slurm job
     pace_minutes: 60      # the next slice starts this long after the last one
     report: yes           # once complete, a writer turn publishes the study as a report notebook
+    mode: free            # free: its own shell, file tools and subagents in the project folder (sandboxed,
+                          # recorded in the journal each turn); bench: only the sc-hub tools
     ---
     The objective, in the student's words.
 
@@ -46,7 +48,8 @@ def _yes_no(raw: str) -> bool:
     raise ValueError(raw)
 
 
-KEYS = {"engine": str, "max_turns": int, "slice_minutes": int, "pace_minutes": int, "report": _yes_no}
+KEYS = {"engine": str, "max_turns": int, "slice_minutes": int, "pace_minutes": int, "report": _yes_no, "mode": str}
+MODES = ("free", "bench")
 LIMITS = {"max_turns": (1, 500), "slice_minutes": (20, 460), "pace_minutes": (5, 24 * 60)}
 FRONT = re.compile(r"\A---\n(.*?)\n---\n?(.*)\Z", re.S)
 
@@ -63,6 +66,7 @@ class GoalConfig:
     slice_minutes: int = 80
     pace_minutes: int = 60
     report: bool = True
+    mode: str = "free"
 
 
 def parse_goal(text: str) -> GoalConfig:
@@ -87,6 +91,8 @@ def parse_goal(text: str) -> GoalConfig:
             raise GoalError(f"goal.md: {key} must be from {low} to {high}")
     if values.get("engine", "auto") not in ("auto", "claude", "codex"):
         raise GoalError("goal.md: engine must be auto, claude or codex")
+    if values.get("mode", "free") not in MODES:
+        raise GoalError("goal.md: mode must be free or bench")
     objective = objective.strip()
     if not objective or len(objective) > 20_000:
         raise GoalError("goal.md: write the objective (at most 20000 characters) after the settings")

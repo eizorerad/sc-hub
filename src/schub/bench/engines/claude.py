@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import re
 
-from .base import Engine, Outcome, Turn, classify
+from .base import PRIVATE_PATHS, Engine, Outcome, Turn, classify
 
 # a session that cannot go on: lost, held by a dead node, or too long to resume (a new one starts from the hand-over)
 MISSING = re.compile(r"no conversation found|session .* (not found|does not exist)|already in use|"
@@ -22,11 +22,14 @@ class Claude(Engine):
 
     def argv(self, binary: str, turn: Turn) -> list[str]:
         # stream-json: the result line plus rate_limit_event, which says how full the weekly window is
-        argv = [binary, "-p", turn.prompt, "--output-format", "stream-json", "--verbose", "--tools", ""]
+        argv = [binary, "-p", turn.prompt, "--output-format", "stream-json", "--verbose"]
+        argv += _free(turn) if turn.free else ["--tools", ""]
         if turn.mcp is not None:
             server = {"command": turn.mcp.command, "args": list(turn.mcp.args), "env": dict(turn.mcp.env)}
             argv += ["--mcp-config", json.dumps({"mcpServers": {"schub": server}}), "--strict-mcp-config",
-                     "--allowedTools", "mcp__schub__*"]
+                     "--allowedTools", *FREE_TOOLS, "mcp__schub__*"] if turn.free else \
+                ["--mcp-config", json.dumps({"mcpServers": {"schub": server}}), "--strict-mcp-config",
+                 "--allowedTools", "mcp__schub__*"]
         else:
             argv += ["--mcp-config", json.dumps({"mcpServers": {}}), "--strict-mcp-config"]  # a probe
         argv += ["--model", turn.model] if turn.model else []
@@ -51,6 +54,22 @@ class Claude(Engine):
                        cost_usd=result.get("total_cost_usd"), turns=result.get("num_turns"), returncode=returncode,
                        details={"models": sorted((result.get("modelUsage") or {}).keys()),
                                 "rate_limit": _rate_limit(stdout), "tool_calls": _tool_calls(stdout)})
+
+
+# A free lab agent's own tools, allowed without asking (no one is there to ask): shell commands run in the OS
+# sandbox (writes only in the project folder and a temp folder), file edits are accepted only inside it.
+FREE_TOOLS = ("Bash", "Read", "Edit", "Write", "MultiEdit", "NotebookEdit", "Glob", "Grep", "Task", "Agent",
+              "TodoWrite", "WebFetch", "WebSearch")
+
+
+def _free(turn: Turn) -> list[str]:
+    settings = {
+        "sandbox": {"enabled": True, "autoAllowBashIfSandboxed": True, "allowUnsandboxedCommands": False,
+                    "network": {"allowedDomains": ["*"]},  # downloads, pip, git: open, as for the student
+                    "filesystem": {"denyRead": list(PRIVATE_PATHS)}},
+        "permissions": {"deny": [f"Read({p}/**)" for p in PRIVATE_PATHS] + [f"Read({p})" for p in PRIVATE_PATHS]},
+    }
+    return ["--permission-mode", "acceptEdits", "--settings", json.dumps(settings)]
 
 
 def _tool_calls(stdout: str) -> int:

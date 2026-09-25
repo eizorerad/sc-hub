@@ -221,12 +221,13 @@ class Setup:
 
     def connect_assistants(self, ctx: Context) -> str:
         root = ctx.values["remote_root"]
-        done = [line for line in (assistants.codex(self.paths, root), assistants.claude_code(self.paths, root),
+        folder = assistants.workspace(self.paths, self.repo)  # first: Codex and Claude Code turn sc-hub on there
+        ctx.values["workspace"] = str(folder)
+        done = [line for line in (assistants.codex(self.paths, root, folder, self.repo),
+                                  assistants.claude_code(self.paths, root, folder, self.repo),
                                   assistants.claude_desktop(self.paths, root)) if line]
         for line in done:
             ctx.log(line)
-        folder = assistants.workspace(self.paths, self.repo)
-        ctx.values["workspace"] = str(folder)
         connected = [line.split(":")[0] for line in done if "connected" in line]
         return (", ".join(connected) + " connected" if connected else "no assistant found to connect") + \
             f"; workspace {folder}"

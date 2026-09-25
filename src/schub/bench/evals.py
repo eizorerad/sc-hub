@@ -95,7 +95,9 @@ def launch(settings: Settings, slurm: Slurm, requests: Sequence[EvalRequest], en
             turns = min(request.max_turns, max_turns) if max_turns else request.max_turns
             suffix = SUFFIX.format(gpu_minutes=gpu_minutes, download_gb=download_gb)
             goal = (f"---\nengine: {engine}\nmax_turns: {turns}\nslice_minutes: {slice_minutes}\n"
-                    f"pace_minutes: 5\nreport: {'yes' if report else 'no'}\n---\n{request.prompt}{suffix}\n")
+                    f"pace_minutes: 5\nreport: {'yes' if report else 'no'}\n"
+                    "mode: bench\n"  # the matrix measures the bench's own tools, as its earlier columns did
+                    f"---\n{request.prompt}{suffix}\n")
             job = goal_agent.start(settings, slurm, project, goal)
             record = {"request": request.id, "engine": engine, "project": project, "job": job,
                       "started": datetime.now(timezone.utc).isoformat(timespec="seconds")}

@@ -39,14 +39,20 @@ A local page walks through each step with a progress bar:
 If a step fails, the page says what to do. Your assistant can also diagnose and
 fix it ([docs/setup.md](docs/setup.md)).
 
-Then work in the workspace and ask for research:
+Then work in the workspace and ask for research. In Codex type `$schub`, in Claude Code `/schub`:
 
 ```bash
 cd ~/sc-hub-workspace && codex      # or: claude
 ```
 
-> "Create a project for my question: how does the IFN-beta response differ
+> "$schub Create a project for my question: how does the IFN-beta response differ
 > between PBMC cell types? Start from Kang 2018."
+
+sc-hub is on only there. Everywhere else your assistants work without it, and so can
+you on the cluster, with your own login and your own folders; sc-hub keeps to
+`/l/users/LOGIN/schub`. A longer task can be handed to the lab agent on the cluster:
+agree it with your assistant, which then delegates it and follows it
+([how it works](docs/how-it-works.md)).
 
 ## How it works, in brief
 

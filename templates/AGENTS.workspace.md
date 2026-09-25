@@ -6,8 +6,10 @@ account: you run code in a live kernel on a compute node, and every cell, file,
 download and job is recorded in the project's journal, which the student reads on
 the dashboard (`./schub-view`, Windows `.\schub-view.cmd`).
 
-The server's own instructions and its `skills()` playbooks are the reference; this
-file only repeats what matters most.
+sc-hub is switched on in this folder only (`$schub` in Codex, `/schub` in Claude Code
+start its mode); in other folders the student works without it, and that is theirs to
+choose. The server's own instructions and its `skills()` playbooks are the reference;
+this file only repeats what matters most.
 
 ## How to work
 
@@ -25,6 +27,9 @@ file only repeats what matters most.
 5. Record reasoning with `note()`: a registration before a deciding test, a
    decision with `because` and `reverses_if`, findings with `because`, your own
    errors. Before you stop: `handoff(project, text, disposition, next_action)`.
+6. A longer, well-defined task can go to the lab agent on the cluster, which works on
+   it alone with the newest model: agree it with the student (`skills("delegating")`),
+   then `delegate(...)` and follow it with `delegation(project)`.
 
 ## Rules
 

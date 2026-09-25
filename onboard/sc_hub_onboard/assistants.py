@@ -1,4 +1,12 @@
-"""The sc-hub MCP server in the student's assistants: Codex, Claude Code, Claude Desktop (whichever exist)."""
+"""The sc-hub MCP server in the student's assistants: Codex, Claude Code, Claude Desktop (whichever exist).
+
+sc-hub is there only when the student asks for it, so their other work stays free of it:
+- Codex: the server is defined but off; the workspace's own .codex/config.toml turns it on
+  there (a trusted folder), and the skill $schub explains the mode.
+- Claude Code: the server is registered for the workspace folder only (scope "local"), and
+  the skill /schub explains the mode.
+- Claude Desktop: a chat app that reaches the cluster only through sc-hub: connected as before.
+"""
 
 from __future__ import annotations
 
@@ -19,35 +27,75 @@ def mcp_command(paths: Paths, remote_root: str) -> tuple[str, list[str]]:
     return shutil.which("ssh") or "ssh", args
 
 
-def codex(paths: Paths, remote_root: str) -> str:
-    folder = Path(os.environ["CODEX_HOME"]) if os.environ.get("CODEX_HOME") and not paths.custom else paths.home / ".codex"
+def codex_home(paths: Paths) -> Path:
+    return Path(os.environ["CODEX_HOME"]) if os.environ.get("CODEX_HOME") and not paths.custom else paths.home / ".codex"
+
+
+def codex(paths: Paths, remote_root: str, workspace_dir: Path, repo: Path) -> str:
+    folder = codex_home(paths)
     config = folder / "config.toml"
     config.parent.mkdir(parents=True, exist_ok=True)
     text = strip_block(config.read_text() if config.exists() else "")
     if "[mcp_servers.schub]" in text:
         return "Codex: your config already defines [mcp_servers.schub] by hand; left as it is"
     _, args = mcp_command(paths, remote_root)
-    block = "\n".join([BEGIN, "[mcp_servers.schub]", 'command = "ssh"', f"args = {json.dumps(args)}",
-                       "startup_timeout_sec = 60", "tool_timeout_sec = 180",
-                       "# The bench records every call in the project journal; asking before each cell would stall.",
-                       'default_tools_approval_mode = "approve"', END]) + "\n"
-    config.write_text((text.rstrip("\n") + "\n\n" if text.strip() else "") + block)
-    return "Codex: connected (also Codex in the ChatGPT desktop app)"
+    lines = [BEGIN, "[mcp_servers.schub]", 'command = "ssh"', f"args = {json.dumps(args)}",
+             "startup_timeout_sec = 60", "tool_timeout_sec = 180",
+             "# The bench records every call in the project journal; asking before each cell would stall.",
+             'default_tools_approval_mode = "approve"',
+             "# Off everywhere but the sc-hub workspace, whose .codex/config.toml turns it on ($schub explains it).",
+             "enabled = false"]
+    trust = f"[projects.{json.dumps(str(workspace_dir))}]"
+    if trust not in text:  # (a table the student already has must not be defined twice)
+        lines += ["", trust, 'trust_level = "trusted"']
+    config.write_text((text.rstrip("\n") + "\n\n" if text.strip() else "") + "\n".join(lines + [END]) + "\n")
+    local = workspace_dir / ".codex" / "config.toml"
+    local.parent.mkdir(parents=True, exist_ok=True)
+    local.write_text("# sc-hub's workspace: its MCP server is on here (it is off elsewhere).\n"
+                     "[mcp_servers.schub]\nenabled = true\n")
+    skill = folder / "skills" / "schub"
+    (skill / "agents").mkdir(parents=True, exist_ok=True)
+    (skill / "SKILL.md").write_text(skill_text(repo, workspace_dir, "codex"))
+    (skill / "agents" / "openai.yaml").write_text(
+        'interface:\n  display_name: "sc-hub"\n  short_description: "Your lab bench on the MBZUAI cluster"\n'
+        '  default_prompt: "Use $schub to continue my project on the cluster."\n'
+        "policy:\n  allow_implicit_invocation: false\n")
+    return f"Codex: connected in {workspace_dir} ($schub; also Codex in the ChatGPT desktop app)"
 
 
-def claude_code(paths: Paths, remote_root: str) -> str:
+def skill_text(repo: Path, workspace_dir: Path, app: str) -> str:
+    """The /schub (Claude Code) or $schub (Codex) skill: sc-hub mode, asked for by the student."""
+    claude = app == "claude"
+    head = ["---", "name: schub",
+            "description: sc-hub mode, the student's lab bench on the MBZUAI cluster (projects, cells, journal, "
+            "lab agent). Only when the student asks for sc-hub."]
+    head += ["disable-model-invocation: true"] if claude else []
+    body = (repo / "templates" / "skill-schub.md").read_text().format(
+        APP="Claude Code" if claude else "Codex", TOOL="/schub" if claude else "$schub", WORKSPACE=workspace_dir,
+        OPEN=f"cd {workspace_dir} && claude" if claude else f"codex -C {workspace_dir}")
+    return "\n".join(head + ["---", ""]) + body
+
+
+def claude_code(paths: Paths, remote_root: str, workspace_dir: Path, repo: Path) -> str:
     claude = shutil.which("claude")
     if claude is None:
         return ""
     command, args = mcp_command(paths, remote_root)
     env = {**os.environ, **({"HOME": str(paths.home), "USERPROFILE": str(paths.home)} if paths.custom else {})}
-    subprocess.run([claude, "mcp", "remove", "schub", "-s", "user"], capture_output=True, env=env, timeout=60)
-    done = subprocess.run([claude, "mcp", "add", "-s", "user", "schub", "--", command, *args], capture_output=True,
-                          text=True, env=env, timeout=60)
+    for scope in ("user", "local"):  # an older setup registered it for every folder; a re-run replaces its own
+        subprocess.run([claude, "mcp", "remove", "schub", "-s", scope], capture_output=True, env=env, timeout=60,
+                       cwd=workspace_dir)
+    done = subprocess.run([claude, "mcp", "add", "-s", "local", "schub", "--", command, *args], capture_output=True,
+                          text=True, env=env, timeout=60, cwd=workspace_dir)
     if done.returncode != 0:
-        return f"Claude Code: could not register ({done.stderr.strip()[-160:]}); run: claude mcp add -s user schub -- " \
-               f"{command} {' '.join(args)}"
-    return "Claude Code: connected"
+        return f"Claude Code: could not register ({done.stderr.strip()[-160:]}); in {workspace_dir} run: " \
+               f"claude mcp add -s local schub -- {command} {' '.join(args)}"
+    config_dir = Path(os.environ["CLAUDE_CONFIG_DIR"]) if os.environ.get("CLAUDE_CONFIG_DIR") and not paths.custom \
+        else paths.home / ".claude"
+    skill = config_dir / "skills" / "schub"
+    skill.mkdir(parents=True, exist_ok=True)
+    (skill / "SKILL.md").write_text(skill_text(repo, workspace_dir, "claude"))
+    return f"Claude Code: connected in {workspace_dir} (/schub)"
 
 
 def desktop_config(paths: Paths) -> Path:

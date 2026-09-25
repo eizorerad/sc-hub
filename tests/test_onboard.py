@@ -124,6 +124,13 @@ def test_the_whole_onboarding_from_the_page(helper) -> None:
     assert "Host mbzuai-schub-ide" not in config  # no editor, no shell into the job
     codex = (paths.home / ".codex" / "config.toml").read_text()
     assert "[mcp_servers.schub]" in codex and "/l/users/test.user/schub/bin/schub-mcp" in codex and str(paths.ssh_config) in codex
+    # sc-hub only where the student asks for it: off in general, on in the (trusted) workspace, a skill to start it
+    assert "enabled = false" in codex and f'[projects.{json.dumps(str(paths.workspace))}]' in codex
+    assert "enabled = true" in (paths.workspace / ".codex" / "config.toml").read_text()
+    skill = (paths.home / ".codex" / "skills" / "schub" / "SKILL.md").read_text()
+    assert skill.startswith("---\nname: schub\n") and "$schub" in skill and str(paths.workspace) in skill
+    assert "allow_implicit_invocation: false" in (paths.home / ".codex" / "skills" / "schub" / "agents" /
+                                                  "openai.yaml").read_text()
     assert (paths.workspace / "AGENTS.md").exists() and (paths.workspace / "schub-view").exists()
     # research there; the way back to fixing sc-hub names the folder the setup ran from
     assert f"(sc-hub setup folder: {ONBOARD.parent})" in (paths.workspace / "AGENTS.md").read_text()
@@ -391,3 +398,25 @@ def test_writing_the_block_twice_keeps_one(tmp_path: Path) -> None:
     write_block(config, "# >>> sc-hub >>>\nHost a\n# <<< sc-hub <<<\n")
     write_block(config, "# >>> sc-hub >>>\nHost b\n# <<< sc-hub <<<\n")
     assert config.read_text() == "# >>> sc-hub >>>\nHost b\n# <<< sc-hub <<<\nHost other\n    User me\n"
+
+
+
+def test_codex_keeps_what_the_student_wrote(tmp_path) -> None:
+    """A trust table the student already has is not defined twice (Codex would not start); a server they wrote
+    by hand is left alone."""
+    from sc_hub_onboard import assistants
+    from sc_hub_onboard.sshkit import Paths
+
+    paths = Paths(home=tmp_path / "home")
+    workspace = assistants.workspace(paths, ONBOARD.parent)
+    config = paths.home / ".codex" / "config.toml"
+    config.parent.mkdir(parents=True)
+    table = f'[projects.{json.dumps(str(workspace))}]'
+    config.write_text(f'model = "x"\n\n{table}\ntrust_level = "trusted"\n')
+    assistants.codex(paths, "/l/users/u/schub", workspace, ONBOARD.parent)
+    assert config.read_text().count(table) == 1 and "enabled = false" in config.read_text()
+    assistants.codex(paths, "/l/users/u/schub", workspace, ONBOARD.parent)  # a re-run replaces its own block
+    assert config.read_text().count("[mcp_servers.schub]") == 1
+    config.write_text('[mcp_servers.schub]\ncommand = "mine"\n')
+    assert "by hand" in assistants.codex(paths, "/l/users/u/schub", workspace, ONBOARD.parent)
+    assert config.read_text() == '[mcp_servers.schub]\ncommand = "mine"\n'

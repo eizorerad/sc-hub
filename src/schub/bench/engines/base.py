@@ -45,6 +45,12 @@ class Turn:
     mcp: McpServer | None = None
     model: str = ""
     effort: str = ""
+    free: bool = False  # the engine's own tools and subagents too, writing only inside `cwd` (the project)
+
+
+# What a free lab agent may never read (its shell is sandboxed; its file tools are denied by rule)
+PRIVATE_PATHS = ("~/.ssh", "~/.claude/.credentials.json", "~/.claude.json", "~/.codex/auth.json", "~/.config/gh",
+                 "~/.netrc", "~/.git-credentials")
 
 
 @dataclass(frozen=True)

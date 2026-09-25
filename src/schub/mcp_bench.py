@@ -1,4 +1,4 @@
-"""MCP tools of the bench: thirteen general tools instead of forty brick-specific ones."""
+"""MCP tools of the bench: fifteen general tools instead of forty brick-specific ones."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from mcp.types import CallToolResult, ImageContent, TextContent, ToolAnnotations
 
 from .audit import audited
 from .bench.clients import ClientProfile, actor_for, profile_for
+from .bench.delegation import DelegationAnswer, delegate as delegate_goal, delegation as goal_state
 from .bench.engines.probe import summary as engine_summary
 from .bench.files import FileView, view
 from .bench.models import Actor, Checkpoint, CheckSpec, NoteEntry
@@ -163,6 +164,7 @@ def register_bench_tools(mcp: MCPServer, hub: Hub, bench: BenchService) -> None:
     _register_cells(mcp, hub, bench, call)
     _register_journal(mcp, bench, call)
     _register_reference(mcp, hub, bench, call)
+    _register_delegation(mcp, hub, call)
 
 
 def _register_cells(mcp: MCPServer, hub: Hub, bench: BenchService, call: Calls) -> None:
@@ -297,3 +299,26 @@ def _register_reference(mcp: MCPServer, hub: Hub, bench: BenchService, call: Cal
         """Interrupt a running cell ('project#c0007'), cancel a job the bench sent (its job id), or
         'workbench' to stop the workbench now and free its job slot (variables are lost; files stay)."""
         return call("stop", {"target": target}, lambda: bench.stop(target))
+
+
+def _register_delegation(mcp: MCPServer, hub: Hub, call: Calls) -> None:
+    @mcp.tool(annotations=RUN)
+    def delegate(project: str, objective: str, deliverables: str = "", max_turns: int = 20,
+                 engine: Literal["auto", "claude", "codex"] = "auto", mode: Literal["free", "bench"] = "free",
+                 report: bool = True, ctx: Context = None) -> DelegationAnswer:  # type: ignore[assignment]
+        """Hand a task to the lab agent on the cluster: it works on it alone, in Slurm slices about an hour
+        apart, until it is done or its turns are spent. mode "free": its own shell, files and subagents in the
+        project folder too (sandboxed); "bench": only these tools. Everything lands in the journal. First agree the
+        task with the student (skills('delegating')): `objective` is the whole task in plain words, with what it
+        needs to know; `deliverables` what must exist at the end; `max_turns` its budget (a turn: up to ~80 min)."""
+        actor, _ = _client(ctx)
+        args = {"project": project, "max_turns": max_turns, "engine": engine, "mode": mode, "client": actor.client}
+        return call("delegate", args, lambda: delegate_goal(hub.settings, hub.slurm, project, objective, deliverables,
+                                                            max_turns, engine, mode, report, actor))
+
+    @mcp.tool(annotations=WRITE)  # (stop=true changes state)
+    def delegation(project: str, stop: bool = False) -> DelegationAnswer:
+        """Where the lab agent's work on a project stands: state, turns used, next action, queued slices, last
+        events. stop=true stops it (queued slices exit at once; the journal keeps everything)."""
+        return call("delegation", {"project": project, "stop": stop},
+                    lambda: goal_state(hub.settings, hub.slurm, project, stop))
