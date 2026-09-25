@@ -395,3 +395,10 @@ def test_a_policy_file_from_before_the_ceiling_default_gets_it(tmp_path: Path) -
     assert load(path).claude_weekly_ceiling == 0.8
     engine_policy.set_mode(path, "mixed", claude_weekly_ceiling=0.0)  # the owner's explicit choice now
     assert load(path).claude_weekly_ceiling == 0.0 and json.loads(path.read_text())["version"] == 2
+
+
+def test_a_boolean_ceiling_is_still_refused(tmp_path: Path) -> None:
+    path = tmp_path / "engine-policy.json"
+    path.write_text(json.dumps({"mode": "mixed", "claude_weekly_ceiling": False}))
+    with pytest.raises(PolicyError):
+        load(path)

@@ -98,7 +98,8 @@ def load(path: Path) -> EnginePolicy:
     unknown = set(data) - known
     if unknown:
         raise PolicyError(f"{path} has unknown fields {sorted(unknown)}")
-    if "version" not in data and data.get("claude_weekly_ceiling") in (0, 0.0):
+    old = data.get("claude_weekly_ceiling")
+    if "version" not in data and type(old) in (int, float) and old == 0:  # (not a bool: that stays an error)
         data = {**data, "claude_weekly_ceiling": EnginePolicy.claude_weekly_ceiling}  # the old default, not a choice
     try:
         return EnginePolicy(**data)

@@ -320,13 +320,13 @@ class Slice:
         if outcome.status == "failed" and worked:
             self._incident(f"The lab agent's {engine} turn failed: {outcome.error[-400:]}")
         elif outcome.status in ("failed", "timed_out") and not worked:
-            self._engine_failing(engine, outcome)
+            self._engine_failing(engine, outcome, config)
         elif missing and rotated:
             self._incident(f"{engine} could not continue the work, not even in a fresh conversation: "
                            f"{outcome.error[-300:]}. The next turn tries again.")
         return outcome
 
-    def _engine_failing(self, engine: str, outcome: Outcome) -> None:
+    def _engine_failing(self, engine: str, outcome: Outcome, config: GoalConfig) -> None:
         """A turn that failed before any work: paused longer each time in a row, one incident per pause."""
         count, until = self.cooldown.failing(engine, outcome.error or outcome.status,
                                              login=sign_in_fingerprint(engine))
@@ -335,7 +335,7 @@ class Slice:
         if until is None:
             return
         why = outcome.error[-300:].strip() if outcome.error else "no answer before the turn's time limit"
-        pace = self.goal.config().pace_minutes
+        pace = config.pace_minutes
         self._incident(
             f"{LABELS[engine]} on the cluster failed {count} times in a row before doing any work ({why}). No turn "
             f"is counted; the lab agent tries it again at {when(until)}. If its sign-in expired, sign in again: "
