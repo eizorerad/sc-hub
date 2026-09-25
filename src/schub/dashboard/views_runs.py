@@ -12,7 +12,7 @@ from .collect import BranchInfo, RunView, Snapshot, StepView
 from .html import ask_block, dot, esc, hint, kv, pill, subtabs, table, warnings
 from .notebooks import code_section, notebook_button
 from .steps import duration
-from .views_activity import render_queue, render_sessions
+from .views_activity import is_ours, render_queue, render_sessions
 
 DE_TOP = 12
 ImageUrl = Callable[[StepView, str, bool], str | None]
@@ -237,7 +237,7 @@ def _history(snap: Snapshot) -> str:
 
 
 def render_runs(snap: Snapshot, image_url: ImageUrl) -> str:
-    queued = sum(j.name.startswith("schub-") for j in snap.jobs)
+    queued = sum(is_ours(snap, j) for j in snap.jobs)
     sections = subtabs("runs", [
         ("history", "History", len(snap.runs), _history(snap)),
         ("queue", "Queue", queued, render_queue(snap)),

@@ -187,7 +187,9 @@ def environment(repo: str | os.PathLike, python: str = "3.11", torch: str | None
 
 def _build(env: Path, root: Path, spec: dict, req_path: Path | None) -> None:
     uv = str(_uv())
-    run_env = {**os.environ, "UV_CACHE_DIR": str(root / "cache" / "uv"),
+    run_env = {**{k: v for k, v in os.environ.items() if k not in ("FORCE_COLOR", "CLICOLOR_FORCE")},
+               "NO_COLOR": "1",  # a kernel forces colour: uv would write escape codes into environment.lock
+               "UV_CACHE_DIR": str(root / "cache" / "uv"),
                "UV_PYTHON_INSTALL_DIR": str(root / "python"), "UV_PYTHON_PREFERENCE": "managed"}
     python = str(env / "bin" / "python")
 

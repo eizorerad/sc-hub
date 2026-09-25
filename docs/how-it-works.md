@@ -73,9 +73,12 @@ until its reset and, in `mixed`, the other takes the turn, starting from the
 journal's hand-over. Claude stands down while its seven-day window is 80% full
 (`claude_weekly_ceiling`; the student's own chats share it). A turn that fails before
 doing any work (a lost sign-in) is not counted; failures in a row pause the engine
-1 h, 6 h, then 24 h, with one note telling the student to sign in again. A finished
-or stopped goal takes its queued cells back, and a job Slurm will never start wakes
-the model instead of an endless wait. The watchdog re-arms a broken chain and probes the engines.
+1 h, 6 h, then 24 h, each pause with a note (and a dashboard alert) telling the student
+how to sign in again (`onboard/start.sh retry agents`). A new sign-in is noticed within
+the goal's pace, and `schub goal-start` tries the engine at once. A finished or stopped
+goal takes its queued cells back, and a job Slurm will never start (or one waited on for
+a day) wakes the model instead of an endless wait. The watchdog re-arms a broken chain
+and probes the engines.
 When a turn hands the work over as complete, a writer turn (a fresh session that
 reads only the journal and cannot reopen the work) publishes the report; after two
 turns without one the goal ends anyway and a note says so. `report: no` in

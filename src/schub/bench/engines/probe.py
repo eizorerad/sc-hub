@@ -20,7 +20,7 @@ from .claude import Claude
 from .codex import Codex
 from .cooldown import Cooldown, reset_hint
 from . import window
-from .policy import load
+from .policy import PolicyError, load
 
 PROBE_EVERY_H = 6
 PROMPT = "Reply with exactly: OK"
@@ -58,23 +58,41 @@ def probe(settings: Settings, engines: tuple[str, ...] | None = None, timeout_s:
 
 
 def due(settings: Settings, now: datetime | None = None) -> bool:
+    """An engine the policy allows has not been asked for PROBE_EVERY_H (an engine it no longer allows
+    keeps its old record and must not make every watchdog run probe again)."""
     now = now or datetime.now(timezone.utc)
     data = read_json(probe_path(settings)) or {}
-    times = [datetime.fromisoformat(r["at"]) for r in data.values() if isinstance(r, dict) and r.get("at")]
+    engines = _in_use(settings) or set(data)
+    times = []
+    for engine in engines:
+        try:
+            times.append(datetime.fromisoformat(data[engine]["at"]))
+        except (KeyError, TypeError, ValueError):
+            return True  # never asked
     return not times or now - min(times) >= timedelta(hours=PROBE_EVERY_H)
 
 
+def _in_use(settings: Settings) -> set[str]:
+    """The engines the owner's policy lets a lab agent use (by mode or a project's grant); empty if unreadable."""
+    try:
+        policy = load(settings.bench_dir / "engine-policy.json")
+    except PolicyError:
+        return set()
+    return set(policy.allowed()) | {e for grant in policy.grants.values() for e in grant["engines"]}
+
+
 def summary(settings: Settings) -> list[str]:
-    """One line per engine for the cluster overview."""
+    """One line per engine the policy uses, for the cluster overview."""
     data = read_json(probe_path(settings)) or {}
     cooldown = Cooldown(settings.bench_dir / "engine-cooldown.json")
     lines = []
-    for name in sorted(set(data) | {"claude", "codex"}):
+    for name in sorted(_in_use(settings) or set(data) | {"claude", "codex"}):
         until = cooldown.until(name)
         record = data.get(name) or {}
         if until is not None:
-            why = "failing; sign in again if its login expired" if cooldown.kind(name) == "failing" else "usage limit"
-            lines.append(f"{name}: paused until {until.isoformat(timespec='minutes')} ({why})")
+            why = "not answering; if its sign-in expired, sign in again" if cooldown.kind(name) == "failing" \
+                else "usage limit"
+            lines.append(f"{name}: paused until {until.strftime('%Y-%m-%d %H:%M')} UTC ({why})")
         elif record:
             state = "ok" if record.get("ok") else f"not answering ({record.get('status')}: {record.get('detail', '')[:80]})"
             lines.append(f"{name}: {state}, checked {record.get('at', '')[:16]}")
@@ -87,8 +105,6 @@ def summary(settings: Settings) -> list[str]:
 
 
 def load_safely(settings: Settings) -> float:
-    from .policy import PolicyError
-
     try:
         return load(settings.bench_dir / "engine-policy.json").claude_weekly_ceiling
     except PolicyError:

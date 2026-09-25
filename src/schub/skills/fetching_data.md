@@ -31,7 +31,8 @@ path = bench.fetch("https://.../file.h5ad", md5="<if the source publishes one>")
   course's own corpus: read it where it is; never copy it to another folder, cluster or
   service, and ask the student what its terms allow before sharing any result from it.
 - Downloaded and registered inputs are never changed: derive into `work/`.
-- A Seurat object (.rds): `bench.import_seurat(path, name)` makes `data/<name>/data.h5ad`
-  (R + Seurat are built once if the library has none); large objects in a
-  `%%slurm --mem 32G` cell.
+- A Seurat object (.rds): `bench.import_seurat("data/obj.rds", name)` (a path in the
+  project) makes the dataset `name` in the sc-hub folder's `data/<name>/data.h5ad`, which
+  `datasets()` lists. R + Seurat are built once (10-20 minutes) if no library has them;
+  large objects in a `%%slurm --mem 32G` cell.
 - Gene sets (MSigDB Hallmark, checksums): skills("gene_sets").

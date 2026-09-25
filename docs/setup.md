@@ -161,10 +161,11 @@ exist as a CLI on the cluster:
 
 By default every student's workspace is self-contained: `bootstrap_cluster.sh`
 builds a private environment and downloads the starter datasets and models into
-`$SCHUB_ROOT/library-local` (about 6 GB). Tools that only a library provides
-(micromamba for conda packages, cellxgene, R + Seurat, kallisto indices, Cell
-Ranger) are then missing, and the tools that need them say so. Sharing datasets
-between students is for later.
+`$SCHUB_ROOT/library-local` (about 6 GB). micromamba (for a project's conda
+packages) and R + Seurat (for `bench.import_seurat`) are installed there the first
+time a cell needs them; cellxgene, kallisto indices and Cell Ranger come only with a
+library, and the tools that need them say so. Sharing datasets between students is
+for later.
 
 Optionally, someone can publish a read-only library (`scripts/publish_library.sh`)
 and point a workspace at it with `SCHUB_LIBRARY`:

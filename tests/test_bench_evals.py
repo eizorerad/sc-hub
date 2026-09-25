@@ -39,7 +39,8 @@ def test_each_run_is_a_goal_with_its_engine(settings: Settings, cluster: FakeClu
     request = EvalRequest(id="kang-pseudobulk-de", source="course-style", prompt="Test DE in Kang 2018 monocytes.",
                           max_turns=4)
     runs = launch(settings, Slurm(cluster), [request], ["claude", "codex"], max_turns=3, gpu_minutes=20)
-    assert [r["engine"] for r in runs] == ["claude", "codex"] and len(cluster.jobs) == 2
+    assert [r["engine"] for r in runs] == ["claude", "codex"]
+    assert len([j for j, name in cluster.names.items() if "-goal-" in name]) == 2
     for run in runs:
         config = Goal(settings, run["project"]).config()
         assert config.engine == run["engine"] and config.max_turns == 3 and "hand over" in config.objective

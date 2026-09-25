@@ -126,13 +126,14 @@ def _live(settings: Settings, name: str, entries: list, queue: tuple[QueueJob, .
     alone can be stale (a cell marked running by a workbench that died). None for the queue: Slurm did not
     answer; the journal is all we have."""
     from ..bench.goal import Goal
+    from ..bench.workbench import WORKBENCH
 
     cells = [e for e in entries if isinstance(e, CellEntry) and e.status in ACTIVE_CELLS]
     if queue is None:
         return (f"cell {cells[-1].cid} {cells[-1].status}", cells[-1].status == "running") if cells else ("", False)
     states = {j.job_id: j.state for j in queue}
     names = {j.name: j for j in queue}
-    workbench = names.get(f"{settings.job_prefix}-workbench")
+    workbench = names.get(f"{settings.job_prefix}-{WORKBENCH}")
     if cells and workbench is not None:
         running = cells[-1].status == "running" and workbench.state == "RUNNING"
         return f"cell {cells[-1].cid} {cells[-1].status}", running
@@ -219,9 +220,10 @@ def journal_cards(settings: Settings, queue: tuple[QueueJob, ...] | None = ()) -
         figures = tuple((str(journal.folder / o.image), _figure_path(prefix, o.image))
                         for e in entries if isinstance(e, CellEntry) for o in e.outputs if o.image)
         failed = _failing_checks(data)
-        ids = journal.folder / "ids"
-        numbers = [int(p.name[1:]) for p in ids.iterdir() if p.name[:1] == "c" and p.name[1:].isdigit()] \
-            if ids.is_dir() else []
+        # cells with an entry: an id taken by a request that never ran (withdrawn, refused) is not a cell
+        cells_dir = journal.cells_dir
+        numbers = [int(p.stem[1:]) for p in cells_dir.glob("c*.json") if p.stem[1:].isdigit()] \
+            if cells_dir.is_dir() else []
         state, handoff = checkpoint.read(), checkpoint.read_handoff()
         reports = _reports(project_dir, name, numbers)
         updated = _updated(entries, state.updated)
@@ -269,6 +271,7 @@ def bench_panel(settings: Settings, jobs: tuple[QueueJob, ...], overview: Overvi
     record = read_json(settings.bench_dir / "workbench.json") or {}
     workbench_job = next((j for j in jobs if j.name == f"{settings.job_prefix}-{WORKBENCH}"), None)
     alerts = list(_bench_alerts(settings, record, workbench_job))
+    alerts += _engine_alerts(settings)
     alerts += _slot_alerts(jobs)
     alerts += [f"{c.project}: checks {', '.join(c.failed_checks)} are failing (their latest results)"
                if len(c.failed_checks) > 1 else f"{c.project}: check {c.failed_checks[0]} is failing (its latest result)"
@@ -291,6 +294,22 @@ def _bench_alerts(settings: Settings, record: dict, workbench_job: QueueJob | No
     waiting = Inbox(settings.bench_dir).pending() if settings.bench_dir.is_dir() else []
     if waiting and workbench_job is None:
         alerts.append(f"{len(waiting)} cell(s) wait and no workbench job is queued; the watchdog starts one.")
+    return alerts
+
+
+def _engine_alerts(settings: Settings) -> list[str]:
+    """An engine the lab agent paused because it stopped answering (a sign-in that expired, most often)."""
+    from ..bench.engines.base import LABELS, SIGN_IN_HOW
+    from ..bench.engines.cooldown import Cooldown
+
+    cooldown = Cooldown(settings.bench_dir / "engine-cooldown.json")
+    alerts = []
+    for engine, label in LABELS.items():
+        until = cooldown.until(engine)
+        if until is not None and cooldown.kind(engine) == "failing":
+            alerts.append(f"{label} on the cluster is not answering (its sign-in may have expired): the lab agent "
+                          f"tries it again at {until.strftime('%Y-%m-%d %H:%M')} UTC. To sign in again, "
+                          f"{SIGN_IN_HOW.replace('`', '')}.")
     return alerts
 
 

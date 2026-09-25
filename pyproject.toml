@@ -45,6 +45,10 @@ schub = "schub.cli:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/schub"]
 
+[tool.hatch.build.targets.wheel.force-include]
+# a wheel install (the shared library's environment) can still build R + Seurat for bench.import_seurat
+"scripts/build_tools.sh" = "schub/build_tools.sh"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"

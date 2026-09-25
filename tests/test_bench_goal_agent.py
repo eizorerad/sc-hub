@@ -257,7 +257,9 @@ def test_nested_projects_and_similar_names_have_their_own_slices(lab: Settings, 
     assert Goal(lab, "a-b").job_name != Goal(lab, "a/b").job_name
     goal_agent.start(lab, Slurm(cluster), "a/b", GOAL)
     goal_agent.start(lab, Slurm(cluster), "a-b", GOAL)
-    assert len(cluster.jobs) == 2  # neither start mistook the other's slice for its own
+    slices = [j for j, name in cluster.names.items() if "-goal-" in name]
+    assert len(slices) == 2  # neither start mistook the other's slice for its own
+    assert sorted(cluster.names.values()).count("schub-bench-watchdog") == 1  # a goal keeps a watchdog
     assert set(goal_agent.active_goals(lab)) >= {"a/b", "a-b"}
     cluster.jobs = {k: "CANCELLED" for k in cluster.jobs}
     assert len(revive(lab, Slurm(cluster))) >= 2

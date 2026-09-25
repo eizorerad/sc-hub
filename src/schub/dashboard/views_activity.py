@@ -3,6 +3,7 @@ the interactive sessions (both on the Runs page)."""
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from ..slurm import QueueJob
@@ -13,20 +14,44 @@ from .steps import slurm_seconds
 LIVE_SESSIONS = frozenset({"RUNNING", "PENDING", "CONFIGURING"})
 REASONS = {
     "QOSMaxJobsPerUserLimit": "waiting for a free slot (max 2 running jobs per user on ws-ia)",
-    "QOSMaxCpuPerUserLimit": "waiting: your jobs already use the 24-CPU per-user limit",
+    "QOSMaxCpuPerUserLimit": "waiting: your jobs already use the per-user CPU limit",
     "QOSMaxMemoryPerUser": "waiting: your jobs already use the per-user memory limit",
+    "QOSMaxGRESPerUser": "waiting: your jobs already use your GPU limit",
+    "AssocGrpGRES": "waiting: your group's GPUs are all in use",
+    "JobArrayTaskLimit": "waiting: the array's other tasks run first",
     "Dependency": "waiting for the previous step",
     "DependencyNeverSatisfied": "blocked: a previous step failed; cancel this job",
     "Resources": "waiting for free nodes",
     "Priority": "queued behind higher-priority jobs",
     "BeginTime": "scheduled to start later",
+    "JobHeldUser": "held by you (scontrol release <job> lets it start)",
+    "JobHeldAdmin": "held by the cluster's admins: it will not start until they release it",
+    "launch failed requeued held": "held after a failed start: cancel it and send it again",
+    "BadConstraints": "asks for something no node has: cancel it and send it again with other options",
+    "PartitionTimeLimit": "asks for more time than the partition allows: send it again with a shorter --time",
+    "QOSMaxWallDurationPerJobLimit": "asks for more time than allowed: send it again with a shorter --time",
+    "PartitionConfig": "asks for more than the partition offers: send it again with fewer resources",
+    "InvalidQOS": "cannot run with this account's settings: cancel it",
+    "InvalidAccount": "cannot run with this account's settings: cancel it",
+    "ReqNodeNotAvail": "its nodes are unavailable (maintenance?): it waits",
     "None": "",
 }
 
 
 def reason(raw: str) -> str:
+    """Slurm's reason in words; its first part decides ("ReqNodeNotAvail, UnavailableNodes:...")."""
     key = raw.strip("()")
-    return REASONS.get(key, key)
+    return REASONS.get(key) or REASONS.get(key.split(",")[0].strip(), key)
+
+
+OTHER_FOLDER = re.compile(r"[0-9a-f]{4}-")  # "schub-8aec-...": another sc-hub folder of this account
+
+
+def is_ours(snap: Snapshot, job: QueueJob) -> bool:
+    """A job of this sc-hub folder: its prefix and a dash; with the usual prefix, not another folder's."""
+    if not job.name.startswith(snap.job_prefix + "-"):
+        return False
+    return not (snap.job_prefix == "schub" and OTHER_FOLDER.match(job.name[len("schub-"):]))
 
 
 def _progress(job: QueueJob) -> str:
@@ -50,7 +75,7 @@ def _job_rows(jobs: list[QueueJob]) -> list[tuple[str, str]]:
 
 
 def _ours(snap: Snapshot) -> list[QueueJob]:
-    return [j for j in snap.jobs if j.name.startswith("schub-")]
+    return [j for j in snap.jobs if is_ours(snap, j)]
 
 
 def live_counts(snap: Snapshot) -> tuple[int, int]:
@@ -79,7 +104,7 @@ def render_queue(snap: Snapshot) -> str:
     if snap.jobs_error:
         return f'<p class="note bad">The queue could not be read: {esc(snap.jobs_error)}</p>'
     ours = _ours(snap)
-    others = [j for j in snap.jobs if not j.name.startswith("schub-")]
+    others = [j for j in snap.jobs if not is_ours(snap, j)]
     headers = ("Job", "Name", "State", "Partition", "Progress or why it waits")
     html = (listing(headers, _job_rows(ours), "Filter jobs", key="jobs-schub") if ours
             else '<p class="empty">No sc-hub jobs in the queue.</p>')

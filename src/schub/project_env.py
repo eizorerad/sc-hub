@@ -19,6 +19,7 @@ kernel on the new build.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shlex
 import shutil
@@ -31,6 +32,7 @@ from .bricks import Resources
 from .config import Settings
 from .slurm import JobSpec, Slurm, render_script
 from .state import Frozen
+from .locking import LockTimeout, exclusive
 from .streaming import run_streamed
 
 # A requirement like "harmonypy", "decoupler>=1.6", "r-seurat=5.1" (no URLs or paths).
@@ -70,7 +72,15 @@ def env_root(settings: Settings, project: str) -> Path:
 
 
 def kernel_dir(project: str) -> Path:
-    return Path.home() / ".local" / "share" / "jupyter" / "kernels" / f"schub-{slug(project)}"
+    """Where `ipykernel install --user` puts the project's kernel (Jupyter's data folder: JUPYTER_DATA_DIR,
+    else ~/.local/share/jupyter on Linux)."""
+    try:
+        from jupyter_core.paths import jupyter_data_dir
+
+        data = Path(jupyter_data_dir())
+    except ImportError:
+        data = Path.home() / ".local" / "share" / "jupyter"
+    return data / "kernels" / f"schub-{slug(project)}"
 
 
 def built(settings: Settings, project: str) -> BuiltEnv | None:
@@ -103,6 +113,8 @@ def build_here(settings: Settings, project: str, pip: Sequence[str], conda: Sequ
     if not pip and not conda:
         remove_env(settings, project)
         return None
+    if conda and _tool(settings, "micromamba") is None:
+        _install_micromamba(settings, out)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     logs = settings.logs_dir / "envs"
     logs.mkdir(parents=True, exist_ok=True)
@@ -113,6 +125,26 @@ def build_here(settings: Settings, project: str, pip: Sequence[str], conda: Sequ
         raise EnvError(f"the build failed (exit {code}); the project keeps its previous kernel. Last lines:\n"
                        + "".join(tail))
     return built(settings, project)
+
+
+def _install_micromamba(settings: Settings, out=None) -> None:
+    """No library brings micromamba: put it in the student's own library (checked download, seconds)."""
+    from .seurat import BUILD_TOOLS
+
+    if not BUILD_TOOLS.is_file():
+        raise EnvError("micromamba is not available and this sc-hub cannot install it; ask the library owner, or "
+                       "use pip packages")
+    settings.local_library.mkdir(parents=True, exist_ok=True)
+    try:  # the R + Seurat build installs it too: one writer at a time
+        with exclusive(settings.local_library / ".r-seurat.lock", wait_s=3600, stale_after_s=300, heartbeat_s=30):
+            if _tool(settings, "micromamba") is not None:
+                return  # installed while this build waited
+            code, tail = run_streamed(["bash", str(BUILD_TOOLS), str(settings.local_library)], out,
+                                      env={**os.environ, "SCHUB_TOOLS": "micromamba"}, keep=10)
+    except LockTimeout:
+        raise EnvError("another build has been installing micromamba for an hour; ask again later") from None
+    if code != 0 or _tool(settings, "micromamba") is None:
+        raise EnvError(f"installing micromamba failed (exit {code}):\n" + "".join(tail))
 
 
 def check_packages(pip: Sequence[str], conda: Sequence[str]) -> None:
@@ -151,6 +183,8 @@ def build_script(settings: Settings, project: str, pip: Sequence[str], conda: Se
     record = json.dumps({"pip": list(pip), "conda": list(conda), "built": stamp, "shared_env": str(settings.python)})
     lines = [
         "set -euo pipefail",
+        # A Jupyter kernel forces colour (FORCE_COLOR): uv would then write escape codes into shared.txt
+        "unset FORCE_COLOR CLICOLOR_FORCE; export NO_COLOR=1",
         # The shared torch is a CUDA 12.8 build (+cu128): resolve against the same index.
         f"export UV_CACHE_DIR={q(str(settings.cache_dir / 'uv'))} UV_PYTHON_PREFERENCE=only-managed UV_TORCH_BACKEND=cu128",
         f"ROOT={q(str(root))}; NEW=\"$ROOT\"/{q(stamp)}; BASE={q(str(settings.python))}; UV={q(str(uv))}",
@@ -189,7 +223,9 @@ def build_script(settings: Settings, project: str, pip: Sequence[str], conda: Se
             f"{q(str(mamba))} list --prefix \"$NEW/conda\" --explicit > conda-explicit.txt",
         ]
     display = f"sc-hub: {project}"
-    path_env = ' --env PATH "$NEW/conda/bin:/usr/local/bin:/usr/bin:/bin"' if conda else ""
+    # ${PATH} is filled in by Jupyter from the launching process: the runner's PATH (engine guards, sbatch)
+    # stays, the project's conda tools come first
+    path_env = r' --env PATH "$NEW/conda/bin:\${PATH}"' if conda else ""
     lines += [
         '"$NEW/venv/bin/python" -c "import scanpy, sys; print(\'environment works on\', sys.version.split()[0])"',
         f"printf '%s\\n' {q(record)} > packages.json",

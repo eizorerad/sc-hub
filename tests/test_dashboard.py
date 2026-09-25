@@ -287,7 +287,7 @@ def test_cluster_view_renders_limits_storage_and_load():
     )
     html = render_cluster(ov)
     assert "2 of 2 (100%)" in html and 'class="bar bad"' in html and "no per-user limit" in html
-    assert "waiting for a free job slot" in html and "2.0 TB of 3.0 TB" in html and "lo-02" in html
+    assert "waiting for a free slot" in html and "2.0 TB of 3.0 TB" in html and "lo-02" in html
     assert "10 of 100" in html
 
 

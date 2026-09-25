@@ -99,7 +99,7 @@ def test_a_job_cancelled_while_queued_says_it_never_started(settings: Settings, 
     register(settings, JobRecord(job_id="700", project="demo", ref="demo#c0001", job_dir=str(tmp_path / "none")))
     assert reap(settings, Slurm(cluster)) == ["700"]
     [job] = journal.cell("c0001").jobs
-    assert job.state.startswith("ENDED (never started") and job.log == ""
+    assert job.state == "NOT_STARTED" and job.log == ""
 
 
 def test_nothing_is_decided_when_slurm_does_not_answer(settings: Settings, journal: Journal, tmp_path: Path) -> None:

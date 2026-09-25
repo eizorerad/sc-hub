@@ -23,7 +23,7 @@ from .clock import stamp
 from .fsio import create_json_exclusive, read_json
 from .journal import Journal, JournalError
 
-FINAL_JOB_STATES = frozenset({"COMPLETED", "FAILED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY", "NODE_FAIL",
+FINAL_JOB_STATES = frozenset({"COMPLETED", "FAILED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY", "NODE_FAIL", "NOT_STARTED",
                               "PREEMPTED", "BOOT_FAIL", "DEADLINE", "ENDED"})
 
 
@@ -81,6 +81,25 @@ LOG_ENDINGS = (("due to time limit", "TIMEOUT"), ("oom-kill", "OUT_OF_MEMORY"), 
                ("oom killed", "OUT_OF_MEMORY"), ("out of memory", "OUT_OF_MEMORY"), ("due to preemption", "PREEMPTED"),
                ("due to node failure", "NODE_FAIL"), ("cancelled at", "CANCELLED"))
 
+# How a job that ended without its result is explained to the agent and the student (nothing it would write exists)
+BAD_ENDINGS = {
+    "OUT_OF_MEMORY": "ran out of memory: send it again with a larger --mem",
+    "TIMEOUT": "hit its time limit: send it again with a longer --time, or save checkpoints and resume",
+    "NOT_STARTED": "never started (cancelled or not launched while queued): nothing ran; send it again if needed",
+    "NODE_FAIL": "lost its node: send it again",
+    "BOOT_FAIL": "lost its node: send it again",
+    "DEADLINE": "passed its deadline: send it again",
+    "FAILED": "failed: its log and this entry's outputs show the error; fix it and send the job again",
+    "PREEMPTED": "was preempted by a higher-priority job: send it again",
+    "ENDED": "ended without reporting its result: its log says why",
+}
+
+
+def bad_ending(state: str) -> str | None:
+    """Why a job left nothing, for a state that means so (None for a running or completed one)."""
+    if state.startswith("ENDED (never started"):  # the wording of records written before NOT_STARTED
+        return BAD_ENDINGS["NOT_STARTED"]
+    return BAD_ENDINGS.get(state.split(" (")[0])
 
 def _reported(record: JobRecord) -> bool:
     return (Path(record.job_dir) / "result.json").exists()
@@ -129,7 +148,7 @@ def _final_state(slurm: Slurm, record: JobRecord) -> tuple[str, str]:
             tail = handle.read().decode(errors="replace").lower()
             tail = tail.replace("cuda out of memory", "cuda oom").replace("cuda error: out of memory", "cuda oom")
     except FileNotFoundError:
-        return "ENDED (never started: cancelled or not launched while queued)", ""
+        return "NOT_STARTED", ""  # cancelled while queued, or it could not launch: nothing ran
     except OSError:
         return "ENDED", str(log)
     return next((state for marker, state in LOG_ENDINGS if marker in tail), "ENDED"), str(log)

@@ -49,6 +49,7 @@ class EnginePolicy:
     grants: dict = field(default_factory=dict)
     updated: str = ""
     reason: str = ""
+    version: int = 2  # 1 (no field): written when the ceiling's default was 0, which then meant "never set"
 
     def __post_init__(self) -> None:
         if self.mode not in MODES:
@@ -97,6 +98,9 @@ def load(path: Path) -> EnginePolicy:
     unknown = set(data) - known
     if unknown:
         raise PolicyError(f"{path} has unknown fields {sorted(unknown)}")
+    old = data.get("claude_weekly_ceiling")
+    if "version" not in data and type(old) in (int, float) and old == 0:  # (not a bool: that stays an error)
+        data = {**data, "claude_weekly_ceiling": EnginePolicy.claude_weekly_ceiling}  # the old default, not a choice
     try:
         return EnginePolicy(**data)
     except TypeError as exc:

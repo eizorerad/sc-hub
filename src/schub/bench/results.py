@@ -6,7 +6,7 @@ from __future__ import annotations
 from typing import Literal
 
 from ..state import Frozen
-from .jobs import FINAL_JOB_STATES
+from .jobs import FINAL_JOB_STATES, bad_ending
 from .models import CellEntry, CheckResult, Download, FileChange, JobRef, OutputItem
 
 ResultStatus = Literal["queued", "rejected", "running", "ok", "error", "interrupted", "lost", "retired"]
@@ -37,7 +37,7 @@ HINTS = {
     "interrupted": "The cell was interrupted before it finished.",
     "lost": "The kernel or the workbench stopped during this cell: variables are gone. Re-run setup cells, then this one.",
     "retired": "The workbench stopped during this cell (time limit or stop). Re-run setup cells, then this one.",
-    "rejected": "The request was refused; see the message.",
+    "rejected": "The cell did not run (refused, or taken back before it started); see the message.",
 }
 
 
@@ -59,6 +59,9 @@ def cell_result(entry: CellEntry, previous_epoch: str, workbench: str, setup_ref
         jobs = ", ".join(f"job {j.job_id} is still {j.state}" for j in waiting)
         hint = (f"{jobs}: wait(ref) waits for it, and this entry gets its state, files and checks when it "
                 f"ends. {hint}").strip()
+    ended = [f"job {j.job_id} {bad_ending(j.state)}" for j in entry.jobs if bad_ending(j.state)]
+    if ended:
+        hint = f"{'; '.join(ended)}. {hint}".strip()
     failed = [c.name for c in entry.check_results if c.status in ("fail", "error")]
     if failed:
         hint = f"Checks failed: {', '.join(failed)}. Do not build on this result until they pass. {hint}".strip()

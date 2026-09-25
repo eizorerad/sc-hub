@@ -21,6 +21,7 @@ from typing import Any, Iterable
 from urllib.parse import quote
 
 from ..bench.inbox import slug
+from ..bench.jobs import bad_ending
 from .collect_journal import BenchPanel, JournalCard
 from .html import esc, hint, pill
 
@@ -284,8 +285,7 @@ def _output(entry: dict[str, Any]) -> str:
 
 def _badges(entry: dict[str, Any]) -> str:
     badges = [pill("COMPLETED" if c["status"] == "pass" else "FAILED", f"check {c['name']}") for c in entry["checks"]]
-    badges += [pill(j["state"] if j["state"] in ("COMPLETED", "FAILED", "RUNNING", "PENDING") else "CANCELLED",
-                    f"job {j['job_id']} {j['state'].lower()}") for j in entry["jobs"]]
+    badges += [pill(_job_css(j["state"]), f"job {j['job_id']} {_job_word(j['state'])}") for j in entry["jobs"]]
     if entry["data_scope"] in ("twin", "full"):
         badges.append(f'<span class="tag">{esc(entry["data_scope"])} data</span>')
     if entry["setup"]:
@@ -314,8 +314,20 @@ def _folded(entry: dict[str, Any]) -> str:
     return "".join(parts)
 
 
+def _job_word(state: str) -> str:
+    """'out of memory', 'not started', 'ended': short enough for a phone."""
+    return state.split(" (")[0].replace("_", " ").lower()
+
+
+def _job_css(state: str) -> str:
+    if bad_ending(state):
+        return "FAILED"  # it ended without its result, or its code failed
+    return state if state in ("COMPLETED", "RUNNING", "PENDING") else "CANCELLED"
+
+
 def _failed(entry: dict[str, Any]) -> bool:
-    return entry["status"] in ("error", "lost") or any(c["status"] in ("fail", "error") for c in entry["checks"])
+    return (entry["status"] in ("error", "lost") or any(c["status"] in ("fail", "error") for c in entry["checks"])
+            or any(bad_ending(j["state"]) for j in entry["jobs"]))
 
 
 def _summary_marks(entry: dict[str, Any]) -> str:
@@ -327,8 +339,8 @@ def _summary_marks(entry: dict[str, Any]) -> str:
     if failed:
         marks.append(f'<span class="jmark bad" title="checks failed">✗{failed}</span>')
     for job in entry["jobs"]:
-        css = {"COMPLETED": "ok", "FAILED": "bad", "RUNNING": "run"}.get(job["state"], "muted")
-        marks.append(f'<span class="jmark {css}" title="job {esc(job["job_id"])} {esc(job["state"].lower())}">job</span>')
+        css = {"COMPLETED": "ok", "FAILED": "bad", "RUNNING": "run"}.get(_job_css(job["state"]), "muted")
+        marks.append(f'<span class="jmark {css}" title="job {esc(job["job_id"])} {esc(_job_word(job["state"]))}">job</span>')
     if any(o["image"] for o in entry["outputs"]):
         marks.append('<span class="jmark" title="has a figure">fig</span>')
     if entry["data_scope"] == "twin":

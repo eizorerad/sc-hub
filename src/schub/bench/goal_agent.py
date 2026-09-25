@@ -44,7 +44,8 @@ from ..locking import LockTimeout, exclusive
 from ..projects import ProjectError, ProjectStore
 from ..slurm import JobSpec, Slurm, SlurmError, render_script
 from .checkpoint import CheckpointStore
-from .engines.base import Engine, McpServer, Outcome, Turn, credential_fingerprint, install_guards
+from .engines.base import (LABELS, SIGN_IN_HOW, Engine, McpServer, Outcome, Turn, credential_fingerprint,
+                           install_guards, sign_in_fingerprint)
 from .engines.claude import Claude
 from .engines.codex import Codex
 from .engines import window
@@ -57,25 +58,38 @@ from .journal import Journal
 from .clock import stamp
 from .models import Actor, Checkpoint
 from .report_store import ReportStore
-from .workbench import PASS_THROUGH
+from .workbench import PASS_THROUGH, Workbench
 
 ADAPTERS: dict[str, Engine] = {"claude": Claude(), "codex": Codex()}
 TERMINAL = ("complete", "blocked")
-SIGN_IN = {"claude": "claude auth login", "codex": "codex login --device-auth"}
 # Slurm will never start a job waiting for one of these: the model must hear of it, not wait forever
 # (JobHeldUser is left out: a hold the student placed on purpose)
 STUCK = re.compile(r"JobHeldAdmin|requeued.?held|held.?state|DependencyNeverSatisfied|BadConstraints|PartitionConfig|"
                    r"PartitionTimeLimit|QOSMaxWallDurationPerJobLimit|Invalid(?:Account|QOS)|launch.?failed", re.I)
-MIN_TURN_S = 600  # the other engine takes over only with at least this much of the slice left
+MIN_TURN_S = 600  # the other engine (or a new session) takes over only with at least this much of the slice left
+LONG_WAIT_H = 24  # a wait on jobs longer than this wakes the model to look at them
 REPORT_TURNS = 2  # writer turns for one report; then the goal ends without it (an incident says so)
 WRITING = ("due", "writing", "requested")
 
 
+def when(moment: datetime) -> str:
+    """A time for the student: '2026-09-25 15:04 UTC'."""
+    return moment.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+
+def _hours_since(stamp_text: str) -> float:
+    try:
+        then = datetime.fromisoformat(stamp_text)
+    except (TypeError, ValueError):
+        return 0.0
+    return (datetime.now(timezone.utc) - then).total_seconds() / 3600
+
+
 def did_work(outcome: Outcome) -> bool:
-    """A usage limit, a failure or a full context can arrive mid-turn, after real work (tool calls, model
-    turns, cost): that turn counts. One that failed before any work (a lost login, a broken CLI) is not
-    counted against the budget."""
-    if outcome.status in ("ok", "timed_out"):
+    """A usage limit, a failure, a time-out or a full context can arrive mid-turn, after real work (tool
+    calls, model turns, cost): that turn counts. One that ended before any work (a lost login, a broken or
+    hanging CLI) is not counted against the budget."""
+    if outcome.status == "ok":
         return True
     return ((outcome.turns or 0) > 1 or bool(outcome.cost_usd) or bool(outcome.text)
             or bool((outcome.details or {}).get("tool_calls")))
@@ -146,6 +160,7 @@ class Slice:
         self.adapters = adapters
         self.cooldown = Cooldown(settings.bench_dir / "engine-cooldown.json")
         self.stuck: list[str] = []  # waited-for jobs Slurm will never start (said in the prompt)
+        self.slow: list[str] = []  # waited-for jobs still pending after LONG_WAIT_H (said in the prompt)
 
     # ---- the slice ----------------------------------------------------------------------
 
@@ -229,7 +244,7 @@ class Slice:
             goal.event("weekly_ceiling", job=self.job, ceiling=policy.weekly_turns)
             return "weekly_ceiling"
         if not engines:
-            paused = {e: self._paused_until(e, policy) for e in policy.allowed(self.project)}
+            paused = {e: self._paused_until(e, policy, config) for e in policy.allowed(self.project)}
             goal.event("all_paused", job=self.job, until={k: str(v) for k, v in paused.items()})
             self._sleep_until(min((v for v in paused.values() if v is not None), default=None))
             return "paused"
@@ -240,14 +255,16 @@ class Slice:
                 break
             outcome = self.turn(engine, config, policy, role=role)
             status = outcome.status
-            if status == "failed" and not did_work(outcome):
+            if status in ("failed", "timed_out") and not did_work(outcome):
                 continue  # nothing was done: the other engine may still answer
             if status != "usage_limited":
                 break
             until = self.cooldown.mark(engine, outcome.error, resets=reset_hint(outcome.details))
             written = role == "writer" and self.goal.report_state().get("status") != "writing"
-            self._incident(f"{engine} hit its usage limit; it pauses until {until.isoformat(timespec='minutes')}"
-                           + (" and the other engine takes over." if len(engines) > 1 and not written else "."))
+            other = index == 0 and len(engines) > 1 and not written
+            if self.cooldown.streak(engine) == 1:  # one note per episode, not one per retry
+                self._incident(f"{engine} hit its usage limit; it pauses until {when(until)}"
+                               + (" and the other engine takes over." if other else "."))
             if written:
                 break  # published (or given up) before the limit: nothing is left for the other engine
         return status
@@ -291,6 +308,8 @@ class Slice:
             self._save_sessions(role, {**sessions, engine: None})
             if not writing and goal.turns() >= config.max_turns:
                 return outcome  # that turn spent the budget: the next slice ends the goal
+            if self.remaining_s(config) < MIN_TURN_S:
+                return outcome  # too little of the slice left: the next slice starts the new session
             return self.turn(engine, config, policy, rotated=True, role=role)
         if outcome.session_id and worked and not missing:
             last = {} if writing else {"last": engine}
@@ -300,29 +319,32 @@ class Slice:
             self._after_writing()
         if outcome.status == "failed" and worked:
             self._incident(f"The lab agent's {engine} turn failed: {outcome.error[-400:]}")
-        elif outcome.status == "failed":
-            self._engine_failing(engine, outcome)
-        elif missing:
-            self._incident(f"The lab agent's {engine} turn could not go on in a new session either: "
-                           f"{outcome.error[-300:]}")
+        elif outcome.status in ("failed", "timed_out") and not worked:
+            self._engine_failing(engine, outcome, config)
+        elif missing and rotated:
+            self._incident(f"{engine} could not continue the work, not even in a fresh conversation: "
+                           f"{outcome.error[-300:]}. The next turn tries again.")
         return outcome
 
-    def _engine_failing(self, engine: str, outcome: Outcome) -> None:
+    def _engine_failing(self, engine: str, outcome: Outcome, config: GoalConfig) -> None:
         """A turn that failed before any work: paused longer each time in a row, one incident per pause."""
-        count, until = self.cooldown.failing(engine, outcome.error)
+        count, until = self.cooldown.failing(engine, outcome.error or outcome.status,
+                                             login=sign_in_fingerprint(engine))
         self.goal.event("engine_failing", job=self.job, engine=engine, in_a_row=count,
                         paused_until=until.isoformat(timespec="minutes") if until else None)
         if until is None:
             return
+        why = outcome.error[-300:].strip() if outcome.error else "no answer before the turn's time limit"
+        pace = config.pace_minutes
         self._incident(
-            f"{engine} failed {count} turns in a row before doing any work ({outcome.error[-300:].strip()}). "
-            f"The lab agent pauses it until {until.isoformat(timespec='minutes')} and tries again then; no turn "
-            f"is counted. If its sign-in on the cluster expired, sign in again (the setup page's \"Codex and "
-            f"Claude Code on the cluster\" step, or `{SIGN_IN[engine]}` on the cluster): the engine check then "
-            "ends the pause early.")
+            f"{LABELS[engine]} on the cluster failed {count} times in a row before doing any work ({why}). No turn "
+            f"is counted; the lab agent tries it again at {when(until)}. If its sign-in expired, sign in again: "
+            f"{SIGN_IN_HOW}. The lab agent notices a new sign-in within {pace} minutes.")
 
     def _ready(self, engine: str, policy) -> bool:
         """Not paused after a usage limit, and (Claude) not above the owner's weekly ceiling."""
+        if self.cooldown.relogged(engine, sign_in_fingerprint(engine)):
+            self.goal.event("signed_in_again", job=self.job, engine=engine)  # its failing pause ends
         if not self.cooldown.ready(engine):
             return False
         if engine == "claude":
@@ -367,8 +389,10 @@ class Slice:
         self._incident(f"The lab agent could not write the report: {reason}. The research itself is complete. Ask "
                        f"your assistant to write it with the report tool, or run `schub goal-report {self.project}`.")
 
-    def _paused_until(self, engine: str, policy) -> datetime | None:
+    def _paused_until(self, engine: str, policy, config: GoalConfig) -> datetime | None:
         until = self.cooldown.until(engine)
+        if until is not None and self.cooldown.kind(engine) == "failing":  # a new sign-in ends it: look each pace
+            until = min(until, datetime.now(timezone.utc) + timedelta(minutes=config.pace_minutes))
         full = window.above_ceiling(self.settings.bench_dir, policy.claude_weekly_ceiling) if engine == "claude" else None
         return max((d for d in (until, full[1] if full else None) if d is not None), default=None)
 
@@ -413,9 +437,16 @@ class Slice:
             text += ["", "Since your last turn another engine worked on this goal: read the journal's new entries "
                      "and the hand-over before acting; your memory of the work is out of date."]
         if self.stuck:
-            text += ["", "Slurm will never start the job(s) you wait for as they are: " + ", ".join(self.stuck)
-                     + ". Find out why (jobs view), then cancel and resubmit them fixed, or hand over as "
-                     "\"blocked\" when the student must act."]
+            text += ["", "The job(s) you wait for may never start as they are: " + ", ".join(self.stuck)
+                     + ". cluster() shows why each job waits. Cancel with stop(<job id>) and resubmit it fixed "
+                     "(e.g. a shorter --time), or hand over as \"blocked\" when the student must act. A hold "
+                     "placed by the cluster's admins (JobHeldAdmin) is theirs: hand over as \"blocked\", do not "
+                     "work around it."]
+        if self.slow:
+            text += ["", f"The job(s) you wait for have been pending for over {LONG_WAIT_H} hours: "
+                     + ", ".join(self.slow) + ". Look at them with cluster(). If they only queue behind other "
+                     "work, hand over as \"waiting\" again; if they can never start as they are, cancel with "
+                     "stop(<job id>) and resubmit them fixed."]
         return "\n".join(text)
 
     def writer_prompt(self, config: GoalConfig) -> str:
@@ -437,7 +468,7 @@ class Slice:
         ])
 
     def mcp_server(self, engine: str, model: str, effort: str, session: str, role: str = "research") -> McpServer:
-        env = {k: os.environ[k] for k in (*PASS_THROUGH, "HOME", "PATH", "LANG") if os.environ.get(k)}
+        env = {k: os.environ[k] for k in (*PASS_THROUGH, "HOME", "USER", "PATH", "LANG") if os.environ.get(k)}
         env.update({k: v for k, v in os.environ.items() if k.startswith("SCHUB_BENCH_")})
         env.update(SCHUB_ROOT=str(self.settings.root), SCHUB_LAB_AGENT_ENGINE=engine, SCHUB_LAB_AGENT_MODEL=model,
                    SCHUB_LAB_AGENT_EFFORT=effort, SCHUB_LAB_AGENT_SESSION=session, SCHUB_GOAL_PROJECT=self.project)
@@ -528,6 +559,11 @@ class Slice:
             self.stuck = stuck
             self.goal.event("stuck_jobs", job=self.job, jobs=stuck)
             return []
+        pending = [i for i in ids if states.get(i, "").split(" ")[0] == "PENDING"]
+        if pending and _hours_since(checkpoint.updated) > LONG_WAIT_H:  # e.g. behind a parent that is stuck
+            self.slow = pending
+            self.goal.event("long_wait", job=self.job, jobs=pending)
+            return []
         return ids
 
     # ---- records ----------------------------------------------------------------------
@@ -601,13 +637,37 @@ def start(settings: Settings, slurm: Slurm, project: str, text: str) -> str:
     if store.read().disposition in TERMINAL:  # a restart: the goal is open again
         store.write("active", next_action="continue the goal from the journal's hand-over", actor=SYSTEM)
     slice_ = Slice(settings, slurm, project, job="launch")
-    active = [j.job_id for j in slurm.my_jobs() if j.name in goal.job_names and j.state in ACTIVE]
+    policy = load_policy(settings.bench_dir / "engine-policy.json")
+    for engine in policy.allowed(project):  # started again (e.g. after signing in again): try failing engines now
+        slice_.cooldown.clear(engine, only_failing=True)
+    _keep_watched(settings, slurm, goal)
+    active = [j for j in slurm.my_jobs() if j.name in goal.job_names and j.state in ACTIVE]
     if active:
-        goal.event("start_skipped", queued=active)
-        return active[0]
+        _bring_forward(slurm, goal, active)
+        goal.event("start_skipped", queued=[j.job_id for j in active])
+        return active[0].job_id
     job = slice_.submit(config, after=None)
     goal.event("started", job=job, engine=config.engine, max_turns=config.max_turns)
     return job
+
+
+def _keep_watched(settings: Settings, slurm: Slurm, goal: Goal) -> None:
+    """A lapsed watchdog (a quiet bench) starts again: it re-arms broken chains and checks the engines."""
+    try:
+        Workbench(settings, slurm).ensure_watchdog()
+    except (SlurmError, OSError) as exc:
+        goal.event("watchdog_not_started", error=str(exc)[:300])
+
+
+def _bring_forward(slurm: Slurm, goal: Goal, jobs) -> None:
+    """A slice already queued but put off (paused engines, the pace) starts now: the student asked."""
+    for job in jobs:
+        if job.state == "PENDING" and "BeginTime" in job.reason:
+            try:
+                slurm.delay(job.job_id, 1)
+                goal.event("brought_forward", job=job.job_id)
+            except SlurmError as exc:
+                goal.event("bring_forward_failed", job=job.job_id, error=str(exc)[:300])
 
 
 def active_goals(settings: Settings) -> list[str]:
@@ -673,10 +733,12 @@ def request_report(settings: Settings, slurm: Slurm, project: str) -> str:
     goal.save_report_state({"for": checkpoint.updated, "status": "requested", "requested_at": stamp(),
                             "writer_turns": 0, "sessions": {}})
     (goal.folder / "STOP").unlink(missing_ok=True)
-    active = [j.job_id for j in slurm.my_jobs() if j.name in goal.job_names and j.state in ACTIVE]
+    _keep_watched(settings, slurm, goal)
+    active = [j for j in slurm.my_jobs() if j.name in goal.job_names and j.state in ACTIVE]
     if active:
-        goal.event("report_requested", queued=active)
-        return active[0]
+        _bring_forward(slurm, goal, active)
+        goal.event("report_requested", queued=[j.job_id for j in active])
+        return active[0].job_id
     job = Slice(settings, slurm, project, job="report").submit(goal.config(), after=None)
     goal.event("report_requested", job=job)
     return job

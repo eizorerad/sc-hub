@@ -24,6 +24,7 @@ from .cooldown import is_limit
 Status = Literal["ok", "usage_limited", "session_missing", "timed_out", "failed"]
 GUARD_DIR = Path(__file__).resolve().parent.parent / "guard"
 CREDENTIALS = {"claude": (".claude/.credentials.json", ".claude.json"), "codex": (".codex/auth.json",)}
+SIGN_IN_FILES = {"claude": (".claude/.credentials.json",), "codex": (".codex/auth.json",)}  # rewritten only by a sign-in
 
 
 @dataclass(frozen=True)
@@ -89,7 +90,8 @@ class Engine:
             parsed = self.parse(stdout, stderr, process.returncode if process.returncode is not None else -9)
             return Outcome(self.name, "timed_out", session_id=parsed.session_id or turn.session_id or
                            turn.new_session_id, text=parsed.text, error=f"stopped after {turn.timeout_s} s",
-                           returncode=process.returncode)
+                           cost_usd=parsed.cost_usd, turns=parsed.turns, returncode=process.returncode,
+                           details=parsed.details)  # tool calls made before the deadline: the turn did work
         return self.parse(stdout, stderr, process.returncode)
 
 
@@ -169,10 +171,17 @@ def version(binary: str) -> str:
     return (done.stdout or done.stderr).strip().splitlines()[0][:80] if (done.stdout or done.stderr).strip() else ""
 
 
-def credential_fingerprint(engine: str) -> str:
+LABELS = {"claude": "Claude Code", "codex": "Codex"}
+SIGN_IN_HOW = ("ask your assistant in the sc-hub setup folder to run `sh onboard/start.sh`, then "
+               "`sh onboard/start.sh retry agents` (Windows: `onboard\\start.cmd`, then `onboard\\start.cmd retry "
+               "agents`); on the page choose \"Sign in Claude Code again\" (or Codex), not \"Yes\". The page asks "
+               "your cluster password once")
+
+
+def credential_fingerprint(engine: str, files: dict[str, tuple[str, ...]] = CREDENTIALS) -> str:
     """Which login an engine used, without reading it: size and modification time of its files, hashed."""
     parts = []
-    for relative in CREDENTIALS.get(engine, ()):
+    for relative in files.get(engine, ()):
         path = Path.home() / relative
         try:
             stat = path.stat()
@@ -180,6 +189,11 @@ def credential_fingerprint(engine: str) -> str:
             continue
         parts.append(f"{relative}:{stat.st_size}:{stat.st_mtime_ns}")
     return hashlib.sha256("|".join(parts).encode()).hexdigest()[:12] if parts else ""
+
+
+def sign_in_fingerprint(engine: str) -> str:
+    """Changes when the student signs in again (not on an ordinary run)."""
+    return credential_fingerprint(engine, SIGN_IN_FILES)
 
 
 def elapsed(start: float) -> float:
