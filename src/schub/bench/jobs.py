@@ -126,7 +126,8 @@ def _final_state(slurm: Slurm, record: JobRecord) -> tuple[str, str]:
     try:
         with log.open("rb") as handle:
             handle.seek(max(0, log.stat().st_size - 8192))
-            tail = handle.read().decode(errors="replace").lower().replace("cuda out of memory", "cuda oom")
+            tail = handle.read().decode(errors="replace").lower()
+            tail = tail.replace("cuda out of memory", "cuda oom").replace("cuda error: out of memory", "cuda oom")
     except FileNotFoundError:
         return "ENDED (never started: cancelled or not launched while queued)", ""
     except OSError:

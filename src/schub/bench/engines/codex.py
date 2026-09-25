@@ -25,6 +25,9 @@ MISSING = re.compile(r"no (saved )?(session|conversation|thread|rollout)|(sessio
                      r"context.?length.?exceeded|context window|maximum context length", re.I)
 
 
+WORK_ITEMS = ("mcp_tool_call", "command_execution", "file_change", "web_search")
+
+
 def _toml(value: object) -> str:
     return json.dumps(value)  # JSON strings and arrays of strings are valid TOML
 
@@ -85,8 +88,8 @@ class Codex(Engine):
                 errors.append(str(event.get("message", "error")))
             elif kind == "item.completed" and (event.get("item") or {}).get("type") == "agent_message":
                 messages.append(str(event["item"].get("text", "")))
-            elif kind == "item.completed" and (event.get("item") or {}).get("type") not in (None, "reasoning"):
-                tools += 1  # an MCP tool call (or another action): the turn did work even if it then failed
+            elif kind == "item.completed" and (event.get("item") or {}).get("type") in WORK_ITEMS:
+                tools += 1  # the turn did work even if it then failed (an "error" item is only a notice)
         ok = returncode == 0 and completed  # an "error" event before completion can be a retried reconnect
         error = "" if ok else ("\n".join(errors) or stderr.strip() or f"exit code {returncode}")[-2000:]
         return Outcome(self.name, classify(ok, error, bool(MISSING.search(error))), session_id=thread,

@@ -123,11 +123,13 @@ class BenchService:
         project, cid = self._cell_ref(ref)
         journal = self.journal(project)
         deadline = self.monotonic() + (self.settings.bench.run_wait_s if wait_s is None else wait_s)
-        queue_checked, jobs_open = -JOB_POLL_S, True
+        queue_checked, jobs_open, rejected_checked = -JOB_POLL_S, True, -JOB_POLL_S
         while True:
             entry = journal.cell(cid)
-            if entry is None and self.inbox.rejected_reason(project, cid) is not None:
-                break  # refused or withdrawn before it started: nothing more will happen to it
+            if entry is None and self.monotonic() - rejected_checked >= JOB_POLL_S:  # the folder only grows
+                rejected_checked = self.monotonic()
+                if self.inbox.rejected_reason(project, cid) is not None:
+                    break  # refused or withdrawn before it started: nothing more will happen to it
             if entry is not None and entry.final:
                 if not for_jobs or not _unreported(entry):
                     break

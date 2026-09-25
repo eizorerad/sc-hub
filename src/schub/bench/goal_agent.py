@@ -289,6 +289,8 @@ class Slice:
             self.cooldown.answered(engine)
         if missing and not rotated:  # lost, or too full to go on (counted above if it worked first): a new one
             self._save_sessions(role, {**sessions, engine: None})
+            if not writing and goal.turns() >= config.max_turns:
+                return outcome  # that turn spent the budget: the next slice ends the goal
             return self.turn(engine, config, policy, rotated=True, role=role)
         if outcome.session_id and worked and not missing:
             last = {} if writing else {"last": engine}

@@ -351,3 +351,14 @@ def test_codex_keeps_its_sqlite_files_per_host(tmp_path: Path) -> None:
         "/set/by/owner"
     assert Claude().environment(None) is None  # only Codex has the NFS problem
 
+
+
+def test_only_real_actions_count_as_codex_work() -> None:
+    """A notice ("error" item) before a failure is not work: a broken login must still pause the engine."""
+    notice = "\n".join(json.dumps(e) for e in (
+        {"type": "thread.started", "thread_id": "t"},
+        {"type": "item.completed", "item": {"id": "i0", "type": "error", "message": "MCP server failed to start"}},
+        {"type": "turn.failed", "error": {"message": "unauthorized"}}))
+    assert Codex().parse(notice, "", 1).details["tool_calls"] == 0
+    called = notice.replace('"type": "error", "message": "MCP server failed to start"', '"type": "mcp_tool_call"')
+    assert Codex().parse(called, "", 1).details["tool_calls"] == 1

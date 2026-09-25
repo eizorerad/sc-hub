@@ -76,7 +76,7 @@ class ProjectWorker:
         self.project = project
         self.queue: queue.Queue[Claimed | None] = queue.Queue()
         self.kernel: ProjectKernel | None = None
-        self.kernel_env: tuple[str, str] = ("", "")  # the kernel's name and environment build (_environment)
+        self.kernel_env: tuple[str, str | None] = ("", "")  # the kernel's name and build (None: unknown)
         self.epochs = 0
         self.busy: str | None = None
         self.closing = False
@@ -309,11 +309,14 @@ class ProjectWorker:
         if self.kernel is not None and self.kernel.alive():
             if wanted is None or wanted == self.kernel_env:  # unchanged, or unreadable just now: keep the kernel
                 return self.kernel
+            if self.kernel_env[1] is None and wanted[0] == self.kernel_env[0]:
+                self.kernel_env = wanted  # started while the build could not be read: this is it, no restart
+                return self.kernel
             # bench.packages() built (or dropped) the project's own environment: move to it
             self.retire_note("the project's environment changed (bench.packages); this cell starts a new kernel")
         self._shutdown_kernel()
-        if wanted is None:  # a file-server error: the kernel a plain lookup finds
-            wanted = (kernel_name(self.host.settings, self.project), "")
+        if wanted is None:  # a file-server error: the kernel a plain lookup finds, its build unknown
+            wanted = (kernel_name(self.host.settings, self.project), None)
         self.epochs += 1
         epoch = f"{self.host.job_id}.{self.epochs}"
         env = kernel_env(os.environ, {
@@ -328,7 +331,7 @@ class ProjectWorker:
         self.kernel = kernel
         return kernel
 
-    def _environment(self) -> tuple[str, str] | None:
+    def _environment(self) -> tuple[str, str | None] | None:
         """The kernel this project should run in now and which build of its own environment; None when a
         file-server error hides it (a passing error must not restart the kernel and lose its variables)."""
         settings = self.host.settings

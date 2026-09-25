@@ -147,3 +147,32 @@ def test_a_new_build_moves_the_projects_next_cell_to_a_fresh_kernel(hub, setting
     (build / "packages.json").unlink()
     (build / "packages.json").mkdir()  # reading it now fails (as a file-server error would): no restart
     assert worker._ensure_kernel(project_dir) is second and second.up
+
+
+def test_a_kernel_started_while_the_build_was_unreadable_is_not_restarted_for_it(hub, settings, monkeypatch):
+    from types import SimpleNamespace
+
+    from schub.bench import worker as worker_module
+    from schub.bench.worker import ProjectWorker
+
+    class Kernel:
+        def __init__(self, name, cwd, env, epoch):
+            self.name, self.up = name, False
+
+        def start(self):
+            self.up = True
+
+        def alive(self):
+            return self.up
+
+        def shutdown(self):
+            self.up = False
+
+    readings = iter([None, None, ("python3", "")])  # unreadable at start, then read fine
+    monkeypatch.setattr(ProjectWorker, "_environment", lambda self: next(readings))
+    monkeypatch.setattr(worker_module, "prime", lambda kernel: True)
+    host = SimpleNamespace(settings=settings, job_id="9", kernel_factory=Kernel, now=lambda: "2026-09-25T00:00:00Z")
+    worker = ProjectWorker(host, "crispr")  # type: ignore[arg-type]
+    first = worker._ensure_kernel(settings.projects_dir / "crispr")
+    assert worker._ensure_kernel(settings.projects_dir / "crispr") is first
+    assert worker._ensure_kernel(settings.projects_dir / "crispr") is first and worker.kernel_env == ("python3", "")
