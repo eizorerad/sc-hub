@@ -151,7 +151,8 @@ def drain_ledger(kernel: ProjectKernel, timeout_s: float = 10.0) -> dict[str, An
 
 
 PRIME = ("get_ipython().run_line_magic('load_ext', 'schub.bench.magics')\n"
-         "import schub.bench.kernel_api as bench")
+         "import schub.bench.kernel_api as bench\n"
+         "__import__('schub.bench.kernel_api', fromlist=['alias']).alias()")
 
 
 def silent(kernel: ProjectKernel, code: str, timeout_s: float = 30.0) -> dict[str, Any] | None:

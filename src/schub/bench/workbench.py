@@ -26,7 +26,7 @@ from .fsio import read_json
 
 WORKBENCH, WATCHDOG = "bench-workbench", "bench-watchdog"
 PASS_THROUGH = ("SCHUB_ROOT", "SCHUB_LIBRARY", "SCHUB_PYTHON", "SCHUB_PARTITION", "SCHUB_EXTRA_ROOTS",
-                "SCHUB_LEGACY_TOOLS", "PYTHONPATH")
+                "SCHUB_LEGACY_TOOLS", "SCHUB_JOB_PREFIX", "PYTHONPATH")
 
 
 class BenchStopped(RuntimeError):

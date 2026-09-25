@@ -11,12 +11,16 @@
 - A lab agent whose goal is active but has no slice queued (a dead node, a failed
   sbatch): queue one. While goals are active, probe the engines every few hours.
 - Otherwise idle for dormant_after_h: let the chain lapse (the next cell re-arms it).
+- Its own old logs and the submitted job scripts are pruned (Slurm keeps its own copy of
+  a script once the job is queued).
 """
 
 from __future__ import annotations
 
 import os
 import sys
+import time
+from pathlib import Path
 
 from ..config import Settings, load_settings
 from ..locking import LockTimeout
@@ -45,6 +49,12 @@ def check(settings: Settings, slurm: Slurm, own_job_id: str | None = None, now: 
     if bench.stopped():
         return _save(settings, WatchdogReport(checked=now(), actions=("bench/STOP exists: not re-arming",)))
     actions: list[str] = []
+    try:
+        pruned = prune(settings.bench_dir)
+        if pruned:
+            actions.append(f"pruned {pruned} old watchdog log(s) and job script(s)")
+    except OSError as exc:
+        actions.append(f"pruning failed: {exc}"[:300])
     has_job = bool(bench.jobs(WORKBENCH))
     inbox = Inbox(settings.bench_dir)
     try:  # a file-server error here must not end the chain: the re-arm below still happens
@@ -96,12 +106,33 @@ def _lab_agents(settings: Settings, slurm: Slurm) -> list[str]:
     return actions
 
 
+KEEP_LOGS_S, KEEP_SCRIPTS_S, KEEP_LAST = 3 * 86400, 2 * 86400, 10
+
+
+def prune(bench_dir: Path, now: float | None = None) -> int:
+    """Watchdog logs older than three days (the last KEEP_LAST stay) and job scripts older than two:
+    one of each every few minutes would otherwise pile up for good."""
+    now = time.time() if now is None else now
+    removed = 0
+    for folder, pattern, keep_s in ((bench_dir / "logs", "watchdog-*.log", KEEP_LOGS_S),
+                                    (bench_dir / "scripts", "*.sbatch", KEEP_SCRIPTS_S)):
+        if not folder.is_dir():
+            continue
+        dated = sorted(((path.stat().st_mtime, path) for path in folder.glob(pattern)), reverse=True)
+        for mtime, path in dated[KEEP_LAST:]:
+            if now - mtime > keep_s:
+                path.unlink(missing_ok=True)
+                removed += 1
+    return removed
+
+
 def _save(settings: Settings, report: WatchdogReport) -> WatchdogReport:
     write_json_atomic(settings.bench_dir / "watchdog.json", report.model_dump(mode="json"))
     return report
 
 
 def main() -> int:
+    os.umask(0o077)  # its logs and the scripts it submits (a workbench's too) are the student's alone
     settings = load_settings()
     try:
         report = check(settings, Slurm(), own_job_id=os.environ.get("SLURM_JOB_ID"))

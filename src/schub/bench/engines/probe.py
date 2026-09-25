@@ -18,7 +18,7 @@ from ..fsio import read_json, write_json_atomic
 from .base import Engine, Turn, credential_fingerprint, install_guards, version
 from .claude import Claude
 from .codex import Codex
-from .cooldown import Cooldown
+from .cooldown import Cooldown, reset_hint
 from . import window
 from .policy import load
 
@@ -47,7 +47,7 @@ def probe(settings: Settings, engines: tuple[str, ...] | None = None, timeout_s:
         if name == "claude":
             window.record(settings.bench_dir, outcome.details.get("rate_limit"))
         if outcome.status == "usage_limited":
-            cooldown.mark(name, outcome.error)
+            cooldown.mark(name, outcome.error, resets=reset_hint(outcome.details))
         elif ok:
             cooldown.clear(name)  # answering again (a cap raised, a window reset early)
         results[name] = {"ok": ok, "status": outcome.status, "at": stamp(), "detail": (outcome.error or
@@ -73,7 +73,8 @@ def summary(settings: Settings) -> list[str]:
         until = cooldown.until(name)
         record = data.get(name) or {}
         if until is not None:
-            lines.append(f"{name}: paused until {until.isoformat(timespec='minutes')} (usage limit)")
+            why = "failing; sign in again if its login expired" if cooldown.kind(name) == "failing" else "usage limit"
+            lines.append(f"{name}: paused until {until.isoformat(timespec='minutes')} ({why})")
         elif record:
             state = "ok" if record.get("ok") else f"not answering ({record.get('status')}: {record.get('detail', '')[:80]})"
             lines.append(f"{name}: {state}, checked {record.get('at', '')[:16]}")

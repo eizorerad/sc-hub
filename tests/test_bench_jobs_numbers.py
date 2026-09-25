@@ -73,6 +73,25 @@ def test_the_end_is_read_from_the_log_when_slurm_forgot(settings: Settings, clus
     assert journal.cell("c0001").jobs[0].state == "TIMEOUT"
 
 
+def test_this_clusters_out_of_memory_wording_is_recognised(settings: Settings, cluster: FakeCluster,
+                                                           journal: Journal, tmp_path: Path) -> None:
+    job_dir = tmp_path / "jobdir"
+    job_dir.mkdir()
+    (job_dir / "slurm-700.log").write_text("loading\nslurmstepd: error: Detected 1 oom_kill event in StepId=700.batch."
+                                           " Some of the step tasks have been OOM Killed.\n")
+    register(settings, JobRecord(job_id="700", project="demo", ref="demo#c0001", job_dir=str(job_dir)))
+    assert reap(settings, Slurm(cluster)) == ["700"]
+    assert journal.cell("c0001").jobs[0].state == "OUT_OF_MEMORY"
+
+
+def test_a_job_cancelled_while_queued_says_it_never_started(settings: Settings, cluster: FakeCluster,
+                                                            journal: Journal, tmp_path: Path) -> None:
+    register(settings, JobRecord(job_id="700", project="demo", ref="demo#c0001", job_dir=str(tmp_path / "none")))
+    assert reap(settings, Slurm(cluster)) == ["700"]
+    [job] = journal.cell("c0001").jobs
+    assert job.state.startswith("ENDED (never started") and job.log == ""
+
+
 def test_nothing_is_decided_when_slurm_does_not_answer(settings: Settings, journal: Journal, tmp_path: Path) -> None:
     import subprocess
 

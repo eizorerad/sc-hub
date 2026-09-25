@@ -149,7 +149,10 @@ def score(settings: Settings, project: str, request: EvalRequest) -> dict:
 
 
 def _worked(event: dict) -> bool:
-    """The lab agent's own rule (goal_agent.did_work), from a turn_finished event."""
+    """The lab agent's own rule (goal_agent.did_work): what the turn_finished event says, or (older events)
+    the rule rebuilt from its status, turns and cost."""
+    if isinstance(event.get("worked"), bool):
+        return event["worked"]
     if event.get("status") in ("ok", "timed_out", "failed"):
         return True
     return event.get("status") == "usage_limited" and ((event.get("turns") or 0) > 1 or bool(event.get("cost_usd")))

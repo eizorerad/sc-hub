@@ -12,7 +12,9 @@ import re
 
 from .base import Engine, Outcome, Turn, classify
 
-MISSING = re.compile(r"no conversation found|session .* (not found|does not exist)|already in use", re.I)
+# a session that cannot go on: lost, held by a dead node, or too long to resume (a new one starts from the hand-over)
+MISSING = re.compile(r"no conversation found|session .* (not found|does not exist)|already in use|"
+                     r"prompt is too long|context (window|length) (exceeded|is full)|maximum context length", re.I)
 
 
 class Claude(Engine):

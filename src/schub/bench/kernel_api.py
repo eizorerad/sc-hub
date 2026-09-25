@@ -27,6 +27,20 @@ if PORTABLE not in sys.path:
     sys.path.append(PORTABLE)  # `from schub_ckpt import Run` works in the kernel as in jobs
 
 
+def alias() -> None:
+    """`import bench` works too (agents write it), unless the project has its own module of that name."""
+    import importlib.util
+
+    if "bench" in sys.modules:
+        return
+    try:
+        own = importlib.util.find_spec("bench") is not None
+    except (ImportError, ValueError):
+        own = True  # something named bench exists but cannot be looked at: leave it alone
+    if not own:
+        sys.modules["bench"] = sys.modules[__name__]
+
+
 def set_cell(ref: str, checks_json: str = "[]") -> None:
     """Called by the runner before each cell (so %%slurm knows which cell it belongs to)."""
     _cell["ref"] = ref

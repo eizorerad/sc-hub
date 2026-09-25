@@ -192,6 +192,8 @@ class BenchService:
     def interrupt(self, ref: str) -> str:
         project, cid = self._cell_ref(ref)
         self.journal(project)
+        if self.inbox.withdraw(project, "interrupted before it started", cid=cid):
+            return f"{ref} had not started: it was taken out of the queue"
         self.inbox.control(project, cid, "interrupt")
         return f"asked the workbench to interrupt {ref}"
 

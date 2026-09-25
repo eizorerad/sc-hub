@@ -85,8 +85,20 @@ def test_wait_reports_results_and_kernel_restarts(bench: Settings, cluster: Fake
 def test_interrupt_leaves_a_control_for_the_runner(bench: Settings, cluster: FakeCluster) -> None:
     svc = service(bench, cluster)
     ref = svc.run("demo", "import time; time.sleep(9)", "w", "e", wait_s=0).ref
+    Inbox(bench.bench_dir).claim("1")  # a runner holds it
     assert "interrupt" in svc.interrupt(ref)
     assert Inbox(bench.bench_dir).take_controls() == [("demo", "c0001", "interrupt")]
+
+
+def test_interrupting_a_queued_cell_takes_it_out_of_the_queue(bench: Settings, cluster: FakeCluster) -> None:
+    """No workbench took it yet: it never runs, and wait() says why at once (not "queued" forever)."""
+    svc = service(bench, cluster)
+    ref = svc.run("demo", "import time; time.sleep(9)", "w", "e", wait_s=0).ref
+    assert "taken out of the queue" in svc.interrupt(ref)
+    inbox = Inbox(bench.bench_dir)
+    assert inbox.pending() == [] and inbox.take_controls() == []
+    result = svc.wait(ref, wait_s=0)
+    assert result.status == "rejected" and "interrupted before it started" in result.message
 
 
 def test_rejected_requests_say_why(bench: Settings, cluster: FakeCluster) -> None:

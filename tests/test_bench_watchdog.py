@@ -72,3 +72,27 @@ def test_a_live_runner_is_never_swept(settings: Settings, cluster: FakeCluster) 
 def test_dormant_bench_lets_the_watchdog_lapse(settings: Settings, cluster: FakeCluster) -> None:
     report = check(settings, Slurm(runner=cluster), own_job_id="5")
     assert report.rearmed is None and "dormant" in report.actions[-1] and cluster.jobs == {}
+
+
+def test_old_watchdog_logs_and_job_scripts_are_pruned(tmp_path) -> None:
+    import os
+
+    from schub.bench.watchdog import prune
+
+    now = 1_800_000_000.0
+    logs, scripts = tmp_path / "logs", tmp_path / "scripts"
+    logs.mkdir()
+    scripts.mkdir()
+    for index in range(14):  # one every hour, the oldest four days ago
+        path = logs / f"watchdog-{index}.log"
+        path.write_text("x")
+        os.utime(path, (now - 4 * 86400 + index * 3600,) * 2)
+    for index, age_days in enumerate([3] * 12 + [1]):  # twelve scripts three days old, one from yesterday
+        path = scripts / f"watchdog-{index}.sbatch"
+        path.write_text("#!/bin/bash")
+        os.utime(path, (now - age_days * 86400 - index,) * 2)
+    (logs / "workbench-1.log").write_text("kept")
+    assert prune(tmp_path, now=now) == 7  # beyond the last ten of each: four old logs, three old scripts
+    assert len(list(logs.glob("watchdog-*.log"))) == 10 and (logs / "workbench-1.log").exists()
+    assert len(list(scripts.iterdir())) == 10 and (scripts / "watchdog-12.sbatch").exists()
+    assert prune(tmp_path, now=now) == 0

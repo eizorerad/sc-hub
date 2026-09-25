@@ -20,7 +20,9 @@ from .base import Engine, Outcome, Turn, classify
 # engines' logins included). Names from `codex features list` (codex-cli 0.155).
 BUILT_IN_TOOLS = ("shell_tool", "browser_use", "browser_use_external", "computer_use", "in_app_browser", "apps",
                   "multi_agent", "image_generation")
-MISSING = re.compile(r"no (saved )?(session|conversation|thread|rollout)|(session|thread) .*not found", re.I)
+# a thread that cannot go on: lost, or too long to resume (a new one starts from the hand-over)
+MISSING = re.compile(r"no (saved )?(session|conversation|thread|rollout)|(session|thread) .*not found|"
+                     r"context.?length.?exceeded|context window|maximum context length", re.I)
 
 
 def _toml(value: object) -> str:
