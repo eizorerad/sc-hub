@@ -116,7 +116,7 @@ def _header(run: NotebookRun, results: bool, figures: bool) -> str:
         "parameters it used. Change a parameter or a line, run the step again, and the steps after it use your result.\n\n"
         f"{shown}"
         "- **Where it runs:** JupyterLab on the cluster, where the data and every tool are (ask your assistant to open "
-        "this notebook in a JupyterLab session, then run `./schub-lab jupyter` on your laptop). Elsewhere you can read it.\n"
+        "this notebook in a JupyterLab session, then run `~/.sc-hub/bin/schub-lab jupyter` on your laptop). Elsewhere you can read it.\n"
         "- **Start at any step:** a step reads your result of the step before it if you ran that step here, otherwise "
         "the pipeline's saved result. Heavy steps (FASTQ counting, scVI on a GPU) can be skipped.\n"
         "- **Safe to edit:** what you run here goes to the `work` folder next to this notebook, never into the "

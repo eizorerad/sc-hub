@@ -57,11 +57,29 @@ def test_running_it_again_changes_nothing(home: Path) -> None:
     assert ((home / ".bashrc").read_text(), (home / ".profile").read_text()) == first
 
 
-def test_an_older_block_in_the_middle_is_replaced_by_one_at_the_end(home: Path) -> None:
-    (home / ".bashrc").write_text(f"a=1\n{BEGIN}\nexport PATH=/old:$PATH\n{END}\nb=2\n")
+def test_its_own_block_in_the_middle_is_moved_to_the_end(home: Path) -> None:
+    register(home)
+    block = (home / ".bashrc").read_text()[len(SKEL_BASHRC):].strip("\n")
+    (home / ".bashrc").write_text(f"a=1\n{block}\nb=2\n")
     register(home)
     text = (home / ".bashrc").read_text()
-    assert text.count(BEGIN) == 1 and "/old" not in text and text.startswith("a=1\nb=2\n\n" + BEGIN)
+    assert text.count(BEGIN) == 1 and text.startswith("a=1\nb=2\n\n" + BEGIN) and text.rstrip().endswith(END)
+
+
+def test_lines_the_student_put_inside_the_block_are_not_deleted(home: Path) -> None:
+    """Found in the second security review: any BEGIN ... END pair used to lose up to 8 lines between its markers."""
+    register(home)
+    text = (home / ".bashrc").read_text().replace(END, "alias ll='ls -l'\n" + END)
+    (home / ".bashrc").write_text(text)
+    assert register(home)[0].startswith("PATH: left ~/.bashrc alone") and (home / ".bashrc").read_text() == text
+
+
+def test_markers_that_happen_to_sit_in_a_heredoc_are_not_a_block(home: Path) -> None:
+    """BEGIN in a heredoc with an END a few lines later: deleting between them would eat the heredoc's terminator
+    and the student's lines, and bash would then read the rest of the file as the heredoc."""
+    text = (f"{SKEL_BASHRC}cat > ~/notes <<'EOF'\n{BEGIN}\nsome notes\nEOF\nexport MINE=1\nalias a=b\n{END}\n")
+    (home / ".bashrc").write_text(text)
+    assert register(home)[0].startswith("PATH: left ~/.bashrc alone") and (home / ".bashrc").read_text() == text
 
 
 def test_a_lost_end_marker_leaves_the_file_alone_instead_of_eating_lines(home: Path) -> None:

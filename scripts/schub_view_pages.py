@@ -46,6 +46,11 @@ BAR_JS = """(() => {
 """
 
 
+# The pages that hold no script at all (waiting, not found, an older cluster's missing guide, the guide itself).
+STATIC_CSP = ("default-src 'self'; script-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+              "connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+
+
 def policy(nonce: str, images: str = "") -> str:
     """The Content-Security-Policy of these pages: their own nonce'd script, nothing from elsewhere."""
     return (f"default-src 'self'; script-src 'nonce-{nonce}'; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
@@ -78,16 +83,18 @@ def page(title: str, body: str, nonce: str = "", script: str = "", refresh: int 
             f"<title>{html.escape(title)}</title>{STYLE}</head><body><main>{body}</main>{code}</body></html>").encode()
 
 
-def go_page(port: int, to: str, nonce: str) -> bytes:
+def go_page(port: int, to: str, nonce: str, key: str) -> bytes:
     """Opens `to` at sc-hub.localhost when this browser reaches this server there, else at the address it came in on
-    (the probe is a 3×2 image only this server gives)."""
+    (the probe is a 3×2 image this server gives only to `key`, which only its own /go page shows)."""
     named = f"http://{NAME}:{port}"
-    body = (f'<p class="muted" id="go" data-to="{html.escape(to)}" data-named="{html.escape(named)}">Opening your '
-            f'dashboard…</p><noscript><a href="{html.escape(to)}">Open the dashboard</a></noscript>')
+    body = (f'<p class="muted" id="go" data-to="{html.escape(to)}" data-named="{html.escape(named)}" '
+            f'data-probe="{html.escape(key)}">Opening your dashboard…</p>'
+            f'<noscript><a href="{html.escape(to)}">Open the dashboard</a></noscript>')
     script = ("(()=>{const box=document.getElementById('go'),to=box.dataset.to,named=box.dataset.named;let done=false;"
               "const go=u=>{if(!done){done=true;location.replace(u);}};const probe=new Image();"
               "probe.onload=()=>go(probe.naturalWidth===3&&probe.naturalHeight===2?named+to:to);"
-              "probe.onerror=()=>go(to);probe.src=named+'/_schub/ping.png?'+Date.now();setTimeout(()=>go(to),2500);})();")
+              "probe.onerror=()=>go(to);probe.src=named+'/_schub/ping.png?k='+encodeURIComponent(box.dataset.probe)+"
+              "'&t='+Date.now();setTimeout(()=>go(to),2500);})();")
     return page("sc-hub", body, nonce, script)
 
 

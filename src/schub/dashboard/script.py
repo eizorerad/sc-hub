@@ -66,7 +66,7 @@ SCRIPT = r"""
     if (kind === 'jupyter') {
       const run = box.dataset.nbRun, gpu = box.dataset.nbGpu ? ' with a GPU' : '';
       return `In sc-hub, open run ${run} as a notebook: write it with make_notebook("${run}"), start a JupyterLab `
-        + `session${gpu} with that notebook as the target, and tell me when I can run ./schub-lab jupyter on my laptop.`;
+        + `session${gpu} with that notebook as the target, and tell me when I can run ~/.sc-hub/bin/schub-lab jupyter on my laptop.`;
     }
     if (kind === 'fix') return `In sc-hub, fix step ${ref} (${brick}): <what is wrong and what it should do>. `
       + `Change that step of branch ${branch} and save it again with save_branch (overwrite=true; the previous `

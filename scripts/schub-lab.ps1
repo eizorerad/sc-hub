@@ -1,12 +1,13 @@
 # Open your running sc-hub session (JupyterLab or cellxgene) in the browser.
 # The session runs on a compute node; this opens an ssh tunnel through the login
 # node and the browser. Ask the assistant to start a session first.
-#   .\schub-lab.cmd              JupyterLab
-#   .\schub-lab.cmd cellxgene    cellxgene
+#   ~\.sc-hub\bin\schub-lab.cmd              JupyterLab
+#   ~\.sc-hub\bin\schub-lab.cmd cellxgene    cellxgene
+# (the setup installs it in ~\.sc-hub\bin, outside the folders your assistants write in)
 param([string]$Kind = 'jupyter')
 $ErrorActionPreference = 'Stop'
 $Alias = if ($env:SCHUB_ALIAS) { $env:SCHUB_ALIAS } else { 'mbzuai-schub' }
-if ($Kind -notin 'jupyter', 'cellxgene') { Write-Host 'usage: .\schub-lab.cmd [jupyter|cellxgene]'; exit 2 }
+if ($Kind -notin 'jupyter', 'cellxgene') { Write-Host 'usage: schub-lab.cmd [jupyter|cellxgene]'; exit 2 }
 
 $previous = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'

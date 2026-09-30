@@ -124,8 +124,9 @@ def render_sessions(snap: Snapshot) -> str:
     for s in snap.sessions:
         details = [s.node and f"on {s.node}", f"{s.hours} h", "GPU" if s.gpu else "", f"started {s.started}"]
         target = f'<span class="muted small">{esc(Path(s.target).name)}</span>' if s.target else ""
-        how = (f"<span>Open on the laptop: <code>./schub-lab {esc(s.kind)}</code> "
-               f"<span class='muted small'>(Windows: .\\schub-lab.cmd {esc(s.kind)})</span></span>") if s.node else ""
+        how = (f"<span>Open on the laptop: <code>~/.sc-hub/bin/schub-lab {esc(s.kind)}</code> "
+               f"<span class='muted small'>(Windows: ~\\.sc-hub\\bin\\schub-lab.cmd {esc(s.kind)})</span></span>"
+               ) if s.node else ""
         cards.append(
             f'<div class="card session"><b>{esc(SESSION_NAMES.get(s.kind, s.kind))}</b>{pill(s.state)}'
             f'<span class="muted small">{esc(" · ".join(d for d in details if d))}</span>{target}{how}</div>'

@@ -53,7 +53,7 @@ def test_jupyter_session_lifecycle(hub, settings, cluster):
     running(cluster, hub, settings, info.session_id)
     assert hub.session_line("jupyter") == "ws-l1-004 40123 /lab?token=abc"
     listed = hub.list_sessions()
-    assert listed[0].node == "ws-l1-004" and "./schub-lab jupyter" in listed[0].how_to_open
+    assert listed[0].node == "ws-l1-004" and "~/.sc-hub/bin/schub-lab jupyter" in listed[0].how_to_open
     assert hub.stop_session(info.session_id).state not in {"RUNNING", "PENDING"}
     assert ["scancel", info.session_id] in cluster.calls
 

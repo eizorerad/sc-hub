@@ -350,7 +350,7 @@ class Setup:
         work with it. It runs again at every start of this page, so an update or a restart brings the dashboard back."""
         for stale in ("dashboard", "next"):  # an earlier run's address may be gone (a restart of the computer)
             ctx.values.pop(stale, None)
-        launcher = assistants.install_dashboard(self.paths, self.repo)
+        launcher = assistants.install_tools(self.paths, self.repo)
         command = ctx.values["view_command"] = view_command(self.paths, launcher)
         write_welcome(self.paths, self.host, ctx.values)
         ctx.values["summary"] = {"lines": summary_lines(ctx.values, self.host)}
