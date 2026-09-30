@@ -210,6 +210,15 @@ def test_jobs_are_warned_before_their_time_limit(settings: Settings, cluster: Fa
     assert "#SBATCH --signal=B:USR1@600" in (Path(long.job_dir) / "job.sbatch").read_text()
 
 
+def test_a_cell_job_is_never_requeued_under_its_id(settings: Settings, cluster: FakeCluster, project: Path) -> None:
+    """A requeue (Slurm's default after a node failure) would run the body again under the same id: the second
+    run's result.json would replace the first one's, while the journal keeps the first run's parts, named by
+    the job id. A cell's job runs once; a job that lost its node is sent again and resumes from its checkpoints."""
+    submitted = submit_cell(settings, Slurm(cluster), "demo", project, "demo#c0001", "x = 1", parse_line("", "ws-ia"),
+                            [])
+    assert "#SBATCH --no-requeue" in (Path(submitted.job_dir) / "job.sbatch").read_text()
+
+
 def test_a_time_warning_does_not_kill_the_job_and_checkpoints_import(settings: Settings, cluster: FakeCluster,
                                                                       project: Path, monkeypatch) -> None:
     import signal as signals
