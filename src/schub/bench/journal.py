@@ -125,12 +125,26 @@ class Journal:
             n += 1
 
     def _last_change(self) -> int:
-        return max((n for n, _ in self._change_files()), default=0)
+        """The newest change number up to which every number exists (see _listed_change)."""
+        listed = dict(self._change_files())
+        n = 0
+        while self._listed_change(listed, n + 1) is not None:
+            n += 1
+        return n
 
     def _change_files(self) -> list[tuple[int, Path]]:
         if not self.changes_dir.is_dir():
             return []
         return sorted((int(p.stem), p) for p in self.changes_dir.glob("*.json") if p.stem.isdigit())
+
+    def _listed_change(self, listed: dict[int, Path], n: int) -> Path | None:
+        """Change n's file. Numbers go up by one, each only after the one before, so a number missing from a
+        directory listing while a later one is in it is a listing gap (readdir is not atomic while files are being
+        created): it is looked up, never believed missing, so a read does not end before it."""
+        if n in listed:
+            return listed[n]
+        path = self.changes_dir / f"{n:06d}.json"
+        return path if path.exists() else None
 
     # ---- cells ----------------------------------------------------------------
 
@@ -316,21 +330,22 @@ class Journal:
                         limit: int | None) -> tuple[list[tuple[str, CellEntry | NoteEntry]], str]:
         """Every record changed after change `number`, once, as it is now, in the order of its last change."""
         last: dict[str, int] = {}
-        for n, path in self._change_files():
-            if n <= number:
-                continue
+        listed = dict(self._change_files())
+        end = number
+        while (path := self._listed_change(listed, end + 1)) is not None:
             record_id = str((read_json(path) or {}).get("id", ""))
             if not record_id:
                 break  # still being written (where link() is not allowed): the changes after it wait
+            end += 1
             last.pop(record_id, None)
-            last[record_id] = n
+            last[record_id] = end
         found = []
         for record_id, n in last.items():
             entry = self.cell(record_id) if re.fullmatch(CID_PATTERN, record_id) else \
                 self.note(record_id) if re.fullmatch(NID_PATTERN, record_id) else None
             if entry is not None and (wanted is None or entry.kind in wanted):
                 found.append((f"#{n}", entry))
-        return _cut(found, limit, f"#{max(last.values(), default=number)}")
+        return _cut(found, limit, f"#{end}")
 
     def _all_addenda(self) -> dict[str, list[dict[str, Any]]]:
         """Every addendum, by cell, from one listing of the folder."""

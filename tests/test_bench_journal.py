@@ -233,3 +233,37 @@ def test_outputs_written_while_a_cell_runs_are_not_a_change(journal: Journal) ->
     assert journal.changes(since=since) == []
     journal.write_cell(running.model_copy(update={"status": "ok", "finished": journal.now()}))
     assert [e.status for _, e in journal.changes(since=since)] == ["ok"]
+
+
+def hide_from_listing(monkeypatch, journal: Journal, *numbers: int) -> None:
+    """A directory listing made while files are being created can skip one that is there (readdir is not atomic)."""
+    listed = journal._change_files
+    monkeypatch.setattr(journal, "_change_files", lambda: [(n, p) for n, p in listed() if n not in numbers])
+
+
+def test_a_listing_that_skips_a_change_does_not_make_the_reader_skip_it_for_good(tmp_path: Path, monkeypatch) -> None:
+    """Change numbers go up by one, each only after the one before, so a number the listing shows without its
+    predecessor is a listing gap: the reader looks the missing file up before it ends its read there."""
+    journal = Journal(tmp_path / "projects" / "demo", "demo", now=Ticks())
+    for i in range(5):
+        journal.add_note("note", f"note {i}")
+    hide_from_listing(monkeypatch, journal, 3)
+    changes, after = journal.page(since="#0")
+    assert [e.text for _, e in changes] == [f"note {i}" for i in range(5)] and after == "#5"
+    assert [e.text for _, e in journal.page(since="#2")[0]] == ["note 2", "note 3", "note 4"]
+    assert journal.page(since=None)[1] == "#5"  # the place after a full read is not the last number listed
+    journal.add_note("note", "note 5")
+    assert journal.page(since="#5")[1] == "#6" and sorted(p.name for p in journal.changes_dir.iterdir())[-1] == "000006.json"
+
+
+def test_a_number_that_is_really_missing_holds_the_read_there_until_it_is_filled(tmp_path: Path) -> None:
+    """Not something the numbering can do; if a file is lost, the read waits at the hole and the next change fills it."""
+    journal = Journal(tmp_path / "projects" / "demo", "demo", now=Ticks())
+    for i in range(4):
+        journal.add_note("note", f"note {i}")
+    (journal.changes_dir / "000003.json").unlink()
+    changes, after = journal.page(since="#0")
+    assert [e.text for _, e in changes] == ["note 0", "note 1"] and after == "#2"
+    journal.add_note("note", "note 4")  # takes number 3
+    assert (journal.changes_dir / "000003.json").exists()
+    assert [e.text for _, e in journal.page(since="#2")[0]] == ["note 4", "note 3"]  # (note 2's number was lost)
