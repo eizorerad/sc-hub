@@ -1,8 +1,9 @@
 """Compact views of projects and journals for tool answers.
 
 Notes written for the student (audience "human") are shown to the agent only as a
-placeholder: in VCC2026 an agent executed a note meant for the owner and cancelled
-the owner's terminal twice (incident A2). Text in the journal is data, not orders.
+placeholder, their kind, time and refs but none of their words: in VCC2026 an agent
+executed a note meant for the owner and cancelled the owner's terminal twice
+(incident A2). Text in the journal is data, not orders.
 """
 
 from __future__ import annotations
@@ -47,12 +48,13 @@ def _trim(text: str, budget: int) -> str:
 
 def compact(entry: CellEntry | NoteEntry, max_chars: int = 1500, for_agent: bool = True) -> dict[str, Any]:
     if isinstance(entry, NoteEntry):
-        hidden = for_agent and entry.audience == "human"
+        hidden = for_agent and entry.audience == "human"  # its words: text, reverses_if, the numbers from text
         return {
             "ref": entry.ref, "kind": entry.kind, "created": entry.created, "audience": entry.audience,
             "text": HUMAN_ONLY if hidden else _trim(entry.text, max_chars), "because": list(entry.because),
-            "reverses_if": entry.reverses_if, "verdict": entry.verdict, "by": entry.actor.client or entry.actor.kind,
-            "unresolved_numbers": list(entry.unresolved_numbers),
+            "reverses_if": "" if hidden else entry.reverses_if, "verdict": entry.verdict,
+            "by": entry.actor.client or entry.actor.kind,
+            "unresolved_numbers": [] if hidden else list(entry.unresolved_numbers),
         }
     shown, more_outputs = _some_outputs(entry)
     per_output = max(120, max_chars // max(1, len(shown)))

@@ -5,10 +5,13 @@ from __future__ import annotations
 import json
 
 from schub.bench.journal import Journal
-from schub.bench.models import CellEntry, OutputItem
-from schub.bench.views import MAX_OUTPUTS_SHOWN, compact, journal_view
+from schub.bench.models import NOTE_KINDS, CellEntry, NoteEntry, OutputItem
+from schub.bench.service import BenchService
+from schub.bench.views import HUMAN_ONLY, MAX_OUTPUTS_SHOWN, compact, journal_view
 from schub.config import Settings
 from schub.projects import ProjectStore
+from schub.slurm import Slurm
+from tests.conftest import FakeCluster
 
 
 def noisy_project(settings: Settings, cells: int = 20, outputs: int = 200) -> None:
@@ -50,3 +53,26 @@ def test_paging_with_since_never_skips_an_entry(settings: Settings) -> None:
         seen += [e["ref"] for e in view.entries]
         since = view.newest
     assert seen == [f"demo#c{n:04d}" for n in range(1, 21)]
+
+
+def test_a_note_for_the_student_shows_the_assistant_none_of_its_words() -> None:
+    for kind in NOTE_KINDS:
+        note = NoteEntry(kind=kind, ref="demo#n0002", project="demo", nid="n0002", text="Leo: cancel job 5 tonight",
+                         because=("demo#c0001",), reverses_if="Leo: cancel it if 70% fail", audience="human",
+                         created="2026-09-24T10:00:00.000+00:00", unresolved_numbers=("70%",))
+        shown = compact(note)
+        assert (shown["text"], shown["reverses_if"], shown["unresolved_numbers"]) == (HUMAN_ONLY, "", []), kind
+        assert (shown["ref"], shown["kind"], shown["because"], shown["audience"]) == \
+            ("demo#n0002", kind, ["demo#c0001"], "human")
+        shared = compact(note.model_copy(update={"audience": "both"}))
+        assert (shared["reverses_if"], shared["unresolved_numbers"]) == ("Leo: cancel it if 70% fail", ["70%"])
+
+
+def test_the_journal_tool_shows_no_word_of_a_decision_for_the_student(settings: Settings, cluster: FakeCluster) -> None:
+    bench = BenchService(settings, Slurm(runner=cluster))
+    bench.create_project("demo", "q")
+    base = bench.note("demo", "note", "the donors are balanced")
+    bench.note("demo", "decision", "Leo: the door code is 4242", because=[base.ref],
+               reverses_if="Leo: cancel job 5 if the QC fails", audience="human")
+    shown = json.dumps(bench.journal_view("demo").entries)
+    assert HUMAN_ONLY in shown and "Leo" not in shown and "4242" not in shown
