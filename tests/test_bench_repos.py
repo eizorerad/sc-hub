@@ -234,18 +234,82 @@ def test_an_include_counts_in_every_form_pip_reads(tmp_path: Path) -> None:
         assert _spec(here, "3.11", None, "cu128", "requirements.txt", False, ())[0] != first, line
 
 
+def test_a_local_find_links_folder_is_part_of_the_spec(tmp_path: Path) -> None:
+    """--find-links ./wheels was refused: uv takes packages from the files in that folder (where it runs), so
+    they count like any local package; another checkout's folder, or a new wheel, is another environment."""
+    from schub.bench.repos import _spec
+
+    for n, line in enumerate(("--find-links ./wheels", "-f./wheels", "--find-links=wheels")):
+        specs = []
+        for name in ("a", "b"):
+            here = tmp_path / str(n) / name / "model"
+            (here / "wheels").mkdir(parents=True)
+            (here / "wheels" / "pkg-1.0-py3-none-any.whl").write_bytes(b"wheel")
+            (here / "requirements.txt").write_text(f"{line}\npkg\n")
+            specs.append(_spec(here, "3.11", None, "cu128", "requirements.txt", False, ())[0])
+        assert specs[0] != specs[1], line
+        (here / "wheels" / "README").write_text("not a package\n")  # uv takes no such file
+        assert _spec(here, "3.11", None, "cu128", "requirements.txt", False, ())[0] == specs[1], line
+        (here / "wheels" / "pkg-1.1-py3-none-any.whl").write_bytes(b"a newer wheel")
+        assert _spec(here, "3.11", None, "cu128", "requirements.txt", False, ())[0] != specs[1], line
+
+
 def test_requirements_the_spec_cannot_follow_are_refused(origin: Path, fake_uv: Path, monkeypatch) -> None:
+    """Saying what to change, with the file's text: never what a variable holds."""
     repo = clone(URL)
     (repo.parent / "outside.txt").write_text("numpy\n")
     monkeypatch.setenv("PIP_TOKEN", "s3cret")
-    for line, reason in (("-r ../outside.txt", "inside the repository"), ("--constraint missing.txt", "inside the"),
-                         ("-c https://${PIP_TOKEN}@example.org/pins.txt", "inside the repository"),
-                         ("--find-links ./wheels", "local folder"), ("-i file:///srv/index", "local folder")):
+    for line, reason in (("-r ../outside.txt", "outside the repository: copy it into"),
+                         ("--constraint missing.txt", "which is not a file"),
+                         ("-c https://${PIP_TOKEN}@example.org/pins.txt", r"by URL.*bench\.fetch"),
+                         ("-i file://${PIP_TOKEN}/index", "package index.*--find-links"),
+                         ("--extra-index-url=./index", "package index.*--find-links")):
         (repo / "requirements.txt").write_text(f"numpy\n{line}\n")
         with pytest.raises(RepoError, match=reason) as refused:
             environment(repo, requirements="requirements.txt")
         assert "s3cret" not in str(refused.value)  # the file's text, not what a variable holds
     assert not fake_uv.exists()
+
+
+def test_a_file_included_by_url_keeps_the_environment_its_checkout_had(origin: Path, fake_uv: Path,
+                                                                      tmp_path: Path) -> None:
+    """What a URL serves cannot be followed: no new environment. A cell replayed after this change still gets
+    the environment built for it before, for the same checkout at the same commit, when the key of then
+    covered everything else the file brings in."""
+    from schub.hashing import stable_hash
+
+    def built_before(folder: Path, text: str) -> Path:  # what sc-hub left before it followed includes
+        spec = {"python": "3.11", "torch": None, "cuda": "cu128", "extra": [], "requirements": stable_hash(text),
+                "install_repo": None, "packaging": None}
+        env = tmp_path / "root" / "repo-envs" / stable_hash(spec)
+        (env / "bin").mkdir(parents=True)
+        (env / "bin" / "python").symlink_to(sys.executable)
+        commit = git("rev-parse", "HEAD", cwd=folder)
+        (env / "spec.json").write_text(json.dumps({**spec, "repo": str(folder), "commit": commit, "built": "x"}))
+        (env / "ready").write_text("x")
+        return env / "bin" / "python"
+
+    repo = clone(URL)
+    text = "numpy\n-r https://example.org/lab/model/requirements-extra.txt\n"
+    (repo / "requirements.txt").write_text(text)
+    with pytest.raises(RepoError, match=r"bench\.fetch"):  # a new environment
+        environment(repo, requirements="requirements.txt")
+    python = built_before(repo, text)
+    assert environment(repo, requirements="requirements.txt") == python  # the replayed cell
+    other = tmp_path / "other" / "model"
+    shutil.copytree(repo, other)
+    with pytest.raises(RepoError, match=r"bench\.fetch"):  # another checkout
+        environment(other, requirements="requirements.txt")
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "v3", cwd=repo)
+    with pytest.raises(RepoError, match=r"bench\.fetch"):  # the checkout moved on
+        environment(repo, requirements="requirements.txt")
+    mixed = "-r base.txt\n-r https://example.org/lab/model/requirements-extra.txt\n"
+    (repo / "requirements.txt").write_text(mixed)
+    (repo / "base.txt").write_text("numpy\n")
+    built_before(repo, mixed)
+    with pytest.raises(RepoError, match=r"bench\.fetch"):  # the key of then did not cover base.txt
+        environment(repo, requirements="requirements.txt")
+    assert not fake_uv.exists()  # nothing was built
 
 
 def test_plain_requirements_keep_their_environment(tmp_path: Path, monkeypatch) -> None:
