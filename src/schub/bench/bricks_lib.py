@@ -15,22 +15,29 @@ from typing import Any
 from pydantic import ValidationError
 
 from ..bricks import BrickError, StepIO, get_brick
-from ..config import load_settings
+from ..config import Settings, load_settings
 from ..execute import _run_with_retries, load_impl
 from ..h5ad_profile import profile_h5ad
 from ..library import celltypist_dirs
 from ..provenance import code_id
 from ..service import Hub
+from ..setup_status import install_note, live_queue
+from ..slurm import Slurm
 from . import ledger
 from .fsio import read_json, write_json_atomic
 
 
-def _gpu_visible() -> bool:
+def _gpu_problem(name: str, settings: Settings) -> str:
+    """Why a GPU brick cannot run in this process; "" when it can."""
     try:
         import torch
     except ImportError:
-        return False
-    return bool(torch.cuda.is_available())
+        coming = install_note(settings, live_queue(settings, Slurm()))  # right after the setup: still on its way
+        return f"{name} needs torch, which is not installed yet. {coming}" if coming else \
+            f"{name} needs torch, which is not installed in this environment"
+    if not torch.cuda.is_available():
+        return f"{name} needs a GPU and this kernel has none: send the cell with %%slurm --gpus 1"
+    return ""
 
 
 def run_brick(name: str, input: str | os.PathLike, output: str | os.PathLike | None, params: dict[str, Any],
@@ -57,8 +64,8 @@ def run_brick(name: str, input: str | os.PathLike, output: str | os.PathLike | N
         raise BrickError(f"{name} refuses this input: " + "; ".join(errors))
     for issue in issues:
         print(f"warning ({name}): {issue.message}")
-    if spec.uses_gpu and not _gpu_visible():
-        raise BrickError(f"{name} needs a GPU and this kernel has none: send the cell with %%slurm --gpus 1")
+    if spec.uses_gpu and (problem := _gpu_problem(name, settings)):
+        raise BrickError(problem)
     work = Path(os.environ.get("SCHUB_PROJECT_DIR", source.parent)) / "work"
     target = None if spec.terminal else Path(output) if output else work / f"{source.stem}.{name}.h5ad"
     results = Path(results_dir) if results_dir else work / f"{source.stem}.{name}-results"

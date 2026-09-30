@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 import threading
 import time
 
@@ -66,6 +67,24 @@ def test_stop_files_refuse_new_cells(bench: Settings, cluster: FakeCluster) -> N
     (bench.bench_dir / "STOP").write_text("")
     with pytest.raises(BenchError, match="bench is stopped"):
         svc.run("demo", "1", "w", "e", wait_s=0)
+
+
+def test_a_cell_missing_a_module_still_on_its_way_says_so(bench: Settings, cluster: FakeCluster) -> None:
+    svc = service(bench, cluster)
+    ref = svc.run("demo", "import scvi", "w", "e", wait_s=0).ref
+    journal = Journal(bench.projects_dir / "demo", "demo")
+    journal.write_cell(CellEntry(ref=ref, project="demo", cid=ref.split("#")[1], why="w", expect="e", code="import scvi",
+                                 created=journal.now(), status="error", kernel_epoch="100.1",
+                                 outputs=(OutputItem(kind="error", ename="ModuleNotFoundError",
+                                                     evalue="No module named 'scvi'"),)))
+    assert "deep-learning" not in svc.wait(ref, wait_s=0).hint  # no background part: a plain error
+    status = {"state": "queued", "job": "4242", "updated": journal.now()}
+    (bench.root / "setup-extras.json").write_text(json.dumps(status))
+    hint = svc.wait(ref, wait_s=0).hint
+    assert hint.startswith("The deep-learning tools (torch, scvi-tools) install in the background (job 4242, queued)")
+    assert "Run this cell again when it has finished." in hint
+    (bench.root / "setup-extras.json").write_text(json.dumps({**status, "updated": "2026-01-01T00:00:00+00:00"}))
+    assert "ended without finishing" in svc.wait(ref, wait_s=0).hint  # job 4242 is not in the queue: gone
 
 
 def test_wait_reports_results_and_kernel_restarts(bench: Settings, cluster: FakeCluster) -> None:

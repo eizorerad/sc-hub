@@ -68,6 +68,8 @@ Rules:
 - Quote numbers only from cell outputs, with the cell ref. Never invent or estimate.
 - Never guess scientific metadata (condition, replicate, batch columns): read it from
   the data and confirm with the student.
+- Right after the setup, torch and scvi-tools may still be installing in the background:
+  cluster() says so. Meanwhile use scanpy and the rest; never install them yourself.
 - Data stays on the cluster: do not paste matrices into the chat. Restricted data
   (lab-internal, patient, controlled-access, a course's corpus) is read where it is and
   never copied elsewhere; ask the student what its terms allow.

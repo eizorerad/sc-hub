@@ -30,6 +30,7 @@ from .h5ad_profile import UnsupportedFile
 from .overview import Overview, cached_overview
 from .projects import ProjectError, ProjectMeta
 from .service import Hub, HubError
+from .setup_status import live_queue, note as setup_note
 from .slurm import SlurmError
 from .state import Frozen
 
@@ -75,6 +76,7 @@ class ClusterAnswer(Frozen):
     engines: tuple[str, ...] = ()  # the lab agents' engines: answering, paused, Claude's weekly window
     overview: Overview | None = None
     problem: str = ""
+    setup: str = ""  # what the background part of the setup still installs, or why it stopped
 
 
 def _client(ctx: Context | None) -> tuple[Actor, ClientProfile]:
@@ -290,8 +292,9 @@ def _register_reference(mcp: MCPServer, hub: Hub, bench: BenchService, call: Cal
                 overview, problem = cached_overview(hub.settings), ""
             except (OSError, ValueError) as exc:
                 overview, problem = None, f"overview unavailable: {exc}"
+            queue = live_queue(hub.settings, hub.slurm)
             return ClusterAnswer(workbench=bench.status(), engines=tuple(engine_summary(hub.settings)),
-                                 overview=overview, problem=problem)
+                                 overview=overview, problem=problem, setup=setup_note(hub.settings, queue))
         return call("cluster", {}, answer)
 
     @mcp.tool(annotations=STOP)

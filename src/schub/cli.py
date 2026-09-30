@@ -13,6 +13,7 @@ from typing import Any, Sequence
 
 from pydantic import BaseModel
 
+from . import setup_status
 from .config import load_settings
 from .cli_bench import add_bench_parsers, bench_handlers
 from .cli_goal import add_goal_parsers, goal_handlers
@@ -66,10 +67,15 @@ def _doctor(hub: Hub) -> dict[str, Any]:
         "celltypist_models": sorted({p.name for d in celltypist_dirs(s) if d.is_dir() for p in d.glob("*.pkl")}),
         "imports": {},
     }
+    queue = setup_status.live_queue(s, hub.slurm)
+    later = setup_status.pending(s, queue)  # right after the setup: torch and scvi-tools may still be on their way
     for module, distribution in DOCTOR_IMPORTS.items():
         try:
             importlib.import_module(module)
             report["imports"][module] = importlib.metadata.version(distribution)
+        except ModuleNotFoundError as exc:
+            coming = later and module in setup_status.HEAVY_MODULES
+            report["imports"][module] = "coming: the background install adds it" if coming else f"FAILED: {exc}"
         except Exception as exc:  # noqa: BLE001 - doctor reports, never raises
             report["imports"][module] = f"FAILED: {exc}"
     try:
@@ -77,6 +83,9 @@ def _doctor(hub: Hub) -> dict[str, Any]:
     except SlurmError as exc:
         report["partitions"] = f"FAILED: {exc}"
     report["torch_cuda_build"] = _torch_cuda_build()
+    if later and report["torch_cuda_build"].startswith("FAILED"):
+        report["torch_cuda_build"] = "coming: the background install adds it"
+    report["setup"] = setup_status.note(s, queue) or "complete"
     return report
 
 

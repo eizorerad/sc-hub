@@ -111,7 +111,7 @@ export UV_PYTHON_PREFERENCE=only-managed UV_TORCH_BACKEND='$TORCH_BACKEND'
 # Students cannot write __pycache__ into the library, so compile everything now.
 export UV_COMPILE_BYTECODE=1
 '$LIB/bin/uv' venv --quiet --python $PYTHON_VERSION '$env'
-'$LIB/bin/uv' pip install --quiet --python '$env/bin/python' '$SNAPSHOT[analysis]'
+'$LIB/bin/uv' pip install --quiet --python '$env/bin/python' '$SNAPSHOT[analysis,ml]'
 export SCHUB_ROOT='$LIB/.private' SCHUB_LIBRARY='$LIB' SCHUB_PYTHON='$env/bin/python'
 [ '$GPU_CHECK' = 0 ] || '$env/bin/python' -m schub.cli gpu-check
 '$env/bin/python' -m schub.cli fetch $ASSETS --into '$LIB/.private/staging'

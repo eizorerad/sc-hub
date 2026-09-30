@@ -14,6 +14,7 @@ from pydantic import ValidationError
 from ..config import Settings
 from ..locking import LockTimeout
 from ..projects import ProjectError, ProjectMeta, ProjectStore
+from ..setup_status import live_queue, missing_module_hint
 from ..slurm import Slurm, SlurmError
 from .checkpoint import CheckpointError, CheckpointStore, check_handoff
 from .clock import Clock, stamp
@@ -165,8 +166,15 @@ class BenchService:
             if rejected is not None:  # its final write failed: say why now, not "still running" forever
                 entry = entry.model_copy(update={"status": "error", "message": rejected})
         previous = _previous_epoch(journal, entry)
-        return cell_result(self._live_jobs(entry), previous, self._where() if not entry.final else "",
-                           self._setup_refs(journal))
+        result = cell_result(self._live_jobs(entry), previous, self._where() if not entry.final else "",
+                             self._setup_refs(journal))
+        if entry.status == "error":  # e.g. `import scvi` while the setup's background install still adds it
+            errors = " ".join(f"{o.ename}: {o.evalue}" for o in entry.outputs if o.kind == "error")
+            coming = missing_module_hint(self.settings, errors)
+            if coming:  # (rare: only then ask the queue whether its job is still there)
+                coming = missing_module_hint(self.settings, errors, self._queue_ids())
+                result = result.model_copy(update={"hint": f"{coming} {result.hint}".strip()})
+        return result
 
     def _live_jobs(self, entry: CellEntry) -> CellEntry:
         """Current Slurm states of the cell's jobs that have not reported yet (not stored)."""
@@ -180,6 +188,10 @@ class BenchService:
         jobs = tuple(j.model_copy(update={"state": states.get(j.job_id, "ENDED (no result yet)")})
                      if j.job_id in open_jobs else j for j in entry.jobs)
         return entry.model_copy(update={"jobs": jobs})
+
+    def _queue_ids(self) -> set[str] | None:
+        """The student's queued and running jobs while the setup's background part is on its way, else None."""
+        return live_queue(self.settings, self.slurm)
 
     def _where(self) -> str:
         try:

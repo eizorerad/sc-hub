@@ -23,6 +23,7 @@ from ..bench.report_store import ReportStore
 from ..config import Settings
 from ..overview import Overview
 from ..projects import ProjectError, ProjectStore
+from ..setup_status import note as setup_note
 from ..slurm import QueueJob
 from ..state import Frozen
 
@@ -265,12 +266,13 @@ def _failing_checks(data: tuple[dict, ...]) -> tuple[str, ...]:
 
 
 def bench_panel(settings: Settings, jobs: tuple[QueueJob, ...], overview: Overview | None,
-                cards: tuple[JournalCard, ...]) -> BenchPanel:
+                cards: tuple[JournalCard, ...], queue_known: bool = True) -> BenchPanel:
     from ..bench.workbench import WORKBENCH
 
     record = read_json(settings.bench_dir / "workbench.json") or {}
     workbench_job = next((j for j in jobs if j.name == f"{settings.job_prefix}-{WORKBENCH}"), None)
-    alerts = list(_bench_alerts(settings, record, workbench_job))
+    queue = {j.job_id for j in jobs} if queue_known else None
+    alerts = list(_bench_alerts(settings, record, workbench_job, queue))
     alerts += _engine_alerts(settings)
     alerts += _slot_alerts(jobs)
     alerts += [f"{c.project}: checks {', '.join(c.failed_checks)} are failing (their latest results)"
@@ -285,8 +287,9 @@ def bench_panel(settings: Settings, jobs: tuple[QueueJob, ...], overview: Overvi
     return BenchPanel(workbench=state, alerts=tuple(alerts))
 
 
-def _bench_alerts(settings: Settings, record: dict, workbench_job: QueueJob | None) -> list[str]:
-    alerts = []
+def _bench_alerts(settings: Settings, record: dict, workbench_job: QueueJob | None,
+                  queue: set[str] | None = None) -> list[str]:
+    alerts = [text for text in (setup_note(settings, queue),) if text]  # the setup's background part, while it runs
     if (settings.bench_dir / "STOP").exists():
         alerts.append("The bench is stopped (bench/STOP): nothing runs until it is removed.")
     if record.get("state") == "crashed":

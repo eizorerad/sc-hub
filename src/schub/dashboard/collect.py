@@ -454,5 +454,5 @@ def collect(hub: Any) -> Snapshot:
         nodes=tuple(nodes),
         steps_by_key=steps_by_key,
         journals=journals,
-        bench=bench_panel(hub.settings, tuple(jobs), overview, journals),
+        bench=bench_panel(hub.settings, tuple(jobs), overview, journals, queue_known=not jobs_error),
     )

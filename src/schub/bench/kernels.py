@@ -93,10 +93,14 @@ class ProjectKernel:
 
     def start(self, timeout_s: float = 120) -> None:
         from jupyter_client import KernelManager
+        from jupyter_client.kernelspec import KernelSpecManager
 
         self.cwd.mkdir(parents=True, exist_ok=True)
         self._sockets = Path(tempfile.mkdtemp(prefix="schub-k-", dir="/tmp" if Path("/tmp").is_dir() else None))
-        manager = KernelManager(kernel_name=self.name, transport="ipc", ip=str(self._sockets / "k"))
+        # The shared kernel is this Python (sc-hub's environment): a student's own "python3" kernel spec (the name
+        # `ipykernel install --user` gives by default) must not take its place. A project's kernel goes by its name.
+        own = {"kernel_spec_manager": KernelSpecManager(kernel_dirs=[])} if self.name == DEFAULT_KERNEL else {}
+        manager = KernelManager(kernel_name=self.name, transport="ipc", ip=str(self._sockets / "k"), **own)
         manager.start_kernel(cwd=str(self.cwd), env=self.env)
         client = manager.client()
         try:

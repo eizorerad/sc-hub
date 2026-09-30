@@ -160,13 +160,13 @@ class Setup:
         if not REMOTE_ROOT.fullmatch(root):
             raise StepFailed(f"unexpected sc-hub folder on the cluster: {root[:80]}", "Use a plain --remote-root path.")
         ctx.values["remote_root"] = root
-        ctx.say("setting up your workspace in a Slurm job: its own environment and starter datasets "
-               "(the first time 10-20 minutes)")
+        ctx.say("setting up your workspace in a Slurm job: the analysis tools and the starter datasets (the first "
+               "time about 5 minutes); the deep-learning tools follow in the background")
         code = cluster.stream(ssh, f"SCHUB_ROOT='{root}' bash '{root}/src/sc-hub/scripts/bootstrap_cluster.sh'", ctx.log)
         if code != 0:
             raise StepFailed("the setup on the cluster failed (see the details)", "Retry; the setup continues where "
                              "it stopped. If it fails again, send the details to the pilot owner.")
-        return f"sc-hub in {root}"
+        return f"sc-hub in {root}; the deep-learning tools (torch, scvi-tools) install in the background"
 
     # ---- 5. a first run -------------------------------------------------------------------------------------
 
