@@ -6,6 +6,7 @@ import json
 import os
 import socket
 import threading
+import time
 import traceback
 from functools import partial
 from pathlib import Path
@@ -260,6 +261,23 @@ def test_a_network_error_never_shows_a_secret_query_value(server: str, project: 
     with pytest.raises(FetchError, match=said) as caught:
         fetch(url.format(server=server, closed=closed, token=TOKEN), attempts=1, pause_s=0)
     assert TOKEN not in _shown(caught.value) and "token=REDACTED" in _shown(caught.value)
+
+
+def test_a_secret_with_a_space_is_hidden_up_to_the_closing_quote(server: str, project: Path) -> None:
+    """Found in a review: a value was hidden only up to a space, so http.client's error, which quotes the URL it
+    refuses, still showed the rest of a secret that has one."""
+    secret = f"{TOKEN} and-its-tail"  # not in the line the traceback quotes
+    with pytest.raises(FetchError, match="control characters") as caught:
+        fetch(f"{server}/data.bin?token={secret}", attempts=1, pause_s=0)
+    assert TOKEN not in _shown(caught.value) and "and-its-tail" not in _shown(caught.value)
+    quoted = f"Found - Redirection to url 'file:///x.bin?token={TOKEN} and-its-tail&sig=a b' is not allowed"
+    assert fetch_module._redacted(quoted) == ("Found - Redirection to url 'file:///x.bin?token=REDACTED&sig=REDACTED'"
+                                            " is not allowed")
+    assert TOKEN not in fetch_module._redacted(f"from http://a.org/x?a=1 to http://b.org/y?token={TOKEN}")
+    assert TOKEN not in fetch_module._redacted("?a=1 " * 5000 + f"?token={TOKEN}")  # a server's reason phrase
+    started = time.monotonic()
+    fetch_module._redacted("?a" * 30000)  # 60 KB without a pair: read once, not once for every "?"
+    assert time.monotonic() - started < 2
 
 
 def test_a_cached_download_never_shows_a_secret_query_value(server: str, project: Path, tmp_path: Path,

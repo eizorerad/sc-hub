@@ -31,7 +31,10 @@ TIMEOUT_S = 60
 SCHEMES = ("https", "http")  # GEO and the others serve https (urllib's ftp has no status to check)
 USER_AGENT = "sc-hub-bench/1 (+https://github.com/eizorerad/sc-hub)"
 SECRET_PARAM = re.compile(r"token|key|sig|signature|secret|password|passwd|auth|credential|session|^x-amz-", re.I)
-QUERY_PAIR = re.compile(r"(?<=[?&])([^=&#\s'\"]+)=[^&#\s'\"]*")  # name=value of a URL quoted in some text
+# A query's name= in some text, then its value: the value runs to &, #, the line's end or a closing quote (one before
+# a space or the end), not to a space, since http.client quotes a URL that has one.
+QUERY_NAME = re.compile(r"(?<=[?&])([^=&#?\s'\"]+)=")
+QUERY_VALUE = re.compile(r"(?:[^&#'\"\r\n]|['\"](?!\s|$))*")
 
 
 def public(url: str) -> str:
@@ -44,8 +47,15 @@ def public(url: str) -> str:
 
 def _redacted(text: str) -> str:
     """An error's text that may quote a URL (http.client quotes the path it refuses, urllib a redirect it does not
-    follow): the same values hidden as in `public`."""
-    return QUERY_PAIR.sub(lambda m: f"{m[1]}=REDACTED" if SECRET_PARAM.search(unquote_plus(m[1])) else m[0], text)
+    follow): the same values hidden as in `public`. Only a secret's value is skipped: another may run into a URL."""
+    kept, at = [], 0
+    while name := QUERY_NAME.search(text, at):
+        kept.append(text[at:name.end()])
+        at = name.end()
+        if SECRET_PARAM.search(unquote_plus(name[1])):
+            kept.append("REDACTED")
+            at = QUERY_VALUE.match(text, at).end()
+    return "".join(kept) + text[at:]
 
 
 class FetchError(RuntimeError):
