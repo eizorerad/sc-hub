@@ -102,6 +102,30 @@ def test_a_job_cancelled_while_queued_says_it_never_started(settings: Settings, 
     assert job.state == "NOT_STARTED" and job.log == ""
 
 
+def test_an_end_the_journal_could_not_take_is_recorded_on_a_later_pass(settings: Settings, cluster: FakeCluster,
+                                                                       journal: Journal, tmp_path: Path,
+                                                                       monkeypatch) -> None:
+    """Lustre sometimes answers a write with EIO: the job stays open until its end is in the journal."""
+    import errno
+
+    job_dir = tmp_path / "jobdir"
+    job_dir.mkdir()
+    (job_dir / "slurm-700.log").write_text("error: *** JOB 700 ON gpu-03 CANCELLED AT 2026-09-24T02:04:39 "
+                                           "DUE TO TIME LIMIT ***\n")
+    register(settings, JobRecord(job_id="700", project="demo", ref="demo#c0001", job_dir=str(job_dir)))
+    add = Journal.add_addendum
+
+    def eio(*args, **kwargs):
+        raise OSError(errno.EIO, "Input/output error")
+
+    monkeypatch.setattr(Journal, "add_addendum", eio)
+    assert reap(settings, Slurm(cluster)) == [] and [r.job_id for r in open_records(settings)] == ["700"]
+    monkeypatch.setattr(Journal, "add_addendum", add)
+    assert journal.cell("c0001").jobs[0].state == "PENDING"
+    assert reap(settings, Slurm(cluster)) == ["700"] and open_records(settings) == []
+    assert journal.cell("c0001").jobs[0].state == "TIMEOUT"
+
+
 def test_nothing_is_decided_when_slurm_does_not_answer(settings: Settings, journal: Journal, tmp_path: Path) -> None:
     import subprocess
 
