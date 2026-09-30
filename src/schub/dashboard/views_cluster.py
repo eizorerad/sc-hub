@@ -7,6 +7,9 @@ from ..overview import Overview
 from .html import esc, listing, pill, table
 from .views_activity import reason
 
+GUIDE_LINK = ('<p class="muted small">New to Slurm? <a href="guide.html">The cluster in five minutes</a>: login nodes, '
+              "jobs, GPUs and storage.</p>")
+
 
 
 def _fmt(value: float, unit: str) -> str:
@@ -79,12 +82,12 @@ def _partitions(ov: Overview) -> str:
 
 def render_cluster(ov: Overview | None) -> str:
     if ov is None:
-        return '<p class="empty">No cluster information yet.</p>'
+        return f'<p class="empty">No cluster information yet.</p>{GUIDE_LINK}'
     logins = "".join(f"<li><code>{esc(line)}</code></li>" for line in ov.logins) or "<li class=muted>none</li>"
     problems = "".join(f'<p class="note warn small">{esc(p)}</p>' for p in ov.problems)
     return (
         f'<div class="run-title"><h2>Cluster overview · {esc(ov.user)}</h2><span class="muted small">'
-        f"login node {esc(ov.login_node)} · updated {esc(ov.generated_at)}</span></div>{problems}"
+        f"login node {esc(ov.login_node)} · updated {esc(ov.generated_at)}</span></div>{GUIDE_LINK}{problems}"
         "<h2>Your limits and what is in use</h2>" + _limits(ov)
         + "<h2>Your jobs</h2>" + _jobs(ov)
         + "<h2>Storage</h2>" + _storage(ov)

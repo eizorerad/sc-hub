@@ -4,6 +4,9 @@ one-line status), the views, inline CSS and JS."""
 
 from __future__ import annotations
 
+import base64
+import hashlib
+
 from .collect import Snapshot
 from .html import esc
 from .notebooks import code_templates
@@ -49,6 +52,10 @@ def _account(snap: Snapshot) -> str:
         '<a href="#library"><b>Library</b><span class="muted small">datasets, models, tools</span></a>'
         '<a href="#runs/sessions"><b>Interactive sessions</b><span class="muted small">JupyterLab and cellxgene</span></a>'
         '<a href="#cluster"><b>Cluster overview</b><span class="muted small">quotas, limits, your jobs, storage</span></a>'
+        '<a href="guide.html"><b>Cluster guide</b><span class="muted small">new to Slurm? the cluster in five minutes</span></a>'
+        # the setup's welcome is a page of the dashboard's local server (not there when the file is opened directly)
+        '<a href="welcome" data-served hidden><b>Getting started</b><span class="muted small">what the setup installed, '
+        'how to work</span></a>'
         '<hr><div class="menu-row"><span>Updated</span>'
         f'<span title="{esc(snap.generated_at)}"><b>{esc(snap.generated_at[11:])}</b> '
         f'<span class="muted small" data-ago="{esc(_iso(snap.generated_at))}"></span></span></div>'
@@ -56,6 +63,14 @@ def _account(snap: Snapshot) -> str:
         '<span>Auto-refresh every minute</span><span class="switch" aria-hidden="true"></span></button></div></details>'
         '<span class="paused" hidden>auto-refresh off</span>'
     )
+
+
+def script_policy(*scripts: str) -> str:
+    """The page's own Content-Security-Policy: only its inline scripts (by hash) and script files next to it, so
+    markup that reaches the page from data (a journal entry, a dataset's field) cannot run a script."""
+    hashes = " ".join(f"'sha256-{base64.b64encode(hashlib.sha256(s.encode()).digest()).decode()}'" for s in scripts)
+    return (f'<meta http-equiv="Content-Security-Policy" content="script-src \'self\' file: {hashes}; '
+            "object-src 'none'; base-uri 'none'\">")
 
 
 def render_page(snap: Snapshot, image_url: ImageUrl) -> str:
@@ -81,6 +96,7 @@ def render_site(snap: Snapshot, image_url: ImageUrl) -> Site:
     sections = "".join(f'<section class="view" data-view="{key}">{_titled(key, html)}</section>' for key, html in views.items())
     index = (
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+        f"{script_policy(JOURNAL_SCRIPT, SCRIPT)}"
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
         '<link rel="icon" href="data:,">'  # no favicon request (a 404 in every console)
         f"<title>sc-hub · {esc(snap.user)}</title><style>{CSS}{JOURNAL_CSS}</style></head><body>"

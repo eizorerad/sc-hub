@@ -298,6 +298,7 @@ SCRIPT = r"""
     if (auto() && !document.hidden && !busy()) { keep.set('scroll', String(window.scrollY)); location.reload(); }
   }, REFRESH_MS);
 
+  if (location.protocol.startsWith('http')) $$('[data-served]').forEach(a => { a.hidden = false; });
   if ($('#run-search')) { $('#run-search').value = keep.get('run-q') || ''; }
   const st = $('#run-state');
   if (st && [...st.options].some(o => o.value === keep.get('run-st'))) st.value = keep.get('run-st');

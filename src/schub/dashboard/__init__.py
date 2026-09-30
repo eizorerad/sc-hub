@@ -1,5 +1,6 @@
 """Static dashboard: `schub dashboard` writes view/ (one HTML page plus small
-images), and the laptop mirrors it with `schub-view` (ssh + rsync + a browser)."""
+images, and guide.html about the cluster), and the laptop's `schub-view` keeps a
+copy (ssh + rsync) and serves it at http://sc-hub.localhost:27182."""
 
 from __future__ import annotations
 
@@ -12,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from ..state import Frozen
+from . import guide
 from .collect import StepView, collect
 from .notebooks import write_notebooks
 from .page import render_site
@@ -37,6 +39,16 @@ def _write(path: Path, text: str) -> None:
         handle.write(text)
     os.chmod(partial, 0o644)
     os.replace(partial, path)
+
+
+def _write_if_changed(path: Path, text: str) -> None:
+    """A page that rarely changes keeps its file (and time) as it was: the laptop's copy fetches it only then."""
+    try:
+        if path.read_text() == text:
+            return
+    except OSError:
+        pass
+    _write(path, text)
 
 
 def _copy(source: Path, dest: Path) -> None:
@@ -205,6 +217,7 @@ def build_dashboard(hub: Any, out: Path | None = None) -> DashboardInfo:
     # What the index points to is written first: a mirror copying in between never meets a missing page.
     _journal_files(hub.settings, view, snapshot)
     _project_pages(view, site.pages)
+    _write_if_changed(view / guide.FILE, guide.render_guide(snapshot.overview))
     _write(view / "index.html", site.index)
     shutil.rmtree(view / "br", ignore_errors=True)  # graph files of the brick-era Pipelines tab
     images.prune()
@@ -216,5 +229,6 @@ def build_dashboard(hub: Any, out: Path | None = None) -> DashboardInfo:
         runs=len(snapshot.runs),
         projects=len(snapshot.projects),
         bytes=size,
-        how_to_open="On your laptop run ./schub-view in ~/sc-hub-workspace (mirrors this folder and opens it).",
+        how_to_open="On the laptop it is at http://sc-hub.localhost:27182; if that does not open, the student runs "
+                    "~/.sc-hub/bin/schub-view (it starts the dashboard's server in the background and opens it).",
     )
