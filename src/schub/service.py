@@ -307,7 +307,7 @@ class Hub:
         path = write_notebook(self.settings.root / "notebooks", load_run(manifest, question))
         how = (
             f"start_session(kind='jupyter', target='{path.relative_to(self.settings.root)}') starts JupyterLab "
-            "on a compute node (gpu=True for scVI steps); then ./schub-lab jupyter on the laptop opens it. "
+            "on a compute node (gpu=True for scVI steps); then ~/.sc-hub/bin/schub-lab jupyter on the laptop opens it. "
             "Each step can be re-run there with changed code or parameters; its results go to notebooks/work/."
         )
         return NotebookInfo(path=str(path), how_to_open=how)

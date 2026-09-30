@@ -3,8 +3,9 @@
 # The session runs on a compute node; this opens an ssh tunnel through the login
 # node and the browser. Ask the assistant to start a session first.
 #
-#   ./schub-lab              JupyterLab
-#   ./schub-lab cellxgene    cellxgene
+#   ~/.sc-hub/bin/schub-lab              JupyterLab
+#   ~/.sc-hub/bin/schub-lab cellxgene    cellxgene
+# (the setup installs it in ~/.sc-hub/bin, outside the folders your assistants write in)
 set -euo pipefail
 
 ALIAS="${SCHUB_ALIAS:-mbzuai-schub}"
@@ -12,7 +13,7 @@ REMOTE="${SCHUB_REMOTE_ROOT:-schub}"
 KIND="${1:-jupyter}"
 case "$KIND" in
   jupyter | cellxgene) ;;
-  *) echo "usage: ./schub-lab [jupyter|cellxgene]" >&2; exit 2 ;;
+  *) echo "usage: schub-lab [jupyter|cellxgene]" >&2; exit 2 ;;
 esac
 
 info="$(ssh -o BatchMode=yes "$ALIAS" "$REMOTE/bin/schub session-info $KIND" 2>/dev/null || true)"

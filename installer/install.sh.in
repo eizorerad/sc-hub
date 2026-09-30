@@ -8,7 +8,7 @@
 #   2. copies sc-hub to the cluster and sets up your workspace there (in a Slurm job);
 #   3. connects sc-hub to Codex, Claude Code and Claude Desktop, whichever you have;
 #   4. creates ~/sc-hub-workspace with instructions for the assistant, ~/.sc-hub/bin/schub-view
-#      (dashboard) and ./schub-lab (JupyterLab / cellxgene sessions);
+#      (dashboard) and ~/.sc-hub/bin/schub-lab (JupyterLab / cellxgene sessions);
 #   5. limits the key to sc-hub: it opens the MCP server, the dashboard and sessions,
 #      nothing else (SCHUB_KEY_UNRESTRICTED=1 makes it a normal key again).
 # It never reads or stores your password: ssh asks for it directly. Re-running it
@@ -165,7 +165,7 @@ admin_ssh() {  # update steps: with the key, or with the password once the key i
 }
 
 set_key_access() {
-  # restrict: no shell, pty, agent, X11 or ~/.ssh/rc; port-forwarding back on for ./schub-lab.
+  # restrict: no shell, pty, agent, X11 or ~/.ssh/rc; port-forwarding back on for schub-lab.
   local opts="restrict,port-forwarding,command=\"$REMOTE_ROOT/bin/schub-gate\""
   if [ "${SCHUB_KEY_UNRESTRICTED:-0}" = 1 ]; then
     opts=""
@@ -303,14 +303,14 @@ make_workspace() {
   mkdir -p "$WORKSPACE"
   cp "$BUNDLE_DIR/templates/AGENTS.workspace.md" "$WORKSPACE/AGENTS.md"
   cp "$BUNDLE_DIR/templates/AGENTS.workspace.md" "$WORKSPACE/CLAUDE.md"
-  install -m 755 "$BUNDLE_DIR/scripts/schub-lab" "$WORKSPACE/schub-lab"
-  # The dashboard's server lives outside the folder the assistants write in (it runs outside their sandbox).
+  # What the student runs lives outside the folder the assistants write in (it runs outside their sandbox).
   bin="$HOME/.sc-hub/bin"
   mkdir -p "$bin" && chmod 700 "$HOME/.sc-hub" "$bin"
   for name in schub_view.py schub_view_copy.py schub_view_pages.py; do
     install -m 644 "$BUNDLE_DIR/scripts/$name" "$bin/$name"
   done
   install -m 755 "$BUNDLE_DIR/scripts/schub-view" "$bin/schub-view"
+  install -m 755 "$BUNDLE_DIR/scripts/schub-lab" "$bin/schub-lab"
 }
 
 main() {
@@ -337,7 +337,7 @@ Ready. Start your assistant in the workspace and just ask, for example:
     Claude Code:     cd $WORKSPACE && claude
     Claude Desktop:  restart it; the sc-hub tools appear in a new chat
 Your dashboard (http://sc-hub.localhost:27182, runs in the background; needs Python 3.9+):  ~/.sc-hub/bin/schub-view
-Open a JupyterLab / cellxgene session the assistant started:  ./schub-lab [cellxgene]
+Open a JupyterLab / cellxgene session the assistant started:  ~/.sc-hub/bin/schub-lab [cellxgene]
 EOF
 }
 

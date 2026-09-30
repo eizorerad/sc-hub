@@ -211,8 +211,10 @@ cannot be reached it keeps serving the last copy and says why, with a "Try again
 It outlives the terminal or assistant that started it; after a restart,
 `~/.sc-hub/bin/schub-view` brings it back (`status`, `stop` and `serve` for the foreground).
 Its own pages run only their own scripts (a nonce per response; the dashboard pins its two
-inline scripts by hash), every file refuses to load into another site's page, and requests
-other sites' pages make are refused.
+inline scripts by hash; the pages that need none run none), a `.js` file counts as a script
+only in sc-hub's own data folders, every file refuses to load into another site's page, and
+requests other sites' pages make are refused. The address check of `/go` answers only to a key
+that page itself shows, so another site cannot tell that a dashboard is running here.
 The setup opens it at `/welcome`: what was installed and how to work, in brief.
 The page refreshes itself, keeps your place and filters, and waits while you read
 an opened section.
@@ -252,7 +254,7 @@ an opened section.
 - Cell Ranger is only available after the owner installs it (10x license).
 - On a computer shared by several accounts, the others can open the dashboard too (it answers anyone on
   this computer, as its copy's files were readable before); the pilot assumes a student's own laptop.
-- The Windows installer and `schub-lab.cmd` have not been run on Windows yet; `schub-view.cmd` and the
+- The Windows installer and `schub-lab.cmd` have not been run on Windows yet (`schub-lab` lives in `~/.sc-hub/bin`, next to `schub-view`); `schub-view.cmd` and the
   setup page's Windows paths (the password window, the launcher) are tested in CI against a fake ssh only.
 - The setup page's sign-ins on the cluster were checked up to the browser (installers, links, codes, the
   tunnel, a wrong code) in a throwaway home; a full sign-in needs a student account.

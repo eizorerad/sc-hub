@@ -116,11 +116,13 @@ def test_the_whole_onboarding_from_the_page(helper) -> None:
     assert skill.startswith("---\nname: schub\n") and "$schub" in skill and str(paths.workspace) in skill
     assert "allow_implicit_invocation: false" in (paths.home / ".codex" / "skills" / "schub" / "agents" /
                                                   "openai.yaml").read_text()
-    assert (paths.workspace / "AGENTS.md").exists() and (paths.workspace / "schub-lab").exists()
-    # the dashboard's program, out of the workspace the assistants write in; its launcher tries this setup's Python
+    assert (paths.workspace / "AGENTS.md").exists()
+    # what the student runs outside any sandbox (the dashboard, the session opener) lives out of the workspace the
+    # assistants write in; the launcher tries this setup's Python first
     bin_dir = paths.home / ".sc-hub" / "bin"
-    assert not (paths.workspace / "schub-view").exists() and not (paths.workspace / "schub_view.py").exists()
-    assert all((bin_dir / name).exists() for name in ("schub_view.py", "schub_view_copy.py", "schub_view_pages.py"))
+    assert not any((paths.workspace / name).exists() for name in ("schub-view", "schub_view.py", "schub-lab"))
+    assert all((bin_dir / name).exists() for name in ("schub_view.py", "schub_view_copy.py", "schub_view_pages.py",
+                                                      "schub-lab"))
     assert f'PINNED="{sys.executable}"' in (bin_dir / "schub-view").read_text() and bin_dir.stat().st_mode & 0o077 == 0
     # what the welcome page will say: the assistants, the accounts, and codex and claude on the PATH at login
     welcome = json.loads((paths.home / ".sc-hub" / "welcome.json").read_text())
@@ -519,10 +521,16 @@ def test_older_dashboard_files_leave_the_workspace_but_a_students_own_stay(tmp_p
     paths.workspace.mkdir(parents=True)
     (paths.workspace / "schub-view").write_text("#!/usr/bin/env bash\n# Mirror your sc-hub dashboard to this laptop\n")
     (paths.workspace / "schub-view.cmd").write_text("@echo off\r\nrem Runs schub-view.ps1 even where ...\r\n")
+    (paths.workspace / "schub-lab").write_text("#!/usr/bin/env bash\n# Open your running sc-hub session\n")
+    (paths.workspace / "schub-lab.ps1").write_text("# Open your running sc-hub session (JupyterLab)\r\n")
     (paths.workspace / "schub_view_pages.py").write_text("my own notes, not a program\n")
     assistants.workspace(paths, ONBOARD.parent)
-    assert not (paths.workspace / "schub-view").exists() and not (paths.workspace / "schub-view.cmd").exists()
+    gone = ("schub-view", "schub-view.cmd", "schub-lab", "schub-lab.ps1")
+    assert not any((paths.workspace / name).exists() for name in gone)
     assert (paths.workspace / "schub_view_pages.py").read_text() == "my own notes, not a program\n"
+    (paths.workspace / "schub-lab").write_text("#!/bin/sh\necho my own script\n")  # a student's own file by that name
+    assistants.workspace(paths, ONBOARD.parent)
+    assert (paths.workspace / "schub-lab").read_text() == "#!/bin/sh\necho my own script\n"
 
 
 def test_windows_launchers_are_written_the_way_windows_reads_them(tmp_path) -> None:

@@ -166,8 +166,8 @@ class SessionStore:
             return info.model_copy(update={"how_to_open": f"The session is {waiting}."})
         return info.model_copy(update={
             "node": connection["node"], "port": connection["port"],
-            "how_to_open": f"On the laptop: cd ~/sc-hub-workspace && ./schub-lab {meta['kind']} "
-            f"(Windows: .\\schub-lab.cmd {meta['kind']}). It opens the tunnel and the browser.",
+            "how_to_open": f"On the laptop: ~/.sc-hub/bin/schub-lab {meta['kind']} "
+            f"(Windows: ~\\.sc-hub\\bin\\schub-lab.cmd {meta['kind']}). It opens the tunnel and the browser.",
         })
 
     def list(self, queue: dict[str, str] | None = None) -> list[SessionInfo]:

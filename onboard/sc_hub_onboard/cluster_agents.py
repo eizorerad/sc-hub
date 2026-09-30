@@ -47,10 +47,11 @@ until_hangup() { exec 3<&0; "$@" </dev/null 3<&- & p=$!; ( cat <&3 >/dev/null; k
 """
 # Codex and Claude Code on the student's own PATH (python3 on the login node): the installers skip this when
 # ~/.local/bin is already on PATH, as it is in these commands. A marked block, rewritten on every run, goes at the end
-# of ~/.bashrc (interactive shells) and of the file a login shell reads first. Only whole blocks of its own are ever
-# replaced: a file whose markers do not pair up (one edited by hand) is left alone, and so is a file of another owner
-# (a linked, shared dotfile). A linked dotfile of the student's is edited where it lives, through a temporary file, so
-# a full disk never leaves half a file; its line endings stay as they were.
+# of ~/.bashrc (interactive shells) and of the file a login shell reads first. Only a block whose lines are exactly
+# ones this program wrote is ever replaced (KNOWN lists every body it shipped): markers that are the student's own, or
+# with lines of theirs between them, leave the file alone, and so does a file another account owns (a linked, shared
+# dotfile). A linked dotfile of the student's is edited where it lives, through a temporary file, so a full disk never
+# leaves half a file; its line endings stay as they were.
 REGISTER_PATH = r"""
 import os, re, shutil, tempfile
 home = os.path.expanduser("~")
@@ -58,8 +59,10 @@ BEGIN, END = "# >>> sc-hub >>>", "# <<< sc-hub <<<"
 BLOCK = "\n".join([BEGIN, "# Codex and Claude Code, installed by the sc-hub setup, live in ~/.local/bin.",
                    'case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$HOME/.local/bin:$PATH" ;; esac',
                    END]) + "\n"
-OURS = re.compile("^" + re.escape(BEGIN) + r"\r?\n(?:(?!" + re.escape(BEGIN) + "|" + re.escape(END) +
-                  r").*\r?\n){0,8}?" + re.escape(END) + r"[ \t]*(?:\r?\n|\Z)", re.M)
+KNOWN = [BLOCK.splitlines()[1:-1]]  # every body this program shipped (add the old one here when the text changes)
+OURS = re.compile("^" + re.escape(BEGIN) + r"\r?\n(?:" + "|".join(
+    "".join(re.escape(line) + r"[ \t]*\r?\n" for line in body) for body in KNOWN) + ")" +
+    re.escape(END) + r"[ \t]*(?:\r?\n|\Z)", re.M)
 login = next((n for n in (".bash_profile", ".bash_login", ".profile") if os.path.lexists(os.path.join(home, n))),
              ".profile")
 names = [".bashrc", login] + ([".zshrc"] if os.path.basename(os.environ.get("SHELL", "")) == "zsh" else [])

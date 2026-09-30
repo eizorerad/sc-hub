@@ -76,6 +76,9 @@ OWN_CSP = ("default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'se
 OTHER_CSP = "sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox allow-downloads allow-modals; " \
             "frame-ancestors 'none'"
 OWN_PAGES = {"index.html", "guide.html"}
+# The only places a `.js` of the copy is sc-hub's own data file (a script that sets a global): the project pages and
+# notebooks, a run's notebook, a cell map's points, a report's notebook. A `.js` anywhere else goes out as plain text.
+SCRIPT_DIRS = {"jproj", "jnb", "nb", "pts"}
 STREAM_ABOVE = 1 << 20
 
 
@@ -264,7 +267,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header(name, value)
         self.end_headers()
 
-    def _send(self, code: int, body: bytes, kind: str = "text/html; charset=utf-8", csp: str = OWN_CSP,
+    def _send(self, code: int, body: bytes, kind: str = "text/html; charset=utf-8", csp: str = pages.STATIC_CSP,
               shared: bool = False, extra: dict[str, str] | None = None) -> None:
         self._head(code, kind, len(body), csp, shared, extra)
         if self.command != "HEAD":
@@ -288,6 +291,8 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlsplit(self.path)
         path, app = parsed.path, self.app
         if path == "/_schub/ping.png":  # the /go page's probe comes from the other address: shared on purpose
+            if urllib.parse.parse_qs(parsed.query).get("k", [""])[0] != app.probe_key:  # (not for other sites' tags)
+                return self._send(404, b"", "text/plain", csp="", shared=True)
             return self._send(200, pages.PING, "image/png", csp="", shared=True)
         if self._other_site():
             return self._send(403, b"", "text/plain")
@@ -300,7 +305,8 @@ class Handler(BaseHTTPRequestHandler):
             to = pages.target(urllib.parse.parse_qs(parsed.query).get("to", ["/"])[0])
             if self.headers.get("Host", "").startswith(NAME + ":"):
                 return self._send(302, b"", extra={"Location": to})
-            return self._own(lambda nonce: pages.go_page(app.port, to, nonce), images=f"http://{NAME}:{app.port}")
+            return self._own(lambda nonce: pages.go_page(app.port, to, nonce, app.probe_key),
+                             images=f"http://{NAME}:{app.port}")
         if path in ("/welcome", "/welcome/"):
             app.refresher.seen()
             facts = read_json(app.place.welcome)
@@ -334,7 +340,10 @@ class Handler(BaseHTTPRequestHandler):
         if not found:
             return self._send(404, pages.not_found_page())
         kind = TYPES.get(Path(name).suffix.lower(), "application/octet-stream")
-        csp = OWN_CSP if own else (OTHER_CSP if kind.startswith(("text/html", "image/svg")) else "")
+        if kind.startswith("text/javascript") and not self._own_script(parts):
+            kind = "text/plain; charset=utf-8"  # (`nosniff`: the browser will not run it)
+        csp = (OWN_CSP if name == "index.html" else pages.STATIC_CSP) if own else (
+            OTHER_CSP if kind.startswith(("text/html", "image/svg")) else "")
         try:
             if own or real.stat().st_size <= STREAM_ABOVE:
                 data = real.read_bytes()
@@ -350,6 +359,12 @@ class Handler(BaseHTTPRequestHandler):
         except OSError:  # gone or replaced by a refresh meanwhile
             if not self.wfile.closed:
                 self.close_connection = True
+
+    @staticmethod
+    def _own_script(parts: tuple[str, ...]) -> bool:
+        """A data file sc-hub itself wrote: in one of its script folders, or a report's notebook script."""
+        return (len(parts) > 1 and parts[0] in SCRIPT_DIRS) or (len(parts) == 4 and parts[0] == "jrep"
+                                                               and parts[-1] == "report.js")
 
     def do_POST(self) -> None:  # noqa: N802
         try:
@@ -419,6 +434,7 @@ class App:
         self.mirror = Mirror(place, settings, log)
         self.refresher = Refresher(self.mirror, settings.every, log)
         self.token = secrets.token_urlsafe(24)
+        self.probe_key = proof(self.token, "probe")[:24]  # what this server's own /go page probes it with
         self.servers: list[ViewServer] = []
         self.port = 0
         self.done = threading.Event()
@@ -590,8 +606,9 @@ def ensure(place: Place) -> dict[str, Any]:
     raise RuntimeError(f"the dashboard did not start within {START_WAIT_S} s ({tail or 'see ' + str(place.log)})")
 
 
-def ours(pid: int) -> bool:
-    """That process is this program (the pid its state file names), checked before it gets a signal."""
+def ours(pid: int, place: Place) -> bool:
+    """That process is this program's server for this home (the pid its state file names), checked before it gets a
+    signal: a pid reused by another home's server must not be stopped from here."""
     try:
         text = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
     except OSError:
@@ -600,7 +617,9 @@ def ours(pid: int) -> bool:
                                   timeout=10).stdout
         except (OSError, subprocess.SubprocessError):
             return False
-    return "schub_view.py" in text and " serve" in text
+    if "schub_view.py" not in text or " serve" not in text:
+        return False
+    return f"--home {place.home}" in text if place.custom else "--home" not in text  # (the real home's has none)
 
 
 def stop(place: Place, quiet: bool = False) -> int:
@@ -621,7 +640,7 @@ def stop(place: Place, quiet: bool = False) -> int:
         except (OSError, urllib.error.URLError):
             pass
     pid = read_json(place.state).get("pid")
-    if not asked and not NT and isinstance(pid, int) and pid > 1 and ours(pid):
+    if not asked and not NT and isinstance(pid, int) and pid > 1 and ours(pid, place):
         try:
             os.kill(pid, signal.SIGTERM)
         except OSError:

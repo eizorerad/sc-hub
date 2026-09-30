@@ -89,6 +89,11 @@ def nonce_of(headers: dict) -> str:
     return re.search(r"'nonce-([^']+)'", headers["Content-Security-Policy"])[1]
 
 
+def assert_no_script(headers: dict) -> None:
+    policy = headers["Content-Security-Policy"]
+    assert re.search(r"script-src ([^;]+)", policy)[1] == "'none'" and "frame-ancestors 'none'" in policy
+
+
 # ---- what it serves, and to whom ----------------------------------------------------------------------------------
 
 
@@ -115,7 +120,8 @@ def test_what_other_sites_pages_ask_for_is_refused(app) -> None:
     assert get(app.port, "/_schub/status", headers={**other, "Sec-Fetch-Mode": "cors"})[0] == 403
     assert get(app.port, "/_schub/refresh", method="POST", headers={**other, "X-Schub-View": "1"})[0] == 403
     assert get(app.port, "/", headers={"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate"})[0] == 200
-    status, headers, _ = get(app.port, "/_schub/ping.png", headers=other)  # the /go probe, from the other address
+    # the /go probe loads from the other address, with the key only /go shows (see the probe test below)
+    status, headers, _ = get(app.port, f"/_schub/ping.png?k={app.probe_key}", headers=other)
     assert status == 200 and "Cross-Origin-Resource-Policy" not in headers
 
 
@@ -138,7 +144,25 @@ def test_pages_that_sc_hub_did_not_write_run_without_this_origin(app) -> None:
     assert policy.startswith("sandbox allow-scripts") and "allow-same-origin" not in policy
     assert headers["Cross-Origin-Resource-Policy"] == "same-origin"  # nor can it load another project's data
     _, headers, _ = get(app.port, "/guide.html")
-    assert headers["Content-Security-Policy"] == view.OWN_CSP
+    assert headers["Content-Security-Policy"] == pages.STATIC_CSP
+
+
+def test_only_the_dashboards_own_data_files_are_javascript(app) -> None:
+    """A `.js` anywhere else in the copy would run in the dashboard's origin if a page loaded it (a planted file,
+    markup reaching a page from data): it goes out as plain text, which `nosniff` keeps the browser from running."""
+    dest = app.mirror.dest
+    own = ("jproj/a.js", "jnb/p.js", "nb/r1.js", "pts/k.js", "jrep/p/r1/report.js")
+    other = ("img/evil.js", "jfig/a/plot.js", "jrep/p/r1/other.js", "jrep/report.js", "x.js")
+    for name in (*own, *other):
+        (dest / name).parent.mkdir(parents=True, exist_ok=True)
+        (dest / name).write_text("window.x=1;")
+    for name in own:
+        status, headers, _ = get(app.port, "/" + name)
+        assert status == 200 and headers["Content-Type"].startswith("text/javascript"), name
+    for name in other:
+        status, headers, _ = get(app.port, "/" + name)
+        assert status == 200 and headers["Content-Type"].startswith("text/plain") and \
+            headers["X-Content-Type-Options"] == "nosniff", name
 
 
 def test_a_large_file_is_streamed_whole(app) -> None:
@@ -156,19 +180,29 @@ def test_until_the_first_copy_arrives_a_page_says_so_and_reloads(env) -> None:
     server = view.App(place, view.Settings(place), log=lambda line: None)
     server.start(refresh=False)
     try:
-        status, _, body = get(server.port, "/")
+        status, headers, body = get(server.port, "/")
         assert status == 200 and b"Your dashboard is on its way" in body and b'http-equiv="refresh"' in body
+        assert_no_script(headers)
         server.refresher.error = "The cluster cannot be reached <from here>"
-        _, _, body = get(server.port, "/guide.html")
+        _, headers, body = get(server.port, "/guide.html")
         assert b"The cluster guide is on its way" in body and b"&lt;from here&gt;" in body
+        assert_no_script(headers)
+        assert_no_script(get(server.port, "/no/such/page")[1])
     finally:
         server.stop()
 
 
 def test_a_copy_from_an_older_sc_hub_says_the_guide_comes_with_its_update(app) -> None:
     (app.mirror.dest / "guide.html").unlink()
-    _, _, body = get(app.port, "/guide.html")
+    _, headers, body = get(app.port, "/guide.html")
     assert b"comes with sc-hub's next update" in body and b"retry cluster" in body and b"refresh" not in body
+    assert_no_script(headers)
+
+
+def test_the_guide_runs_no_script_and_the_dashboard_only_its_own(app) -> None:
+    """guide.html has none; the dashboard page's inline scripts are pinned by hash in a policy of its own."""
+    assert_no_script(get(app.port, "/guide.html")[1])
+    assert get(app.port, "/")[1]["Content-Security-Policy"] == view.OWN_CSP
 
 
 def test_an_old_copy_says_so_and_offers_to_try_again(app) -> None:
@@ -241,8 +275,20 @@ def test_go_picks_the_named_address_when_the_browser_reaches_it(app) -> None:
     assert b'data-to="/welcome"' in body and f'data-named="http://sc-hub.localhost:{app.port}"'.encode() in body
     status, headers, _ = get(app.port, "/go?to=/welcome", host=f"sc-hub.localhost:{app.port}")
     assert status == 302 and headers["Location"] == "/welcome"
-    status, headers, png = get(app.port, "/_schub/ping.png", host=f"sc-hub.localhost:{app.port}")
+    key = re.search(r'data-probe="([0-9a-f]+)"', body.decode())[1]
+    named = f"sc-hub.localhost:{app.port}"
+    status, headers, png = get(app.port, f"/_schub/ping.png?k={key}&t=1", host=named)
     assert png.startswith(b"\x89PNG\r\n\x1a\n") and struct.unpack(">II", png[16:24]) == (3, 2)
+    assert "Cross-Origin-Resource-Policy" not in headers  # (the /go page loads it from the other address)
+
+
+def test_a_website_cannot_tell_that_the_dashboard_is_running_here(app) -> None:
+    """The probe image answers only to the key /go hands out (no other site can read /go), so an image tag on
+    another site sees the same error as when nothing listens on the port."""
+    named = f"sc-hub.localhost:{app.port}"
+    for path in ("/_schub/ping.png", "/_schub/ping.png?k=", "/_schub/ping.png?k=0000", "/_schub/ping.png?t=1"):
+        status, headers, body = get(app.port, path, host=named)
+        assert status == 404 and not body.startswith(b"\x89PNG"), path
 
 
 @pytest.mark.parametrize("to", [
@@ -547,13 +593,21 @@ def test_another_program_on_the_recorded_port_is_not_taken_for_the_server(env) -
         impostor.shutdown()
 
 
-def test_only_this_program_gets_a_signal() -> None:
-    assert not view.ours(os.getpid())  # pytest, not schub_view.py serve
-    sleeper = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+def test_only_this_homes_server_gets_a_signal(tmp_path) -> None:
+    mine, other = view.Place(tmp_path / "mine"), view.Place(tmp_path / "other")
+    assert not view.ours(os.getpid(), mine)  # pytest, not schub_view.py serve
+    command = [sys.executable, "-c", "import time; time.sleep(30)", str(SCRIPTS / "schub_view.py"), "serve"]
+    server_of_mine = subprocess.Popen([*command, "--home", str(mine.home)])
+    real_homes_server = subprocess.Popen(command)  # started without --home: the real home's
     try:
-        assert not view.ours(sleeper.pid)
+        time.sleep(0.3)
+        assert view.ours(server_of_mine.pid, mine)
+        assert not view.ours(server_of_mine.pid, other)  # another home's state file naming this pid (pid reuse)
+        assert not view.ours(server_of_mine.pid, view.Place())  # nor the real home's
+        assert not view.ours(real_homes_server.pid, mine)
     finally:
-        sleeper.kill()
+        server_of_mine.kill()
+        real_homes_server.kill()
 
 
 def test_a_second_server_for_the_same_home_leaves_at_once(env) -> None:

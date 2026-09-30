@@ -60,7 +60,7 @@ def register_tools(mcp: MCPServer, hub: Hub, call: Call) -> None:
         """Start JupyterLab (optionally with 1 GPU, for scvi-tools model work) or cellxgene
         (target = an .h5ad, e.g. results/cellxgene.h5ad of export_cellxgene) on a compute
         node. It holds one of the user's 2 running-job slots until stopped or expired, so
-        use few hours and stop it when done. The user opens it with ./schub-lab <kind>."""
+        use few hours and stop it when done. The user opens it with ~/.sc-hub/bin/schub-lab <kind>."""
         args = {"kind": kind, "hours": hours, "gpu": gpu, "target": target}
         return call("start_session", args, lambda: hub.start_session(kind, hours, gpu, target))
 

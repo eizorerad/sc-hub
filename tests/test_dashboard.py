@@ -256,7 +256,7 @@ def test_overview_lists_sessions_with_how_to_open(hub, settings, cluster):
     snap = collect(hub)
     assert snap.sessions[0].node == "ws-l1-004"
     html = render_sessions(snap)
-    assert "JupyterLab" in html and "./schub-lab jupyter" in html and "token" not in html
+    assert "JupyterLab" in html and "~/.sc-hub/bin/schub-lab jupyter" in html and "token" not in html
 
 
 def test_long_lists_get_a_filter_and_show_all(settings):

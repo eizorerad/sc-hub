@@ -243,13 +243,11 @@ function New-Workspace($BundleDir) {
     New-Item -ItemType Directory -Force -Path $Workspace | Out-Null
     Copy-Item (Join-Path $BundleDir 'templates/AGENTS.workspace.md') (Join-Path $Workspace 'AGENTS.md') -Force
     Copy-Item (Join-Path $BundleDir 'templates/AGENTS.workspace.md') (Join-Path $Workspace 'CLAUDE.md') -Force
-    foreach ($name in 'schub-lab.ps1', 'schub-lab.cmd') {
-        Copy-Item (Join-Path $BundleDir "scripts/$name") (Join-Path $Workspace $name) -Force
-    }
-    # The dashboard's server lives outside the folder the assistants write in (it runs outside their sandbox).
+    # What the student runs lives outside the folder the assistants write in (it runs outside their sandbox).
     $bin = Join-Path $HOME '.sc-hub\bin'
     New-Item -ItemType Directory -Force -Path $bin | Out-Null
-    foreach ($name in 'schub_view.py', 'schub_view_copy.py', 'schub_view_pages.py', 'schub-view.ps1', 'schub-view.cmd') {
+    foreach ($name in 'schub_view.py', 'schub_view_copy.py', 'schub_view_pages.py', 'schub-view.ps1', 'schub-view.cmd',
+                      'schub-lab.ps1', 'schub-lab.cmd') {
         Copy-Item (Join-Path $BundleDir "scripts/$name") (Join-Path $bin $name) -Force
     }
 }
@@ -280,6 +278,6 @@ Ready. Start your assistant in the workspace and just ask, for example:
     Claude Code:     cd $Workspace; claude
     Claude Desktop:  quit and reopen it; the sc-hub tools appear in a new chat
 Your dashboard (http://sc-hub.localhost:27182, runs in the background; needs Python 3.9+):  ~\.sc-hub\bin\schub-view.cmd
-Open a JupyterLab / cellxgene session the assistant started:  .\schub-lab.cmd [cellxgene]
+Open a JupyterLab / cellxgene session the assistant started:  ~\.sc-hub\bin\schub-lab.cmd [cellxgene]
 "@
 }

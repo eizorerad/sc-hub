@@ -197,8 +197,10 @@ PINNED_PYTHON = "__PYTHON__"  # in the dashboard's launchers: the Python this se
 SAFE_PATH = re.compile(r"[\w .:/\\()+~-]+")  # nothing a shell would expand inside double quotes ($, `, ")
 VIEW_PROGRAM = ("schub_view.py", "schub_view_copy.py", "schub_view_pages.py")
 VIEW_LAUNCHERS = ("schub-view.cmd", "schub-view.ps1") if os.name == "nt" else ("schub-view",)
-# What earlier setups left in the workspace for the dashboard (the program now lives in ~/.sc-hub/bin).
-OLD_VIEW_FILES = ("schub-view", "schub-view.cmd", "schub-view.ps1", *VIEW_PROGRAM)
+LAB_LAUNCHERS = ("schub-lab.cmd", "schub-lab.ps1") if os.name == "nt" else ("schub-lab",)
+# What earlier setups left in the workspace (the dashboard and the session opener now live in ~/.sc-hub/bin).
+OLD_TOOL_FILES = ("schub-view", "schub-view.cmd", "schub-view.ps1", *VIEW_PROGRAM,
+                  "schub-lab", "schub-lab.cmd", "schub-lab.ps1")
 
 
 def _write(target: Path, text: str, executable: bool = False) -> None:
@@ -215,18 +217,14 @@ def _write(target: Path, text: str, executable: bool = False) -> None:
 
 
 def workspace(paths: Paths, repo: Path) -> Path:
-    """~/sc-hub-workspace: the assistants' instructions and schub-lab (the dashboard is in ~/.sc-hub/bin)."""
+    """~/sc-hub-workspace: the assistants' instructions (what the student runs is in ~/.sc-hub/bin)."""
     folder = paths.workspace
     folder.mkdir(parents=True, exist_ok=True)
     template = (repo / "templates" / "AGENTS.workspace.md").read_text().replace(
         "(sc-hub setup folder: unknown, ask the student)", f"(sc-hub setup folder: {repo})")
     for name in ("AGENTS.md", "CLAUDE.md"):
         (folder / name).write_text(template)
-    for name in ("schub-lab.cmd", "schub-lab.ps1") if os.name == "nt" else ("schub-lab",):
-        source = repo / "scripts" / name
-        if source.exists():
-            _write(folder / name, source.read_text(encoding="utf-8"), executable=True)
-    for name in OLD_VIEW_FILES:  # sc-hub's own older copies only: a file of the student's by that name stays
+    for name in OLD_TOOL_FILES:  # sc-hub's own older copies only: a file of the student's by that name stays
         old = folder / name
         try:
             head = old.read_text(encoding="utf-8", errors="replace")[:600] if old.is_file() else ""
@@ -237,17 +235,18 @@ def workspace(paths: Paths, repo: Path) -> Path:
     return folder
 
 
-def install_dashboard(paths: Paths, repo: Path, python: str = sys.executable) -> Path:
-    """The dashboard's server and its launcher in ~/.sc-hub/bin (this account only), outside the folders the
-    assistants write in: what the student runs outside any sandbox is only what this setup wrote."""
+def install_tools(paths: Paths, repo: Path, python: str = sys.executable) -> Path:
+    """What the student runs outside any sandbox, in ~/.sc-hub/bin (this account only), outside the folders the
+    assistants write in: the dashboard's server with its launcher, and the session opener (schub-lab). Returns the
+    dashboard's launcher."""
     folder = paths.state.parent / "bin"
     folder.mkdir(parents=True, exist_ok=True)
     if os.name != "nt":
         os.chmod(folder.parent, 0o700)
         os.chmod(folder, 0o700)
-    for name in (*VIEW_PROGRAM, *VIEW_LAUNCHERS):
+    for name in (*VIEW_PROGRAM, *VIEW_LAUNCHERS, *LAB_LAUNCHERS):
         text = (repo / "scripts" / name).read_text(encoding="utf-8")
         if PINNED_PYTHON in text and SAFE_PATH.fullmatch(python):  # it sits between double quotes in sh and PowerShell
             text = text.replace(PINNED_PYTHON, python)
-        _write(folder / name, text, executable=name in VIEW_LAUNCHERS or name == "schub_view.py")
+        _write(folder / name, text, executable=name in (*VIEW_LAUNCHERS, *LAB_LAUNCHERS) or name == "schub_view.py")
     return folder / VIEW_LAUNCHERS[0]
