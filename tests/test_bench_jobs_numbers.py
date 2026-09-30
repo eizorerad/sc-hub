@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import errno
+import json
+import os
+import time
 from pathlib import Path
 
 import pytest
 
+from schub.bench import jobs as jobs_module
+from schub.bench import journal as journal_module
 from schub.bench.jobs import JobRecord, lookup, open_records, reap, register
 from schub.bench.journal import Journal
 from schub.bench.models import CellEntry, JobRef, OutputItem
@@ -157,3 +163,112 @@ def test_only_bench_jobs_can_be_cancelled_and_states_are_live(settings: Settings
         bench.stop("999")
     assert "cancelled job 700" in bench.stop("700")
     assert cluster.jobs["700"] == "CANCELLED" and cluster.jobs["999"] == "RUNNING"
+
+
+def report(job_dir: Path, job_id: str = "700") -> None:
+    """What a finished cell job saved before adding its parts to the journal (jobrun writes result.json first)."""
+    job_dir.mkdir(exist_ok=True)
+    (job_dir / "result.json").write_text(json.dumps({
+        "job_id": job_id, "exit_code": 0, "finished": "2026-09-24T02:05:00.000+00:00", "files": [], "downloads": [],
+        "checks": []}))
+
+
+def refuse_numbers(monkeypatch, on: dict) -> None:
+    """The file server refuses the journal's change numbers while on['on'] is true (the records themselves are
+    written)."""
+    real = journal_module.create_json_exclusive
+
+    def create(path, payload, *args):
+        if on["on"] and path.parent.name == "changes":
+            raise OSError(errno.EIO, "Input/output error")
+        return real(path, payload, *args)
+
+    monkeypatch.setattr(journal_module, "create_json_exclusive", create)
+    monkeypatch.setattr(journal_module, "NUMBERING_PAUSE_S", 0.0)
+
+
+def test_a_report_the_journal_could_not_number_is_numbered_before_its_job_is_closed(
+        settings: Settings, cluster: FakeCluster, journal: Journal, tmp_path: Path, monkeypatch) -> None:
+    """Found in review: the addendum was written but its number was not; the watchdog's retry got 'already exists'
+    from add_addendum, never numbered it, and closed the job: a reader going on from a number never saw COMPLETED."""
+    job_dir = tmp_path / "jobdir"
+    report(job_dir)
+    register(settings, JobRecord(job_id="700", project="demo", ref="demo#c0001", job_dir=str(job_dir)))
+    monkeypatch.setattr(journal_module, "LEGACY_S", -1.0)  # only the numbers show what is new
+    _, place = journal.page(since=None)
+    refusing = {"on": True}
+    refuse_numbers(monkeypatch, refusing)
+    assert reap(settings, Slurm(cluster)) == [] and [r.job_id for r in open_records(settings)] == ["700"]
+    assert journal.cell("c0001").jobs[0].state == "COMPLETED"  # the addendum is there; its number is not
+    assert journal.page(since=place)[0] == []
+    refusing["on"] = False
+    assert reap(settings, Slurm(cluster)) == [] and open_records(settings) == []
+    assert [e.jobs[0].state for _, e in journal.page(since=place)[0]] == ["COMPLETED"]
+
+
+def test_a_job_end_the_journal_could_not_number_is_numbered_too(
+        settings: Settings, cluster: FakeCluster, journal: Journal, tmp_path: Path, monkeypatch) -> None:
+    job_dir = tmp_path / "jobdir"
+    job_dir.mkdir()
+    (job_dir / "slurm-700.log").write_text("error: *** JOB 700 ON gpu-03 CANCELLED AT 2026-09-24T02:04:39 "
+                                           "DUE TO TIME LIMIT ***\n")
+    register(settings, JobRecord(job_id="700", project="demo", ref="demo#c0001", job_dir=str(job_dir)))
+    monkeypatch.setattr(journal_module, "LEGACY_S", -1.0)
+    _, place = journal.page(since=None)
+    refusing = {"on": True}
+    refuse_numbers(monkeypatch, refusing)
+    assert reap(settings, Slurm(cluster)) == [] and [r.job_id for r in open_records(settings)] == ["700"]
+    refusing["on"] = False
+    assert reap(settings, Slurm(cluster)) == ["700"] and open_records(settings) == []
+    assert [e.jobs[0].state for _, e in journal.page(since=place)[0]] == ["TIMEOUT"]
+
+
+@pytest.mark.parametrize("failure", [OSError(errno.EACCES, "Permission denied"), RuntimeError("a bug")])
+def test_a_job_the_journal_never_takes_stays_open_for_days_and_then_is_given_up(
+        settings: Settings, cluster: FakeCluster, journal: Journal, tmp_path: Path, monkeypatch, failure) -> None:
+    """Found in review: a failure that never passes (permissions, quota, a bug) kept the job open for ever, and open
+    jobs keep the watchdog re-arming itself. An unexpected error is not 'not a report': it must not close the job
+    at once either."""
+    job_dir = tmp_path / "jobdir"
+    report(job_dir)
+    register(settings, JobRecord(job_id="700", project="demo", ref="demo#c0001", job_dir=str(job_dir)))
+
+    def fail(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(jobs_module, "to_journal", fail)
+    assert reap(settings, Slurm(cluster)) == [] and [r.job_id for r in open_records(settings)] == ["700"]
+    old = time.time() - 2 * jobs_module.GIVE_UP_S
+    os.utime(job_dir / "result.json", (old, old))
+    reap(settings, Slurm(cluster))
+    assert open_records(settings) == []  # given up: result.json stays on disk, the job stays known for ownership
+    assert lookup(settings, "700") is not None
+
+
+def test_a_file_that_is_not_a_report_closes_the_job(settings: Settings, cluster: FakeCluster, journal: Journal,
+                                                    tmp_path: Path) -> None:
+    job_dir = tmp_path / "jobdir"
+    job_dir.mkdir()
+    for text in ("not json", "[1, 2]", '{"job_id": "700"}'):
+        (job_dir / "result.json").write_text(text)
+        register(settings, JobRecord(job_id="700", project="demo", ref="demo#c0001", job_dir=str(job_dir)))
+        reap(settings, Slurm(cluster))
+        assert open_records(settings) == [], text
+
+
+def test_an_end_the_journal_never_takes_is_given_up_after_days(settings: Settings, cluster: FakeCluster,
+                                                               journal: Journal, tmp_path: Path, monkeypatch) -> None:
+    job_dir = tmp_path / "jobdir"
+    job_dir.mkdir()
+    log = job_dir / "slurm-700.log"
+    log.write_text("error: *** JOB 700 ON gpu-03 CANCELLED AT 2026-09-24T02:04:39 DUE TO TIME LIMIT ***\n")
+    register(settings, JobRecord(job_id="700", project="demo", ref="demo#c0001", job_dir=str(job_dir)))
+
+    def refuse(*args, **kwargs):
+        raise OSError(errno.EACCES, "Permission denied")
+
+    monkeypatch.setattr(Journal, "add_addendum", refuse)
+    assert reap(settings, Slurm(cluster)) == [] and [r.job_id for r in open_records(settings)] == ["700"]
+    old = time.time() - 2 * jobs_module.GIVE_UP_S
+    os.utime(log, (old, old))
+    assert reap(settings, Slurm(cluster)) == [] and open_records(settings) == []

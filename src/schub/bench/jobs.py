@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -108,19 +109,38 @@ def _reported(record: JobRecord) -> bool:
     return (Path(record.job_dir) / "result.json").exists()
 
 
-def _delivered(settings: Settings, record: JobRecord) -> bool:
-    """Whether all the job reported is in its cell's journal entry. The job saves result.json first, then adds
-    its parts (state, files, downloads, checks) one by one: a part it could not add is added here from
-    result.json. Each part is added once, by its name, so this only fills gaps. False while the journal cannot
-    be written."""
-    job_dir = Path(record.job_dir)
+GIVE_UP_S = 3 * 86400.0  # a report the journal has refused this long is not going in: the journal cannot be written
+
+
+def _given_up(report: Path) -> bool:
+    """A job whose report has waited this long for the journal stops keeping the watchdog armed (its result.json
+    stays on disk)."""
     try:
-        result = json.loads((job_dir / "result.json").read_text())
-        to_journal(settings, {"project": record.project, "cid": record.ref.partition("#")[2]}, job_dir, result)
+        return time.time() - report.stat().st_mtime > GIVE_UP_S
     except OSError:
         return False
-    except (ValueError, KeyError, TypeError, AttributeError):
-        pass  # not a report, or no journal entry takes it (a JournalError): no later pass could add it
+
+
+def _delivered(settings: Settings, record: JobRecord) -> bool:
+    """Whether all the job reported is in its cell's journal entry, and numbered (see the journal's docstring).
+    The job saves result.json first, then adds its parts (state, files, downloads, checks) one by one: a part it
+    could not add is added here from result.json. Each part is added once, by its name, so this only fills gaps;
+    the cell's change is numbered once more, since a part added without its number is 'already there' to the
+    retry. False while the journal cannot be written, and after an error that is not a file's (a bug must not
+    close the job): tried again until the report is given up."""
+    job_dir, cid = Path(record.job_dir), record.ref.partition("#")[2]
+    report = job_dir / "result.json"
+    try:
+        result = json.loads(report.read_text())
+        if isinstance(result, dict):  # (anything else is not a report)
+            to_journal(settings, {"project": record.project, "cid": cid}, job_dir, result)
+            journal = Journal(settings.projects_dir / record.project, record.project)
+            if journal.raw_cell(cid) is not None and not journal.note_change(cid):
+                return _given_up(report)
+    except (ValueError, KeyError, JournalError):
+        pass  # not a report, or no journal entry takes it: no later pass could add it
+    except Exception:  # noqa: BLE001 - OSError, and whatever else: the job stays open for another pass
+        return _given_up(report)
     return True
 
 
@@ -150,7 +170,15 @@ def reap(settings: Settings, slurm: Slurm) -> list[str]:
         if _record_end(settings, record, *_final_state(slurm, record)):
             close(settings, record.job_id)
             ended.append(record.job_id)
+        elif _given_up(_end_marker(record)):
+            close(settings, record.job_id)  # the journal has refused its end for days
     return ended
+
+
+def _end_marker(record: JobRecord) -> Path:
+    """What dates a job's end: its log, else (it never started) its folder."""
+    log = Path(record.job_dir) / f"slurm-{record.job_id}.log"
+    return log if log.exists() else Path(record.job_dir)
 
 
 def _final_state(slurm: Slurm, record: JobRecord) -> tuple[str, str]:
@@ -183,6 +211,8 @@ def _record_end(settings: Settings, record: JobRecord, state: str, log: str) -> 
         journal.add_addendum(cid, f"jobend-{record.job_id}", {"kind": "job", "source": "watchdog", "job": {
             "job_id": record.job_id, "state": state if state != "COMPLETED" else "ENDED", "finished": stamp(),
             "log": log}})
+        if journal.raw_cell(cid) is not None and not journal.note_change(cid):
+            return False  # written, not numbered: the next pass numbers it
     except OSError:
         return False
     except JournalError:
