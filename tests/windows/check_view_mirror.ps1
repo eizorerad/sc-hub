@@ -51,3 +51,6 @@ Start-Sleep -Seconds 1
 & $launcher status | Out-Null
 if ($LASTEXITCODE -eq 0) { throw 'the server is still running after stop' }
 Write-Host 'schub-view on Windows against the fake cluster: ok'
+# The step's exit code is the last native command's ($LASTEXITCODE), and that `status` exited with 1 on purpose
+# (nothing is running any more): every check above passed, so say so.
+exit 0
