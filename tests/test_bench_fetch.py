@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import http.server
+import json
+import socket
 import threading
+import traceback
 from functools import partial
 from pathlib import Path
 
@@ -49,6 +52,32 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.send_error(503, "Service Unavailable")
                 return
             self._range_response(PAYLOAD)
+            return
+        if self.path.startswith("/forbidden.bin"):
+            self.send_error(403, "Forbidden")
+            return
+        if self.path.startswith("/down.bin"):  # failing on every try
+            self.send_error(503, "Service Unavailable")
+            return
+        if self.path.startswith("/empty.bin"):  # a success status with nothing to download
+            self.send_response(204)
+            self.end_headers()
+            return
+        if self.path.startswith("/moved.bin"):  # a redirect urllib refuses to follow, keeping the query
+            self.send_response(302)
+            self.send_header("Location", f"file://{self.path}")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        if self.path.startswith("/misrange.bin"):  # cut short, then resumed from byte 0 whatever was asked
+            if not self.headers.get("Range"):
+                self._range_response(PAYLOAD, drop=True)
+                return
+            self.send_response(206)
+            self.send_header("Content-Range", f"bytes 0-{len(PAYLOAD) - 1}/{len(PAYLOAD)}")
+            self.send_header("Content-Length", str(len(PAYLOAD)))
+            self.end_headers()
+            self.wfile.write(PAYLOAD)
             return
         super().do_GET()
 
@@ -189,6 +218,56 @@ def test_credentials_never_reach_the_journal(server: str, project: Path) -> None
     assert "abc123" not in event["url"] and "token=REDACTED" in event["url"] and "download=1" in event["url"]
     assert not any("abc123" in f.name or "abc123" in f.read_text(errors="ignore")
                    for f in (project / "data").iterdir() if f.is_file() and f.suffix != ".bin")
+
+
+TOKEN = "FAKE_TEST_TOKEN_5f3a9c"  # artificial: it must never show in an error, a job's log or the journal
+
+
+def _shown(error: BaseException) -> str:
+    """What a cell's output or a job's log shows of an error: its traceback, with the exceptions chained to it."""
+    return "".join(traceback.format_exception(error))
+
+
+@pytest.mark.parametrize("path, kwargs, said", [
+    ("/missing.h5ad", {}, "HTTP 404"),  # a client error, not retried
+    ("/forbidden.bin", {}, "HTTP 403"),
+    ("/empty.bin", {}, "HTTP 204"),  # a status that is not a download
+    ("/down.bin", {}, "after 2 attempts: HTTP 503"),  # a server error until the retries run out
+    ("/misrange.bin", {}, "another byte"),  # a resume from the wrong byte
+    ("/moved.bin", {}, "HTTP 302"),  # urllib's own error quotes the URL it was sent to
+    ("/small.txt", {"sha256": "0" * 64}, "sha256"),
+])
+def test_a_failed_download_never_shows_a_secret_query_value(server: str, project: Path, capsys, path: str,
+                                                            kwargs: dict, said: str) -> None:
+    """Found in an audit: public() hid the token in the journal, but the error text kept the URL whole."""
+    with pytest.raises(FetchError, match=said) as caught:
+        fetch(f"{server}{path}?token={TOKEN}&download=1", attempts=2, pause_s=0, **kwargs)
+    shown = _shown(caught.value)
+    assert TOKEN not in shown and "token=REDACTED" in shown and "download=1" in shown
+    assert TOKEN not in json.dumps(ledger.drain()) + "".join(capsys.readouterr())
+
+
+@pytest.mark.parametrize("url, said", [
+    ("http://127.0.0.1:{closed}/x.bin?token={token}", "after 1 attempt"),  # nothing listens there
+    ("{server}/data.bin?token={token}&note=a b", "control characters"),  # http.client quotes the path it refuses
+])
+def test_a_network_error_never_shows_a_secret_query_value(server: str, project: Path, url: str, said: str) -> None:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        closed = probe.getsockname()[1]
+    with pytest.raises(FetchError, match=said) as caught:
+        fetch(url.format(server=server, closed=closed, token=TOKEN), attempts=1, pause_s=0)
+    assert TOKEN not in _shown(caught.value) and "token=REDACTED" in _shown(caught.value)
+
+
+def test_a_cached_download_never_shows_a_secret_query_value(server: str, project: Path, tmp_path: Path,
+                                                            monkeypatch, capsys) -> None:
+    root = tmp_path / "root"
+    monkeypatch.setenv("SCHUB_ROOT", str(root))
+    for name in ("a.txt", "b.txt"):  # downloaded, then linked from the cache
+        fetch(f"{server}/small.txt?token={TOKEN}", dest=tmp_path / name, sha256=hashlib.sha256(b"hello").hexdigest())
+    kept = "".join(f.read_text(errors="ignore") for f in root.rglob("*") if f.is_file())
+    assert TOKEN not in json.dumps(ledger.drain()) + "".join(capsys.readouterr()) + kept
 
 
 def test_a_file_already_there_is_not_fetched_again_and_fetches_take_turns(server: str, project: Path) -> None:

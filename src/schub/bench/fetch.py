@@ -19,7 +19,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, unquote_plus, urlencode, urlsplit, urlunsplit
 
 from ..locking import long_held
 from . import ledger
@@ -31,13 +31,21 @@ TIMEOUT_S = 60
 SCHEMES = ("https", "http")  # GEO and the others serve https (urllib's ftp has no status to check)
 USER_AGENT = "sc-hub-bench/1 (+https://github.com/eizorerad/sc-hub)"
 SECRET_PARAM = re.compile(r"token|key|sig|signature|secret|password|passwd|auth|credential|session|^x-amz-", re.I)
+QUERY_PAIR = re.compile(r"(?<=[?&])([^=&#\s'\"]+)=[^&#\s'\"]*")  # name=value of a URL quoted in some text
 
 
 def public(url: str) -> str:
-    """The URL as the journal shows it: values of secret-looking query parameters are hidden."""
+    """The URL as the journal, the printed lines and the errors show it: values of secret-looking query
+    parameters are hidden."""
     parts = urlsplit(url)
     query = [(k, "REDACTED" if SECRET_PARAM.search(k) else v) for k, v in parse_qsl(parts.query, keep_blank_values=True)]
     return urlunsplit(parts._replace(query=urlencode(query, safe="/:")))
+
+
+def _redacted(text: str) -> str:
+    """An error's text that may quote a URL (http.client quotes the path it refuses, urllib a redirect it does not
+    follow): the same values hidden as in `public`."""
+    return QUERY_PAIR.sub(lambda m: f"{m[1]}=REDACTED" if SECRET_PARAM.search(unquote_plus(m[1])) else m[0], text)
 
 
 class FetchError(RuntimeError):
@@ -101,6 +109,7 @@ def _complete_416(exc: urllib.error.HTTPError, offset: int) -> bool:
 
 def _attempt(url: str, part: Path) -> int | None:
     """Download into `part` from where it stops. Returns the expected total, if known."""
+    shown = public(url)
     offset, validator = _resumable(url, part)
     try:
         response = _open(url, offset, validator)
@@ -108,14 +117,15 @@ def _attempt(url: str, part: Path) -> int | None:
         if exc.code == 416 and offset and _complete_416(exc, offset):
             return offset
         if exc.code in (408, 429) or exc.code >= 500:  # busy or failing for a moment: the retry loop waits
-            raise ConnectionError(f"{url}: HTTP {exc.code} {exc.reason}") from exc
-        raise FetchError(f"{url}: HTTP {exc.code} {exc.reason}") from exc
+            raise ConnectionError(f"HTTP {exc.code} {exc.reason}") from exc  # the retry loop's error adds the URL
+        # not chained: a traceback would print urllib's own text, which quotes a refused redirect's URL whole
+        raise FetchError(f"{shown}: HTTP {exc.code} {_redacted(str(exc.reason))}") from None
     with response:
         status = getattr(response, "status", None)
         if status not in (200, 206):
-            raise FetchError(f"{url}: HTTP {status}")
+            raise FetchError(f"{shown}: HTTP {status}")
         if status == 206 and not re.match(rf"bytes {offset}-", response.headers.get("Content-Range", "")):
-            raise FetchError(f"{url}: the server resumed from another byte than {offset}")
+            raise FetchError(f"{shown}: the server resumed from another byte than {offset}")
         total = _expected_total(response, offset)
         write_json_atomic(_sidecar(part), {"url": public(url), "url_sha256": _url_key(url), "total": total, "validator":
                                            response.headers.get("ETag") or response.headers.get("Last-Modified") or ""})
@@ -277,7 +287,7 @@ def _download(url: str, part: Path, attempts: int, pause_s: float) -> int | None
         except (urllib.error.URLError, TimeoutError, ConnectionError, OSError, http.client.HTTPException) as exc:
             last = exc
             time.sleep(pause_s * attempt)
-    raise FetchError(f"{url}: download failed after {attempts} attempts: {last}")
+    raise FetchError(f"{public(url)}: download failed after {attempts} attempts: {_redacted(str(last))}")
 
 
 def _discard(part: Path) -> None:
