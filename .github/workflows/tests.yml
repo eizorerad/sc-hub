@@ -43,6 +43,6 @@ jobs:
       - name: The setup helper's portable tests, through onboard\start.cmd and start.ps1
         shell: cmd
         run: onboard\start.cmd check
-      - name: The dashboard mirror (schub-view.ps1) against a fake cluster
+      - name: The dashboard (schub-view.cmd, schub_view.py) against a fake cluster, copied and served
         shell: powershell
         run: .\tests\windows\check_view_mirror.ps1

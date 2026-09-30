@@ -20,6 +20,7 @@ from typing import Any, Callable
 
 STATUSES = ("waiting", "running", "asking", "done", "skipped", "failed")
 SECRET_FIELDS = ("password",)
+UNSAVED = ("next",)  # the dashboard's address of this run: after a restart it may be gone
 
 
 class StepFailed(RuntimeError):
@@ -53,6 +54,7 @@ class Step:
     title: str
     run: Callable[["Context"], str | None]  # returns the detail line to show when done
     weight: float = 1.0  # its share of the progress bar
+    again: bool = False  # runs at every start of the helper, done or not (the dashboard: bring it back)
 
 
 class Context:
@@ -110,15 +112,16 @@ class Engine:
             saved = json.loads(self.state_path.read_text())
         except (OSError, ValueError):
             return
-        self.values.update({k: v for k, v in saved.get("values", {}).items() if k not in SECRET_FIELDS})
+        self.values.update({k: v for k, v in saved.get("values", {}).items() if k not in SECRET_FIELDS + UNSAVED})
+        again = {s.id for s in self.steps if s.again}
         for sid, data in saved.get("steps", {}).items():
-            if sid in self.states and data.get("status") in ("done", "skipped"):
+            if sid in self.states and sid not in again and data.get("status") in ("done", "skipped"):
                 state = self.states[sid]
                 state.status, state.detail, state.log = data["status"], data.get("detail", ""), data.get("log", [])
 
     def save(self) -> None:
         with self._lock:
-            data = {"values": {k: v for k, v in self.values.items() if k not in SECRET_FIELDS and _plain(v)},
+            data = {"values": {k: v for k, v in self.values.items() if k not in SECRET_FIELDS + UNSAVED and _plain(v)},
                     "steps": {sid: {**asdict(s), "ask": None} for sid, s in self.states.items()}}
             self.state_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             if os.name != "nt":
@@ -214,6 +217,11 @@ class Engine:
         self.save()
         return True
 
+    def busy(self) -> bool:
+        """A step is working now (not waiting for the student)."""
+        with self._lock:
+            return any(s.status == "running" for s in self.states.values())
+
     def _states(self) -> list[dict[str, Any]]:
         with self._lock:
             return [asdict(self.states[s.id]) for s in self.steps]
@@ -227,7 +235,8 @@ class Engine:
         partial = running.weight * 0.3 if running else 0.0
         return {"progress": round(100 * (done + partial) / total), "finished": self.finished,
                 "steps": self._states(),
-                "summary": self.values.get("summary", {})}
+                "summary": self.values.get("summary", {}),
+                "next": str(self.values.get("next") or "") if self.finished else ""}  # the dashboard's welcome
 
 
 def _answers(form: dict[str, Any], values: dict[str, Any]) -> bool:

@@ -38,6 +38,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Type", kind)
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")  # its address carries the token
         self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline'; "
                                                     "script-src 'unsafe-inline'; img-src data:; frame-ancestors 'none'")
         self.send_header("Content-Length", str(len(body)))
@@ -48,7 +49,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self._send(code, json.dumps(data).encode())
 
     def do_GET(self) -> None:  # noqa: N802 - http.server's naming
-        self.server.last_seen = time.time()
+        self.server.last_seen = time.monotonic()  # (a laptop asleep does not count as nobody looking)
         if not self._allowed():
             return self._send(403, b"")
         if self.path.split("?")[0] == "/":
@@ -96,7 +97,7 @@ class OnboardServer(http.server.ThreadingHTTPServer):
         self.engine = engine
         self.token = secrets.token_urlsafe(24)
         self.port = self.server_address[1]
-        self.last_seen = time.time()
+        self.last_seen = time.monotonic()
 
     @property
     def url(self) -> str:

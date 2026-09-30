@@ -95,26 +95,11 @@ def to_the_agents(server: OnboardServer, typo_first: bool = True) -> None:
 def test_the_whole_onboarding_from_the_page(helper) -> None:
     server, paths, cluster = helper
     to_the_agents(server)
-    # Codex on the cluster: the device page opens in the browser, the page shows the code and waits
-    ask = form(server, "Sign in to Codex")
-    assert ask["wait"] and ask["code"] == "FAKE-C0DE1" and ask["links"][0]["url"] == "https://auth.openai.com/codex/device"
-    assert server.opened == ["https://auth.openai.com/codex/device"]
-    (cluster / "codex_approved").write_text("test.user@mbzuai.ac.ae")  # the student approves in the browser
-    # Claude Code: a wrong code first, then the right one
-    ask = form(server, "Sign in to Claude Code")
-    assert ask["links"][0]["url"] == "https://claude.com/cai/oauth/authorize?code=true&state=fake"
-    reply(server, {"code": "nope"})
-    ask = form(server, "That code did not work")
-    assert "nope" not in json.dumps(ask)  # a code is never shown back
-    reply(server, {"code": " good-code#fake "})
-    ask = form(server, "Are these your student accounts?")
-    assert "Codex: test.user@mbzuai.ac.ae" in ask["text"] and "Claude Code: test.user@mbzuai.ac.ae" in ask["text"]
-    assert not any("not an @mbzuai" in line for line in ask["text"])
-    reply(server, {"ok": True})
-    state = until(server, lambda s: s["finished"] or any(x["status"] == "failed" for x in s["steps"]), timeout=60)
+    state = sign_in_both(server, cluster)
     failed = [x for x in state["steps"] if x["status"] == "failed"]
     assert not failed, failed
     assert state["progress"] == 100 and [x["status"] for x in state["steps"]][-1] == "skipped"
+    assert state["next"] == ""  # no dashboard started here (the fixture's --no-browser): nothing to open
     vscode = next(x for x in state["steps"] if x["id"] == "vscode")  # no VS Code here: nothing set up
     assert vscode["status"] == "skipped" and "no VS Code" in vscode["detail"]
     # this computer: the alias first in ~/.ssh/config, the old settings kept, a key, the assistants' configs
@@ -131,7 +116,24 @@ def test_the_whole_onboarding_from_the_page(helper) -> None:
     assert skill.startswith("---\nname: schub\n") and "$schub" in skill and str(paths.workspace) in skill
     assert "allow_implicit_invocation: false" in (paths.home / ".codex" / "skills" / "schub" / "agents" /
                                                   "openai.yaml").read_text()
-    assert (paths.workspace / "AGENTS.md").exists() and (paths.workspace / "schub-view").exists()
+    assert (paths.workspace / "AGENTS.md").exists() and (paths.workspace / "schub-lab").exists()
+    # the dashboard's program, out of the workspace the assistants write in; its launcher tries this setup's Python
+    bin_dir = paths.home / ".sc-hub" / "bin"
+    assert not (paths.workspace / "schub-view").exists() and not (paths.workspace / "schub_view.py").exists()
+    assert all((bin_dir / name).exists() for name in ("schub_view.py", "schub_view_copy.py", "schub_view_pages.py"))
+    assert f'PINNED="{sys.executable}"' in (bin_dir / "schub-view").read_text() and bin_dir.stat().st_mode & 0o077 == 0
+    # what the welcome page will say: the assistants, the accounts, and codex and claude on the PATH at login
+    welcome = json.loads((paths.home / ".sc-hub" / "welcome.json").read_text())
+    assert welcome["login"] == "test.user" and welcome["cluster_path"] == ["claude", "codex"]
+    assert welcome["cluster_agents"] == {"codex": "test.user@mbzuai.ac.ae", "claude": "test.user@mbzuai.ac.ae"}
+    assert welcome["workspace"] == str(paths.workspace) and welcome["remote_root"] == "/l/users/test.user/schub"
+    assert welcome["view_command"] == str(bin_dir / "schub-view")  # (a trial's home: its full path)
+    assert f"Start your dashboard with {bin_dir / 'schub-view'}" in " ".join(state["summary"]["lines"])
+    assert "next" not in json.loads(paths.state.read_text())["values"]  # an address of this run only
+    assert "On the cluster, claude and codex work after you log in (ssh test.user@login-student-lab.mbzu.ae)." \
+        in state["summary"]["lines"]
+    agents = next(x for x in state["steps"] if x["id"] == "agents")
+    assert any("PATH at login:" in line for line in agents["log"])
     # research there; the way back to fixing sc-hub names the folder the setup ran from
     assert f"(sc-hub setup folder: {ONBOARD.parent})" in (paths.workspace / "AGENTS.md").read_text()
     # the cluster: the key limited to the gate at the end, sc-hub uploaded, bootstrap and a first run
@@ -144,11 +146,135 @@ def test_the_whole_onboarding_from_the_page(helper) -> None:
     assert "right horse battery" not in saved and "wrong" not in saved  # no password on disk, ever
 
 
+def sign_in_both(server: OnboardServer, cluster: Path) -> dict:
+    """From the agents' step to the end: Codex by its device code, Claude Code by a pasted code (a wrong one
+    first), then the accounts confirmed."""
+    # Codex on the cluster: the device page opens in the browser, the page shows the code and waits
+    ask = form(server, "Sign in to Codex")
+    assert ask["wait"] and ask["code"] == "FAKE-C0DE1" and ask["links"][0]["url"] == "https://auth.openai.com/codex/device"
+    assert server.opened == ["https://auth.openai.com/codex/device"]
+    (cluster / "codex_approved").write_text("test.user@mbzuai.ac.ae")  # the student approves in the browser
+    # Claude Code: a wrong code first, then the right one
+    ask = form(server, "Sign in to Claude Code")
+    assert ask["links"][0]["url"] == "https://claude.com/cai/oauth/authorize?code=true&state=fake"
+    reply(server, {"code": "nope"})
+    ask = form(server, "That code did not work")
+    assert "nope" not in json.dumps(ask)  # a code is never shown back
+    reply(server, {"code": " good-code#fake "})
+    ask = form(server, "Are these your student accounts?")
+    assert "Codex: test.user@mbzuai.ac.ae" in ask["text"] and "Claude Code: test.user@mbzuai.ac.ae" in ask["text"]
+    assert not any("not an @mbzuai" in line for line in ask["text"])
+    reply(server, {"ok": True})
+    return until(server, lambda s: s["finished"] or any(x["status"] == "failed" for x in s["steps"]), timeout=60)
+
+
+def test_at_the_end_the_page_takes_the_student_to_the_dashboards_welcome(tmp_path, monkeypatch) -> None:
+    """The dashboard's server starts in the background (it outlives this helper) and the page goes to its welcome."""
+    import subprocess
+
+    monkeypatch.setenv("PATH", f"{FAKES}:/usr/bin:/bin")
+    monkeypatch.setenv("FAKE_CLUSTER", str(tmp_path / "cluster"))
+    monkeypatch.setenv("FAKE_PASSWORD", "right horse battery")
+    free = __import__("socket").socket()
+    free.bind(("127.0.0.1", 0))
+    monkeypatch.setenv("SCHUB_VIEW_PORT", str(free.getsockname()[1]))
+    free.close()
+    home = tmp_path / "home"
+    (home / ".ssh").mkdir(parents=True)
+    paths = Paths(home=home)
+    opened: list[str] = []
+    engine = Engine(build(Setup(paths, open_dashboard=True, open_url=opened.append)), paths.state)
+    server = OnboardServer(engine)
+    server.opened = opened
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        to_the_agents(server, typo_first=False)
+        state = sign_in_both(server, tmp_path / "cluster")
+        dashboard = next(x for x in state["steps"] if x["id"] == "dashboard")
+        assert state["finished"] and dashboard["status"] == "done", dashboard
+        assert state["next"].startswith("http://127.0.0.1:") and state["next"].endswith("/go?to=%2Fwelcome")
+        base = state["next"].split("/go?")[0]
+        page = urllib.request.urlopen(base + "/welcome", timeout=10).read().decode()
+        assert "sc-hub is ready" in page and "test.user@mbzuai.ac.ae" in page and "/l/users/test.user/schub" in page
+        assert "sc-hub.localhost" in dashboard["detail"] and str(home / ".sc-hub" / "bin" / "schub-view") in \
+            dashboard["detail"]
+        config = json.loads((home / ".sc-hub" / "view-config.json").read_text())
+        assert config["remote"] == "/l/users/test.user/schub" and config["alias"] == "mbzuai-schub"
+    finally:
+        server.shutdown()
+        from sc_hub_onboard import __main__ as entry
+
+        entry.stop_trial_dashboard(paths)  # what a trial's helper does when it leaves
+    assert not (home / ".sc-hub" / "view.json").exists()  # stopped
+
+
+def test_started_in_the_background_the_helper_leaves_the_callers_process_group(monkeypatch) -> None:
+    """An assistant's command that ends may signal its whole process group: the page must not go with it."""
+    import io
+
+    from sc_hub_onboard import __main__ as entry
+
+    class Terminal(io.StringIO):
+        def isatty(self) -> bool:
+            return True
+
+    calls: list[str] = []
+    monkeypatch.setattr(entry.os, "setsid", lambda: calls.append("setsid"), raising=False)
+    monkeypatch.setattr(entry.sys, "stdin", io.StringIO())  # `nohup ... > log 2>&1 < /dev/null &`: no terminal
+    monkeypatch.setattr(entry.sys, "stdout", io.StringIO())
+    entry.detach()
+    assert calls == ["setsid"]
+    monkeypatch.setattr(entry.sys, "stdin", Terminal())  # `start.sh | tee log` from a terminal: Ctrl-C still reaches it
+    entry.detach()
+    monkeypatch.setattr(entry.sys, "stdout", Terminal())  # plainly from a terminal
+    entry.detach()
+    assert calls == ["setsid"]
+
+
+def test_the_helper_leaves_when_done_or_forgotten_but_never_in_the_middle_of_a_step() -> None:
+    from sc_hub_onboard import __main__ as entry
+
+    class Seen:
+        def __init__(self, finished: bool, busy: bool) -> None:
+            self.finished, self._busy = finished, busy
+
+        def busy(self) -> bool:
+            return self._busy
+
+    assert entry.leave(Seen(True, False), entry.IDLE_EXIT_S + 1) and not entry.leave(Seen(True, False), 60)
+    assert entry.leave(Seen(False, False), entry.IDLE_UNFINISHED_S + 1)  # a form waits for a student who left
+    assert not entry.leave(Seen(False, False), entry.IDLE_EXIT_S + 1)
+    assert not entry.leave(Seen(False, True), 10 * entry.IDLE_UNFINISHED_S)  # a step at work (the cluster setup)
+
+
+def test_a_restarted_helper_forgets_the_old_dashboard_address_and_brings_the_dashboard_back(helper) -> None:
+    """After a restart of the computer the old address is gone: the dashboard step runs again at every start."""
+    server, paths, _ = helper
+    test_the_whole_onboarding_from_the_page(helper)
+    saved = json.loads(paths.state.read_text())
+    saved["values"]["next"] = "http://127.0.0.1:1/go?to=%2Fwelcome"  # as an older helper would have saved it
+    paths.state.write_text(json.dumps(saved))
+    engine = Engine(build(Setup(paths, open_dashboard=False)), paths.state)
+    assert "next" not in engine.values and engine.states["dashboard"].status == "waiting"
+    engine.start()
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline and not engine.finished:
+        time.sleep(0.05)
+    assert engine.finished and engine.snapshot()["next"] == "" and engine.states["dashboard"].status == "skipped"
+
+
+def test_the_page_goes_only_to_the_dashboards_welcome_on_this_computer() -> None:
+    from sc_hub_onboard.page import PAGE
+
+    assert "location.replace(next)" in PAGE and "NEXT.test(state.next" in PAGE
+    assert r"const NEXT = /^http:\/\/127\.0\.0\.1:\d+\/go\?to=%2F\w*$/;" in PAGE
+
+
 def test_a_rerun_skips_what_is_done_and_asks_the_password_for_setup(helper) -> None:
     server, paths, cluster = helper
     test_the_whole_onboarding_from_the_page(helper)
     engine = Engine(build(Setup(paths, open_dashboard=False)), paths.state)
-    assert [engine.states[s.id].status for s in engine.steps] == ["done"] * 6 + ["skipped", "done", "done", "skipped"]
+    assert [engine.states[s.id].status for s in engine.steps] == ["done"] * 6 + ["skipped", "done", "done", "waiting"]
     engine.retry("cluster")  # e.g. an update of the cluster side: the key only opens sc-hub now
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline and engine.states["cluster"].status != "asking":
@@ -176,8 +302,12 @@ def test_with_vs_code_the_editor_gets_its_host_into_the_workbench_job(helper, tm
     assert "Host mbzuai-schub-ide" in config and "/l/users/test.user/schub/bin/schub ide-proxy" in config
 
 
-def test_codex_without_device_codes_and_a_personal_account(helper) -> None:
+def test_codex_without_device_codes_and_a_personal_account(helper, monkeypatch) -> None:
+    from sc_hub_onboard import cluster_agents
+
     server, _, cluster = helper
+    # the fake ssh opens no tunnel: port 1455 of the computer running the tests may be taken (VS Code's Codex holds it)
+    monkeypatch.setattr(cluster_agents, "port_free", lambda port: True)
     to_the_agents(server)
     form(server, "Sign in to Codex")
     reply(server, {"choice": "browser"})  # device codes are off in this workspace
@@ -374,10 +504,40 @@ def test_the_page_is_only_for_this_computer_and_this_link(helper) -> None:
     with pytest.raises(urllib.error.HTTPError) as caught:
         api(server, "/api/state", host="evil.example:80")  # DNS rebinding
     assert caught.value.code == 403
-    page = urllib.request.urlopen(server.url, timeout=10).read().decode()
+    with urllib.request.urlopen(server.url, timeout=10) as response:
+        page = response.read().decode()
+        assert response.headers["Referrer-Policy"] == "no-referrer"  # its address carries the token
     assert "Setting up sc-hub" in page and server.token in page
     with pytest.raises(urllib.error.HTTPError):
         urllib.request.urlopen(f"http://127.0.0.1:{server.port}/?t=nope", timeout=10)
+
+
+def test_older_dashboard_files_leave_the_workspace_but_a_students_own_stay(tmp_path) -> None:
+    from sc_hub_onboard import assistants
+
+    paths = Paths(home=tmp_path / "home")
+    paths.workspace.mkdir(parents=True)
+    (paths.workspace / "schub-view").write_text("#!/usr/bin/env bash\n# Mirror your sc-hub dashboard to this laptop\n")
+    (paths.workspace / "schub-view.cmd").write_text("@echo off\r\nrem Runs schub-view.ps1 even where ...\r\n")
+    (paths.workspace / "schub_view_pages.py").write_text("my own notes, not a program\n")
+    assistants.workspace(paths, ONBOARD.parent)
+    assert not (paths.workspace / "schub-view").exists() and not (paths.workspace / "schub-view.cmd").exists()
+    assert (paths.workspace / "schub_view_pages.py").read_text() == "my own notes, not a program\n"
+
+
+def test_windows_launchers_are_written_the_way_windows_reads_them(tmp_path) -> None:
+    """Windows PowerShell 5.1 reads a script without a BOM in the ANSI code page: a pinned Python under a user name
+    like Дмитрий would break it. .cmd and .ps1 get Windows line endings."""
+    from sc_hub_onboard import assistants
+
+    launcher = tmp_path / "schub-view.ps1"
+    assistants._write(launcher, '$pinned = "C:\\Users\\Дмитрий\\python.exe"\nexit 0\n')
+    raw = launcher.read_bytes()
+    assert raw.startswith(b"\xef\xbb\xbf") and b"\r\n" in raw and raw.count(b"\n") == raw.count(b"\r\n")
+    assert "Дмитрий" in raw.decode("utf-8-sig")
+    script = tmp_path / "schub-view"
+    assistants._write(script, "#!/bin/sh\necho ok\n", executable=True)
+    assert script.read_bytes() == b"#!/bin/sh\necho ok\n" and (os.name == "nt" or os.access(script, os.X_OK))
 
 
 def test_logins_and_the_config_block() -> None:

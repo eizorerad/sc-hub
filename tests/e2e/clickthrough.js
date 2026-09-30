@@ -1,6 +1,6 @@
 // Click-through test of the sc-hub dashboard: every control, with real mouse clicks,
 // checking what each one does (not only how it looks). Run it with tests/e2e/run.sh, or:
-// node clickthrough.js file:///path/to/view/index.html <out dir>   (file:// only: it reads br/ next to the page)
+// node clickthrough.js http://127.0.0.1:<port>/ <out dir>   (the dashboard's own server; or file:///.../index.html)
 const { chromium } = require('playwright-core');
 const fs = require('fs');
 const path = require('path');
@@ -120,6 +120,65 @@ async function main() {
     });
   }
   await shot('02-cluster');
+  await check('menu → Cluster guide, and back to the dashboard', async () => {
+    await go('journal');
+    await page.click('summary.brand');
+    await page.click('.account .menu a:has-text("Cluster guide")');
+    await page.waitForSelector('main.guide h1');
+    const title = await page.textContent('main.guide h1');
+    assert(title.includes('five minutes'), title);
+    const wide = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1);
+    assert(!wide, 'the guide is wider than the window');
+    await page.screenshot({ path: path.join(OUT, '02b-guide.png'), fullPage: true });
+    await page.click('main.guide .back a');
+    await page.waitForSelector('header.top');
+    assert(await vis(view('journal')), 'not back on the dashboard');
+  });
+  await check('the cluster overview links the guide', async () => {
+    await go('cluster');
+    assert(await vis(`${view('cluster')} a[href="guide.html"]`), 'no guide link');
+  });
+  const served = BASE.startsWith('http');
+  await check(`"Getting started" ${served ? 'is in the menu when served' : 'stays hidden in a file'}`, async () => {
+    await go('journal');
+    await page.click('summary.brand');
+    assert((await vis('.account .menu a[href="welcome"]')) === served, 'wrong visibility');
+    await page.keyboard.press('Escape');
+  });
+  if (served) {
+    await check('the welcome page, then the dashboard and the guide from it', async () => {
+      await page.goto(new URL('welcome', BASE).href);
+      assert((await page.textContent('h1')).includes('sc-hub is ready'), 'no welcome');
+      await page.screenshot({ path: path.join(OUT, '00-welcome.png'), fullPage: true });
+      await page.click('a.button:has-text("Cluster guide")');
+      await page.waitForSelector('main.guide h1');
+      await page.goBack();
+      await page.click('a.button.primary');
+      await page.waitForSelector('header.top');
+      assert(await vis(view('journal')), 'the dashboard did not open');
+    });
+    await check('the setup\'s link /go lands on sc-hub.localhost (Chrome resolves *.localhost)', async () => {
+      const port = new URL(BASE).port;
+      await page.goto(`http://127.0.0.1:${port}/go?to=%2Fwelcome`);
+      await page.waitForURL(u => u.pathname === '/welcome', { timeout: 5000 });
+      assert(page.url() === `http://sc-hub.localhost:${port}/welcome`, `landed on ${page.url()}`);
+      assert((await page.textContent('a.here')) === `http://sc-hub.localhost:${port}`, 'the address to bookmark');
+    });
+    await check('the guide and the welcome fit a phone', async () => {
+      const small = await browser.newContext({ viewport: { width: 375, height: 812 }, isMobile: true, hasTouch: true });
+      const sp = await small.newPage();
+      sp.on('pageerror', e => errors.push(`phone guide: ${e.message}`));
+      for (const name of ['guide.html', 'welcome']) {
+        await sp.goto(new URL(name, BASE).href);
+        await sp.waitForTimeout(200);
+        const w = await sp.evaluate(() => document.documentElement.scrollWidth);
+        await sp.screenshot({ path: path.join(OUT, `phone-${name.replace('.html', '')}.png`), fullPage: true });
+        assert(w <= 376, `${name} is ${w}px wide`);
+      }
+      await small.close();
+    });
+  }
+  await go('cluster');  // where the header checks below start
   await check('auto-refresh switch turns off and on', async () => {
     await page.click('summary.brand');
     await page.click('#autorefresh');

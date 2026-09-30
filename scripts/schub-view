@@ -1,57 +1,24 @@
-#!/usr/bin/env bash
-# Mirror your sc-hub dashboard to this laptop and keep it fresh.
-# Needs only ssh, rsync and a browser; nothing runs on the laptop besides this loop.
+#!/bin/sh
+# Your sc-hub dashboard on this computer (http://sc-hub.localhost:27182): starts it in the background if it is
+# not running, then opens it. It keeps running until you stop it or restart the computer.
 #
-#   ./schub-view            refresh every 60 s (Ctrl-C to stop)
-#   ./schub-view --once     refresh once and open
-set -euo pipefail
-
-ALIAS="${SCHUB_ALIAS:-mbzuai-schub}"
-DEST="${SCHUB_VIEW_DIR:-$HOME/sc-hub-view}"
-EVERY="${SCHUB_VIEW_EVERY:-60}"
-# One reused connection: no repeated logins, minimal load on the login node.
-SSH_OPTS=(-o BatchMode=yes -o ControlMaster=auto -o "ControlPath=$HOME/.ssh/cm-schub-%r@%h:%p" -o ControlPersist=10m)
-
-MARKER=".schub-view"
-# ~/schub is the link bootstrap creates to the workspace (no shell output parsing).
-REMOTE="${SCHUB_REMOTE_ROOT:-schub}"
-
-prepare_dest() {
-  # rsync --delete must only ever touch a folder this script created.
-  if [ -d "$DEST" ] && [ ! -e "$DEST/$MARKER" ] && [ -n "$(ls -A "$DEST")" ]; then
-    echo "$DEST exists and is not an sc-hub view folder; set SCHUB_VIEW_DIR to an empty folder" >&2
-    exit 1
+#   ~/.sc-hub/bin/schub-view            start and open
+#   ~/.sc-hub/bin/schub-view status     (and stop, serve, --once)
+#
+# The dashboard itself is schub_view.py next to this file (the setup installs both in ~/.sc-hub/bin). It needs
+# Python 3.9+: the one the setup used first (written in below), then python3 or python, then uv (which fetches one).
+set -eu
+HERE="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT="$HERE/schub_view.py"
+PINNED="__PYTHON__"
+for candidate in "$PINNED" python3 python; do
+  if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c 'import sys; sys.exit(sys.version_info < (3, 9))' 2>/dev/null; then
+    exec "$candidate" "$SCRIPT" "$@"
   fi
-  mkdir -p "$DEST" && touch "$DEST/$MARKER"
-}
-
-refresh() {
-  # The page last: rsync copies in name order, so an open page reloading mid-copy would meet
-  # project files that are not there yet.
-  ssh "${SSH_OPTS[@]}" "$ALIAS" "$REMOTE/bin/schub dashboard >/dev/null" &&
-    rsync -a --delete --safe-links --exclude "$MARKER" --exclude /index.html -e "ssh ${SSH_OPTS[*]}" \
-      "$ALIAS:$REMOTE/view/" "$DEST/" &&
-    rsync -a --safe-links --include /index.html --exclude '*' -e "ssh ${SSH_OPTS[*]}" "$ALIAS:$REMOTE/view/" "$DEST/"
-}
-
-open_page() {
-  case "$(uname -s)" in
-    Darwin) open "$DEST/index.html" ;;
-    Linux) xdg-open "$DEST/index.html" >/dev/null 2>&1 || echo "open $DEST/index.html in your browser" ;;
-    *) echo "open $DEST/index.html in your browser" ;;
-  esac
-}
-
-main() {
-  if [ "$EVERY" -lt 30 ]; then EVERY=30; fi
-  prepare_dest
-  refresh
-  open_page
-  if [ "${1:-}" = "--once" ]; then return; fi
-  echo "sc-hub view: $DEST/index.html (refreshing every ${EVERY}s, Ctrl-C to stop)"
-  while sleep "$EVERY"; do
-    refresh || echo "refresh failed at $(date +%H:%M); will retry"
-  done
-}
-
-main "$@"
+done
+PATH="$HOME/.local/bin:$PATH"
+if command -v uv >/dev/null 2>&1; then
+  exec uv run --no-project --python 3.12 python "$SCRIPT" "$@"
+fi
+echo "sc-hub: the dashboard needs Python 3.9 or newer, or uv (https://docs.astral.sh/uv/)" >&2
+exit 1

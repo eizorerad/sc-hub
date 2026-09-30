@@ -7,7 +7,7 @@
 #   1. creates an SSH key and an ssh alias `mbzuai-schub` (asks your cluster password once);
 #   2. copies sc-hub to the cluster and sets up your workspace there (in a Slurm job);
 #   3. connects sc-hub to Codex, Claude Code and Claude Desktop, whichever you have;
-#   4. creates ~/sc-hub-workspace with instructions for the assistant, ./schub-view
+#   4. creates ~/sc-hub-workspace with instructions for the assistant, ~/.sc-hub/bin/schub-view
 #      (dashboard) and ./schub-lab (JupyterLab / cellxgene sessions);
 #   5. limits the key to sc-hub: it opens the MCP server, the dashboard and sessions,
 #      nothing else (SCHUB_KEY_UNRESTRICTED=1 makes it a normal key again).
@@ -303,8 +303,14 @@ make_workspace() {
   mkdir -p "$WORKSPACE"
   cp "$BUNDLE_DIR/templates/AGENTS.workspace.md" "$WORKSPACE/AGENTS.md"
   cp "$BUNDLE_DIR/templates/AGENTS.workspace.md" "$WORKSPACE/CLAUDE.md"
-  install -m 755 "$BUNDLE_DIR/scripts/schub-view" "$WORKSPACE/schub-view"
   install -m 755 "$BUNDLE_DIR/scripts/schub-lab" "$WORKSPACE/schub-lab"
+  # The dashboard's server lives outside the folder the assistants write in (it runs outside their sandbox).
+  bin="$HOME/.sc-hub/bin"
+  mkdir -p "$bin" && chmod 700 "$HOME/.sc-hub" "$bin"
+  for name in schub_view.py schub_view_copy.py schub_view_pages.py; do
+    install -m 644 "$BUNDLE_DIR/scripts/$name" "$bin/$name"
+  done
+  install -m 755 "$BUNDLE_DIR/scripts/schub-view" "$bin/schub-view"
 }
 
 main() {
@@ -330,7 +336,7 @@ Ready. Start your assistant in the workspace and just ask, for example:
     Codex:           cd $WORKSPACE && codex
     Claude Code:     cd $WORKSPACE && claude
     Claude Desktop:  restart it; the sc-hub tools appear in a new chat
-Watch your jobs and pipelines:  cd $WORKSPACE && ./schub-view
+Your dashboard (http://sc-hub.localhost:27182, runs in the background; needs Python 3.9+):  ~/.sc-hub/bin/schub-view
 Open a JupyterLab / cellxgene session the assistant started:  ./schub-lab [cellxgene]
 EOF
 }
