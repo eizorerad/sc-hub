@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import webbrowser
 from pathlib import Path
 from typing import Any, Callable
@@ -229,6 +230,7 @@ class Setup:
         for line in done:
             ctx.log(line)
         connected = [line.split(":")[0] for line in done if "connected" in line]
+        ctx.values["assistants"] = connected  # for the welcome page
         return (", ".join(connected) + " connected" if connected else "no assistant found to connect") + \
             f"; workspace {folder}"
 
@@ -270,10 +272,22 @@ class Setup:
     def cluster_agents(self, ctx: Context) -> str:
         ssh = self.ssh(ctx)
         ctx.say("installing Codex and Claude Code on the cluster (the first time: a few minutes)")
-        code = cluster.stream(ssh, cluster_agents.INSTALL, lambda line: ctx.log(cluster_agents.clean(line)), timeout=1800)
+        at_login: list[str] = []
+
+        def line(text: str) -> None:
+            text = cluster_agents.clean(text)
+            ctx.log(text)
+            if text.startswith(cluster_agents.PATH_AT_LOGIN):  # what a new login finds on PATH
+                at_login[:] = sorted({word.rsplit("/", 1)[-1] for word in text.split(":", 1)[1].split()})
+
+        code = cluster.stream(ssh, cluster_agents.INSTALL, line, timeout=1800)
         if code != 0:
             raise StepFailed("could not install the agents on the cluster (see the details)",
                              "Retry; if it fails again, send the details to the pilot owner.")
+        ctx.values["cluster_path"] = at_login
+        if at_login != ["claude", "codex"]:
+            ctx.log("not on PATH at login: " + ", ".join(sorted({"claude", "codex"} - set(at_login))) +
+                    " (the shell's files may skip ~/.bashrc; the details above say which files were changed)")
         skipped: set[str] = set()
         again = list(cluster_agents.LABELS)
         for _ in range(3):
@@ -331,27 +345,79 @@ class Setup:
     # ---- 10. the dashboard ------------------------------------------------------------------------------------
 
     def dashboard(self, ctx: Context) -> str:
-        folder = Path(ctx.values["workspace"])
-        view = folder / ("schub-view.cmd" if os.name == "nt" else "schub-view")
-        start = view.exists() and self.open_dashboard
-        ctx.values["summary"] = {"lines": [  # the page's last card, whether the mirror starts here or not
-            f"Your workspace: {folder}. Open it in Codex or Claude Code (or restart Claude Desktop) and ask, for "
-            "example: \"What datasets are in sc-hub? Create a project for my question.\"",
-            ("The dashboard mirror runs in the background and opens in your browser" if start else
-             f"Start the dashboard mirror with {view.name} in the workspace") +
-            f"; its Journal shows the project '{HELLO}' with the first run.",
-            *([f"VS Code: Remote-SSH → {IDE_ALIAS} opens your projects inside your workbench job "
-               f"({ctx.values['vscode_link']})."] if ctx.values.get("vscode_link") else []),
-            *([f"The lab agent on the cluster uses {_agents_line(ctx.values['cluster_agents'])}."]
-              if ctx.values.get("cluster_agents") else []),
-        ]}
-        if not start:
-            raise Skip(f"start it yourself: {view.name} in the workspace")
-        env = {**os.environ, "SCHUB_ALIAS": "mbzuai-schub"}
-        kwargs = {"creationflags": subprocess.CREATE_NEW_CONSOLE} if os.name == "nt" else {"start_new_session": True}
-        subprocess.Popen([str(view)], cwd=folder, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                         **kwargs)  # type: ignore[arg-type]
-        return "the dashboard mirror is running"
+        """The dashboard's own small server on this computer, in the background, installed in ~/.sc-hub/bin (out of
+        the folders the assistants write in); the page then opens its welcome: what the setup installed and how to
+        work with it. It runs again at every start of this page, so an update or a restart brings the dashboard back."""
+        for stale in ("dashboard", "next"):  # an earlier run's address may be gone (a restart of the computer)
+            ctx.values.pop(stale, None)
+        launcher = assistants.install_dashboard(self.paths, self.repo)
+        command = ctx.values["view_command"] = view_command(self.paths, launcher)
+        write_welcome(self.paths, self.host, ctx.values)
+        ctx.values["summary"] = {"lines": summary_lines(ctx.values, self.host)}
+        if not self.open_dashboard:
+            raise Skip(f"start it yourself: {command}")
+        ctx.say("starting your dashboard on this computer")
+        start = [sys.executable, str(launcher.parent / "schub_view.py"), "start", "--no-open", "--json", "--alias", ALIAS,
+                 "--remote", ctx.values["remote_root"], *(["--home", str(self.paths.home)] if self.paths.custom else [])]
+        done = None
+        try:
+            done = subprocess.run(start, capture_output=True, text=True, timeout=90, stdin=subprocess.DEVNULL)
+            info = json.loads(done.stdout.strip().splitlines()[-1])
+            url, port = str(info["url"]), int(info["port"])
+        except (OSError, subprocess.SubprocessError, ValueError, IndexError, KeyError, TypeError):
+            reason = ((done.stderr or done.stdout).strip()[-200:] if done is not None else "") or "it did not answer"
+            raise Skip(f"the dashboard did not start ({reason}); start it yourself: {command}") from None
+        ctx.values["dashboard"] = url
+        ctx.values["summary"] = {"lines": summary_lines(ctx.values, self.host)}
+        ctx.values["next"] = f"http://127.0.0.1:{port}/go?to=%2Fwelcome"  # the page goes there when it is done
+        return f"{url}, in the background; after a restart of this computer: {command}"
+
+
+def view_command(paths: Paths, launcher: Path) -> str:
+    """How the student starts the dashboard again, as they would type it."""
+    if paths.custom:
+        return str(launcher)
+    return "~" + ("\\" if os.name == "nt" else "/") + launcher.relative_to(paths.home).as_posix().replace(
+        "/", "\\" if os.name == "nt" else "/")
+
+
+def write_welcome(paths: Paths, host: str, values: dict[str, Any]) -> None:
+    """What the setup installed, for the dashboard's welcome page (~/.sc-hub/welcome.json, this account only)."""
+    facts = {"login": values.get("login", ""), "host": host, "remote_root": values.get("remote_root", ""),
+             "workspace": values.get("workspace", ""), "assistants": list(values.get("assistants") or []),
+             "vscode_host": IDE_ALIAS if values.get("vscode_link") else "",
+             "cluster_agents": dict(values.get("cluster_agents") or {}),
+             "cluster_path": list(values.get("cluster_path") or []), "windows": os.name == "nt",
+             "view_command": values.get("view_command", ""), "set_up": time.strftime("%Y-%m-%d %H:%M")}
+    target = paths.state.parent / "welcome.json"
+    target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    temp = target.with_name(target.name + ".tmp")
+    temp.write_text(json.dumps(facts, indent=1))
+    temp.replace(target)
+
+
+def summary_lines(values: dict[str, Any], host: str) -> list[str]:
+    """The setup page's last card (its welcome page says the same at more length)."""
+    folder = values.get("workspace", "")
+    command = values.get("view_command", "")
+    lines = [f"Your workspace: {folder}. Open it in Codex or Claude Code (or restart Claude Desktop), type $schub "
+             "(Codex) or /schub (Claude Code) and ask your question."]
+    if values.get("dashboard"):
+        lines.append(f"Your dashboard: {values['dashboard']}. It runs in the background; after a restart of this "
+                     f"computer, {command} brings it back.")
+    else:
+        lines.append(f"Start your dashboard with {command}; its Journal shows the project '{HELLO}' with the first "
+                     "run.")
+    if values.get("vscode_link"):
+        lines.append(f"VS Code: Remote-SSH → {IDE_ALIAS} opens your projects inside your workbench job "
+                     f"({values['vscode_link']}).")
+    if values.get("cluster_agents"):
+        lines.append(f"The lab agent on the cluster uses {_agents_line(values['cluster_agents'])}.")
+    on_path = values.get("cluster_path") or []
+    if on_path:
+        lines.append(f"On the cluster, {' and '.join(on_path)} work after you log in "
+                     f"(ssh {values.get('login', 'LOGIN')}@{host}).")
+    return lines
 
 
 def _agents_line(signed: dict[str, str]) -> str:
@@ -403,7 +469,7 @@ def build(setup: Setup) -> list[Step]:
         Step("vscode", "VS Code in your workbench job", setup.vscode, 1.0),
         Step("agents", "Codex and Claude Code on the cluster", setup.cluster_agents, 1.5),
         Step("limit", "Limit the key to sc-hub", setup.limit_key, 0.3),
-        Step("dashboard", "Open the dashboard", setup.dashboard, 0.3),
+        Step("dashboard", "Open the dashboard", setup.dashboard, 0.3, again=True),
     ]
 
 

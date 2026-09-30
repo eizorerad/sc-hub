@@ -1,0 +1,47 @@
+#!/usr/bin/env python3
+"""A fake `ssh` for the dashboard server's tests: the cluster's side of the copy, from the folder $FAKE_VIEW_SRC.
+
+`schub dashboard`, `view-sum` and `view-pack` answer as the gate lets them; an rsync server is the real rsync on
+that folder. $FAKE_SSH_FAIL makes every call fail with that text on stderr (exit 255), as ssh does.
+"""
+import importlib.util
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+PACK = Path(__file__).resolve().parents[2] / "src" / "schub" / "dashboard" / "pack.py"
+args = sys.argv[1:]
+if args == ["-V"]:
+    sys.stderr.write("OpenSSH_9.6p1, LibreSSL 3.3.6\n")
+    sys.exit(0)
+host = next(i for i, a in enumerate(args) if not a.startswith("-") and args[i - 1] not in ("-o", "-F", "-p", "-l", "-i"))
+words = args[host + 1:]
+command = " ".join(words)
+log = os.environ.get("FAKE_SSH_LOG")
+if log:
+    with open(log, "a") as handle:
+        handle.write(json.dumps({"host": args[host], "command": command[:300], "at": time.time()}) + "\n")
+time.sleep(float(os.environ.get("FAKE_SSH_SLEEP") or 0))  # a slow network
+if os.environ.get("FAKE_SSH_FAIL"):
+    sys.stderr.write(os.environ["FAKE_SSH_FAIL"] + "\n")
+    sys.exit(255)
+source = Path(os.environ["FAKE_VIEW_SRC"])
+spec = importlib.util.spec_from_file_location("pack", PACK)  # standard library only
+pack = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(pack)
+remote = os.environ.get("FAKE_REMOTE", "schub")
+if command == f"{remote}/bin/schub dashboard >/dev/null":
+    sys.exit(0)
+if command == f"{remote}/bin/schub view-sum":
+    print(pack.heavy_sum(source))
+    sys.exit(0)
+if command in (f"{remote}/bin/schub view-pack full", f"{remote}/bin/schub view-pack light"):
+    pack.pack(source, command.rsplit(" ", 1)[1], sys.stdout.buffer)
+    sys.stdout.buffer.flush()
+    sys.exit(0)
+if words and words[0] == "rsync" and "--server" in words and words[-1] == f"{remote}/view/":
+    os.execvp("rsync", words[:-1] + [str(source) + "/"])
+sys.stderr.write(f"sc-hub: this key only opens sc-hub (MCP server, dashboard, sessions): {command[:80]}\n")
+sys.exit(126)

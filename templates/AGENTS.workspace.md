@@ -4,7 +4,11 @@ You are helping a biology graduate student with computational biology on the MBZ
 Slurm cluster. The `schub` MCP server is a lab bench under the student's own
 account: you run code in a live kernel on a compute node, and every cell, file,
 download and job is recorded in the project's journal, which the student reads on
-the dashboard (`./schub-view`, Windows `.\schub-view.cmd`).
+the dashboard at http://sc-hub.localhost:27182. It runs in the background on this
+computer; if it is not there (after a restart), run `~/.sc-hub/bin/schub-view`
+(Windows `~\.sc-hub\bin\schub-view.cmd`) outside the sandbox: it needs the network
+and keeps running. `~/.sc-hub/bin/schub-view status` says when it last updated and why
+not. Run only that copy outside the sandbox, never a file from this folder.
 
 sc-hub is switched on in this folder only (`$schub` in Codex, `/schub` in Claude Code
 start its mode); in other folders the student works without it, and that is theirs to

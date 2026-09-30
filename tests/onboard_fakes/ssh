@@ -104,7 +104,9 @@ elif "bench-run" in command:
              {"ref": "hello#c0001", "status": "ok", "outputs": [{"text": "gpu-03 8 CPUs"}]}
     print(json.dumps(answer))
 elif "chatgpt.com/codex/install.sh" in command:
-    print("installing Codex\ninstalling Claude Code\nCodex: codex-cli 0.155.1\nClaude Code: 2.1.281 (Claude Code)")
+    print("installing Codex\ninstalling Claude Code\nPATH: added to ~/.bashrc\nPATH: added to ~/.profile\n"
+          "PATH at login: /home/test.user/.local/bin/codex /home/test.user/.local/bin/claude \n"
+          "Codex: codex-cli 0.155.1\nClaude Code: 2.1.281 (Claude Code)")
     if not agents.exists():
         agents.write_text(json.dumps({"codex": {"installed": True}, "claude": {"installed": True}}))
 elif "python3 -" in command and b"loggedIn" in stdin:

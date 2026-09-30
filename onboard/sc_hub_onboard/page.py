@@ -40,7 +40,8 @@ const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt
 const call = (path, body) => fetch(path, {method: body === undefined ? "GET" : "POST", headers: {"X-Onboard-Token": TOKEN,
   "Content-Type": "application/json"}, body: body === undefined ? undefined : JSON.stringify(body)}).then(r => r.json());
 const ICON = {waiting: "○", running: '<span class="spin"></span>', asking: "?", done: "✓", skipped: "–", failed: "✗"};
-let shownAsk = "", openLogs = new Set();
+let shownAsk = "", openLogs = new Set(), leaving = false;
+const NEXT = /^http:\/\/127\.0\.0\.1:\d+\/go\?to=%2F\w*$/;  // the dashboard's welcome on this computer, nothing else
 const WORKING = "working";  // an answer was sent: the next state clears this note or shows the next form
 
 function renderAsk(step) {
@@ -90,8 +91,16 @@ function render(state) {
     ${s.status === "failed" ? `<div class="hint">${esc(s.hint || "Something went wrong.")} <button type="button" data-retry="${esc(s.id)}">Retry</button></div>` : ""}
     ${s.log.length ? `<details data-log="${esc(s.id)}"${openLogs.has(s.id) ? " open" : ""}><summary>Details</summary><pre>${esc(s.log.join("\n"))}</pre></details>` : ""}</li>`).join("");
   const summary = state.summary || {};
+  const next = state.finished && NEXT.test(state.next || "") ? state.next : "";
   $("#done").innerHTML = state.finished ? `<div class="card"><h2 style="font-size:17px;margin:0 0 6px">Ready</h2>
+    ${next ? `<p><span class="spin"></span> Opening your dashboard with a short welcome… <a href="${esc(next)}">Open it now</a></p>` : ""}
     ${(summary.lines || []).map(l => `<p>${esc(l)}</p>`).join("")}</div>` : "";
+  let went = false;
+  try { went = sessionStorage.getItem("went") === next; } catch (e) {}
+  if (next && !leaving && !went) {  // once: Back from the dashboard does not bounce here again
+    leaving = true;
+    setTimeout(() => { try { sessionStorage.setItem("went", next); } catch (e) {} location.replace(next); }, 3000);
+  }
 }
 
 document.addEventListener("click", e => {
@@ -100,7 +109,11 @@ document.addEventListener("click", e => {
   if (copy) navigator.clipboard?.writeText(copy.dataset.copy).then(() => { copy.textContent = "Copied"; });
 });
 document.addEventListener("toggle", e => { const d = e.target; if (d.dataset && d.dataset.log) (d.open ? openLogs.add(d.dataset.log) : openLogs.delete(d.dataset.log)); }, true);
-async function poll() { try { render(await call("/api/state")); } catch (e) { $("#pct").textContent = "The helper stopped: run it again to continue."; } setTimeout(poll, 1000); }
+async function poll() {
+  try { render(await call("/api/state")); }
+  catch (e) { $("#pct").textContent = "The setup helper stopped. Start it again (ask your assistant, or run onboard/start.sh; on Windows onboard\\start.cmd): it continues where it stopped."; }
+  setTimeout(poll, 1000);
+}
 call("/api/start", {}).then(poll);
 </script></body></html>
 """

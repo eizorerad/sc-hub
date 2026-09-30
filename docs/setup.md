@@ -41,14 +41,22 @@ something only where it has to:
 6. **VS Code in your workbench job**: the host `mbzuai-schub-ide` gives VS Code
    (Remote-SSH) a shell and files inside your own workbench job, which it starts
    if needed; set up once, it works for every later job.
-7. **Codex and Claude Code on the cluster**, for the lab agent. Both are
-   installed with their official installers and signed in from your browser:
+7. **Codex and Claude Code on the cluster**, for the lab agent and for you. Both are
+   installed with their official installers, put on your PATH there (a marked
+   block at the end of `~/.bashrc` and of `~/.profile` or `~/.bash_profile`; the
+   step checks that a new login finds them), and signed in from your browser:
    Codex shows a one-time code (if your workspace turned device codes off, it
    signs in the usual way through a short-lived tunnel to `localhost:1455`),
    Claude shows a code to paste back into the page. The page then shows which
    account each one uses, so you can check it is the student one.
 8. **The key only opens sc-hub** (see [the installer section](#install-student-one-command)); your password login is unchanged.
-9. **The dashboard mirror** starts and opens in your browser.
+9. **Your dashboard** starts on this computer, in the background, at
+   `http://sc-hub.localhost:27182` (the next free port if that one is taken), and
+   the page takes you to its welcome: what was installed and how to work with it,
+   in brief. The cluster guide for newcomers to Slurm is linked from there and from
+   the dashboard's cluster overview. After a restart of the computer,
+   `~/.sc-hub/bin/schub-view` brings it back (Windows: `~\.sc-hub\bin\schub-view.cmd`). The
+   dashboard's program lives there, outside the folders your assistants write in.
 
 A step that fails says what to do and has a Retry button; running the page again
 skips what is done. `--home DIR` writes everything under `DIR` instead of your
@@ -112,7 +120,8 @@ must be open to other accounts (o+x): a private home (0700) is not, and
 2. copies sc-hub to `/l/users/LOGIN/schub` and sets up the workspace there in a
    Slurm job (its own environment, or a shared library's if one is set);
 3. creates `~/sc-hub-workspace` with instructions for the assistant (`AGENTS.md`,
-   `CLAUDE.md`) and `schub-view` for the dashboard (`schub-view.cmd` on Windows);
+   `CLAUDE.md`), and puts the dashboard's program in `~/.sc-hub/bin` (`schub-view`,
+   `schub-view.cmd` on Windows; it needs Python 3.9+);
 4. connects sc-hub there, and only there: **Codex** (its server is off in
    `~/.codex/config.toml` and on in the workspace's `.codex/config.toml`, a trusted
    folder; skill `~/.codex/skills/schub`, typed as `$schub`), **Claude Code** (server

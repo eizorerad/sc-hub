@@ -15,7 +15,7 @@ where the setup stands, and what to do when a step gets stuck. In short:
    - Then run `sh onboard/start.sh check` (Windows: `onboard\start.cmd check`). A failure is a bug to fix first.
    - No git? The guide says how to install it.
 2. **Start the setup page and hand it over.** The student does the rest in the browser.
-   - macOS, Linux: `(umask 077; mkdir -p ~/.sc-hub && nohup sh onboard/start.sh > ~/.sc-hub/onboard.log 2>&1 &)`.
+   - macOS, Linux: `(umask 077; mkdir -p ~/.sc-hub && nohup sh onboard/start.sh > ~/.sc-hub/onboard.log 2>&1 < /dev/null &)`.
    - Windows: `Start-Process onboard\start.cmd`. It opens its own window.
 
    The page opens in the student's browser by itself. Check it runs with `start.sh status`. If the browser did not open, run `start.sh open`.
@@ -42,7 +42,7 @@ Always:
 - **Let the page do the steps.** Don't run ssh-keygen, the installers, key installs or edits to `~/.ssh/config` yourself. The page runs them in order, checks each one and resumes where it stopped. Looking at the cluster read-only is described in the guide.
 - **Don't cancel jobs.** Never cancel the student's cluster jobs.
 - **Commit only the fix.** Never commit keys, tokens, `~/.sc-hub/*.json` or logs.
-- **After Ready.** When the page says Ready, the student works in `~/sc-hub-workspace`: open that folder with them.
+- **After Ready.** The page opens the dashboard's welcome (`http://sc-hub.localhost:27182/welcome`) by itself. The student works in `~/sc-hub-workspace`: open that folder with them. The dashboard runs in the background; `~/.sc-hub/bin/schub-view` starts it again (outside the sandbox), `~/.sc-hub/bin/schub-view status` says how it is (Windows: `~\.sc-hub\bin\schub-view.cmd`).
 
 ## Working on sc-hub itself
 

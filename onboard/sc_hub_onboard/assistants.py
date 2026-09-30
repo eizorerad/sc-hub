@@ -13,8 +13,10 @@ from __future__ import annotations
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 from .sshkit import ALIAS, BEGIN, END, Paths, strip_block
@@ -191,21 +193,61 @@ def claude_desktop(paths: Paths, remote_root: str) -> str:
     return "Claude Desktop: connected (restart it to load sc-hub)"
 
 
+PINNED_PYTHON = "__PYTHON__"  # in the dashboard's launchers: the Python this setup runs with is tried first
+SAFE_PATH = re.compile(r"[\w .:/\\()+~-]+")  # nothing a shell would expand inside double quotes ($, `, ")
+VIEW_PROGRAM = ("schub_view.py", "schub_view_copy.py", "schub_view_pages.py")
+VIEW_LAUNCHERS = ("schub-view.cmd", "schub-view.ps1") if os.name == "nt" else ("schub-view",)
+# What earlier setups left in the workspace for the dashboard (the program now lives in ~/.sc-hub/bin).
+OLD_VIEW_FILES = ("schub-view", "schub-view.cmd", "schub-view.ps1", *VIEW_PROGRAM)
+
+
+def _write(target: Path, text: str, executable: bool = False) -> None:
+    """Through a temporary file; PowerShell 5.1 reads a script without a BOM in the ANSI code page (a Cyrillic or
+    accented user name would then break it), .cmd and .ps1 get Windows line endings."""
+    windows = target.suffix in (".cmd", ".ps1")
+    temp = target.with_name(f".{target.name}.schub-tmp")
+    with open(temp, "w", encoding="utf-8-sig" if target.suffix == ".ps1" else "utf-8",
+              newline="\r\n" if windows else "\n") as handle:
+        handle.write(text)  # (Path.write_text takes newline= only from Python 3.10)
+    if executable and os.name != "nt":
+        temp.chmod(0o755)
+    temp.replace(target)
+
+
 def workspace(paths: Paths, repo: Path) -> Path:
-    """~/sc-hub-workspace: the assistants' instructions and the dashboard mirror."""
+    """~/sc-hub-workspace: the assistants' instructions and schub-lab (the dashboard is in ~/.sc-hub/bin)."""
     folder = paths.workspace
     folder.mkdir(parents=True, exist_ok=True)
     template = (repo / "templates" / "AGENTS.workspace.md").read_text().replace(
         "(sc-hub setup folder: unknown, ask the student)", f"(sc-hub setup folder: {repo})")
     for name in ("AGENTS.md", "CLAUDE.md"):
         (folder / name).write_text(template)
-    names = ("schub-view.cmd", "schub-view.ps1", "schub-lab.cmd", "schub-lab.ps1") if os.name == "nt" else \
-        ("schub-view", "schub-lab")
-    for name in names:
+    for name in ("schub-lab.cmd", "schub-lab.ps1") if os.name == "nt" else ("schub-lab",):
         source = repo / "scripts" / name
         if source.exists():
-            target = folder / name
-            shutil.copy2(source, target)
-            if os.name != "nt":
-                target.chmod(0o755)
+            _write(folder / name, source.read_text(encoding="utf-8"), executable=True)
+    for name in OLD_VIEW_FILES:  # sc-hub's own older copies only: a file of the student's by that name stays
+        old = folder / name
+        try:
+            head = old.read_text(encoding="utf-8", errors="replace")[:600] if old.is_file() else ""
+            if "schub" in head or "sc-hub" in head:
+                old.unlink()
+        except OSError:
+            pass
     return folder
+
+
+def install_dashboard(paths: Paths, repo: Path, python: str = sys.executable) -> Path:
+    """The dashboard's server and its launcher in ~/.sc-hub/bin (this account only), outside the folders the
+    assistants write in: what the student runs outside any sandbox is only what this setup wrote."""
+    folder = paths.state.parent / "bin"
+    folder.mkdir(parents=True, exist_ok=True)
+    if os.name != "nt":
+        os.chmod(folder.parent, 0o700)
+        os.chmod(folder, 0o700)
+    for name in (*VIEW_PROGRAM, *VIEW_LAUNCHERS):
+        text = (repo / "scripts" / name).read_text(encoding="utf-8")
+        if PINNED_PYTHON in text and SAFE_PATH.fullmatch(python):  # it sits between double quotes in sh and PowerShell
+            text = text.replace(PINNED_PYTHON, python)
+        _write(folder / name, text, executable=name in VIEW_LAUNCHERS or name == "schub_view.py")
+    return folder / VIEW_LAUNCHERS[0]

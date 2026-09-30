@@ -33,8 +33,9 @@ onboard\start.cmd                                               # Windows 10/11
 A local page walks through each step with a progress bar:
 1. Sign in to the cluster once. The password goes to `ssh`, never to the assistant.
 2. sc-hub is installed on the cluster, and a first cell and Slurm job run.
-3. Your assistants, VS Code in your workbench job, and Codex and Claude Code on the cluster (with your student accounts) are connected.
-4. The dashboard starts.
+3. Your assistants, VS Code in your workbench job, and Codex and Claude Code on the cluster (with your student accounts, on your PATH there) are connected.
+4. Your dashboard starts at `http://sc-hub.localhost:27182` and opens with a short welcome; a
+   [cluster guide](docs/how-it-works.md#dashboard-on-a-weak-laptop) for newcomers to Slurm is one click away.
 
 If a step fails, the page says what to do. Your assistant can also diagnose and
 fix it ([docs/setup.md](docs/setup.md)).

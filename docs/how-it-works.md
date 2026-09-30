@@ -192,11 +192,30 @@ system events stay hidden unless asked for. Alerts say when the workbench cannot
 job slots are taken, a check failed or a quota is nearly full. Runs of brick
 pipelines, the library and the cluster overview are in the menu; open a run for
 its step timeline, each step's params, code, job, log tail, figures, top DE genes
-and its notebook. Plain HTML, CSS and a few KB of vanilla JS:
-no server, no framework, no external requests. `./schub-view` mirrors it every
-60 s over ssh + rsync (`schub-view.cmd` with scp on Windows, skipping the
-download when nothing changed); the page refreshes itself, keeps your place and
-filters, and waits while you read an opened section.
+and its notebook. Plain HTML, CSS and a few KB of vanilla JS: no framework, no
+external requests. Next to it, `guide.html` explains the cluster to someone new
+to Slurm (login nodes, partitions and limits, GPUs, storage, a first job), with the
+student's own limits read from the cluster; the cluster overview and the menu link it.
+
+On the laptop, `~/.sc-hub/bin/schub-view` (`schub-view.cmd` on Windows) starts the
+dashboard's own small server, `schub_view.py` (standard-library Python), in the
+background. The setup installs it there, outside the folders the assistants write in,
+since it runs outside their sandbox. It
+serves the dashboard at `http://sc-hub.localhost:27182` (also `127.0.0.1:27182`; the
+next free port when that one is taken, remembered for next time), to this computer
+only: loopback, a Host check, sc-hub's pages under a strict policy and anything a
+notebook wrote in a sandbox. It keeps a copy in `~/sc-hub-view`, refreshed over
+ssh + rsync every minute while someone looks at it and every half hour otherwise
+(`view-sum`/`view-pack` where rsync is missing, as on Windows). When the cluster
+cannot be reached it keeps serving the last copy and says why, with a "Try again".
+It outlives the terminal or assistant that started it; after a restart,
+`~/.sc-hub/bin/schub-view` brings it back (`status`, `stop` and `serve` for the foreground).
+Its own pages run only their own scripts (a nonce per response; the dashboard pins its two
+inline scripts by hash), every file refuses to load into another site's page, and requests
+other sites' pages make are refused.
+The setup opens it at `/welcome`: what was installed and how to work, in brief.
+The page refreshes itself, keeps your place and filters, and waits while you read
+an opened section.
 
 ## Cluster limits that shape the design
 
@@ -231,7 +250,9 @@ filters, and waits while you read an opened section.
 - Sessions listen on the compute node behind a random token (compute nodes take
   no ssh logins, so the tunnel ends at node:port through the login node).
 - Cell Ranger is only available after the owner installs it (10x license).
-- The Windows installer, `schub-view.cmd` and `schub-lab.cmd` have not been run on Windows yet; the setup
-  page's Windows paths (the password window, the launcher) are tested against a fake ssh only.
+- On a computer shared by several accounts, the others can open the dashboard too (it answers anyone on
+  this computer, as its copy's files were readable before); the pilot assumes a student's own laptop.
+- The Windows installer and `schub-lab.cmd` have not been run on Windows yet; `schub-view.cmd` and the
+  setup page's Windows paths (the password window, the launcher) are tested in CI against a fake ssh only.
 - The setup page's sign-ins on the cluster were checked up to the browser (installers, links, codes, the
   tunnel, a wrong code) in a throwaway home; a full sign-in needs a student account.

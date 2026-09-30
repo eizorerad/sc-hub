@@ -48,9 +48,9 @@ The steps run in this order. A step that is done is skipped on the next run.
 | `hello` | Project `hello`: one kernel cell (starts the workbench job), then one small `%%slurm` job with a check | cluster: `schub/projects/hello` |
 | `assistants` | Creates `~/sc-hub-workspace` and switches sc-hub on there only: Codex (`$schub`), Claude Code (`/schub`); Claude Desktop as before | `~/.codex/config.toml` block (server off, the workspace trusted), the workspace's `.codex/config.toml` (on), `claude mcp add -s local` in the workspace, skills in `~/.codex/skills/schub` and `~/.claude/skills/schub`, Claude Desktop's config (backup `.bak-schub`) |
 | `vscode` | `schub ide-setup` on the cluster, the `mbzuai-schub-ide` host, one test connection into the workbench job. Skipped without VS Code. | `~/.ssh/config` block, cluster `schub/ide` |
-| `agents` | Installs Codex and Claude Code on the login node and signs them in with the student's accounts: a device code for Codex (or the usual sign-in through a tunnel to 127.0.0.1:1455), a pasted code for Claude. Then the student confirms the accounts. | cluster: `~/.codex`, `~/.claude`, `~/.local/bin` |
+| `agents` | Installs Codex and Claude Code on the login node, puts `~/.local/bin` on the student's PATH there and checks that a new login finds both, then signs them in with the student's accounts: a device code for Codex (or the usual sign-in through a tunnel to 127.0.0.1:1455), a pasted code for Claude. Then the student confirms the accounts. | cluster: `~/.codex`, `~/.claude`, `~/.local/bin`; a `# >>> sc-hub >>>` block at the end of `~/.bashrc` and of the login file (`~/.bash_profile`, `~/.bash_login` or `~/.profile`) |
 | `limit` | Limits the key to sc-hub: the key's line in `authorized_keys` gets `restrict,port-forwarding,command=".../schub-gate"` | cluster `~/.ssh/authorized_keys` (backup `.schub-backup`) |
-| `dashboard` | Starts `schub-view` in the workspace | nothing |
+| `dashboard` | Writes what was installed to `~/.sc-hub/welcome.json`, starts the dashboard's server (`schub_view.py` in the workspace) in the background at `http://sc-hub.localhost:27182` (or the next free port), and the page then opens its welcome. Skipped with `--no-browser`. | `~/.sc-hub/welcome.json`, `view.json`, `view-config.json`, `view.log`; the copy in `~/sc-hub-view` |
 
 Before `limit` is done, you can look at the cluster with the key:
 `ssh -o BatchMode=yes mbzuai-schub '<command>'`. Useful commands:
@@ -80,6 +80,9 @@ to run a command in their own terminal with their password.
 | VS Code connection did not open | The workbench job did not start in time | `retry vscode` later |
 | `port 1455 is taken` | Another sign-in on the same login node | Wait a few minutes, `retry agents` |
 | `the key still opens a shell` | The limit did not apply | `retry limit`. If it stays, report it. |
+| `the dashboard did not start` | Its server could not start: no Python 3.9+ for it, or run inside a sandbox | `~/.sc-hub/bin/schub-view`, outside the sandbox; `~/.sc-hub/bin/schub-view status` and `~/.sc-hub/view.log` say more. Then `retry dashboard`. |
+| The dashboard says it cannot reach the cluster | Off campus, the key refused, or sc-hub on the cluster older than the dashboard | Its note says which; the VPN, `retry sign-in` or `retry cluster`. It keeps showing the last copy meanwhile. |
+| `codex` or `claude` not found after logging in to the cluster | That shell was open before the setup, or its login file skips `~/.bashrc` | Log in again or `source ~/.bashrc`. The `agents` step's details list the files it changed and what a new login found. |
 
 The `~/.bashrc` line, before any command that prints:
 
@@ -95,6 +98,7 @@ The `~/.bashrc` line, before any command that prints:
    - Run `start.sh check`. The tests must pass. Add a test for the bug when practical: `tests/test_onboard.py` has a fake cluster in `tests/onboard_fakes/ssh`.
    - **A fix under `onboard/sc_hub_onboard/`** (the page's own code) needs a page restart: the running page still has the old code. Run `start.sh stop`, then start the page again as in `AGENTS.md`. Give the student the new link. The steps resume, and a failed step runs again.
    - **A fix anywhere else** (`scripts/`, `src/`, `templates/`) reaches the cluster on `start.sh retry cluster`: that step uploads this checkout.
+   - **A fix to the dashboard's server** (`scripts/schub_view*.py`, `scripts/schub-view*`) reaches this computer on `start.sh retry dashboard`, or at the page's next start (that step runs at every start): it installs the new copy in `~/.sc-hub/bin` and replaces the running server.
    - Then watch `status` until the step is done.
 
 ## Sending a code fix for review
