@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import http.server
 import json
+import os
 import socket
 import threading
 import traceback
@@ -339,23 +340,71 @@ def test_a_download_named_like_the_cache_s_own_files_is_the_download(server: str
     assert Handler.requests == 1
 
 
-def test_a_changed_cached_copy_is_never_recorded_as_ok(server: str, project: Path, tmp_path: Path,
-                                                       monkeypatch) -> None:
-    """The journal's checksum is the returned file's: a cached copy changed where the size check cannot see it
-    (same size, read-only again) is not handed out, and the next fetch downloads it again."""
+def test_a_cache_hit_reads_the_file_only_when_it_may_have_changed(server: str, project: Path, tmp_path: Path,
+                                                                  monkeypatch) -> None:
+    """Found in a review: every hit hashed the whole file under the lock (a 20 GB h5ad: about 45 s per call, every
+    job waiting). record.json keeps the file's size and mtime: a read-only file that still has them is not read,
+    and a fresh download is read once after its check, for the record."""
+    root = tmp_path / "root"
+    monkeypatch.setenv("SCHUB_ROOT", str(root))
+    reads = []
+    digests_of = fetch_module.digests_of
+    monkeypatch.setattr(fetch_module, "digests_of", lambda path: reads.append(path) or digests_of(path))
+    fetch(f"{server}/data.bin", dest=tmp_path / "a" / "data.bin", sha256=SHA, pause_s=0)
+    assert len(reads) == 2  # the download checked against the checksum, then the cached file for the record
+    fetch(f"{server}/data.bin", dest=tmp_path / "b" / "data.bin", sha256=SHA, pause_s=0)
+    assert len(reads) == 2  # a hit
+    [record_path] = (root / "cache" / "fetch").glob("*/record.json")
+    older = {k: v for k, v in json.loads(record_path.read_text()).items() if k in ("url", "size", "sha256")}
+    record_path.write_text(json.dumps(older))  # as an older version wrote it: no mtime
+    for name in ("c", "d"):
+        fetch(f"{server}/data.bin", dest=tmp_path / name / "data.bin", sha256=SHA, pause_s=0)
+    assert len(reads) == 3 and "mtime_ns" in json.loads(record_path.read_text())  # read once, then recorded
+    assert Handler.requests == 1
+
+
+def _edit_cached(root: Path, keep_mtime: bool) -> None:
+    """Someone makes the cached copy writable, changes its bytes but not its size, and makes it read-only again."""
+    [cached] = (root / "cache" / "fetch").rglob("data.bin")
+    before = cached.stat()
+    cached.chmod(0o644)
+    cached.write_bytes(bytes(len(PAYLOAD)))
+    mtime_ns = before.st_mtime_ns if keep_mtime else before.st_mtime_ns + 10**9  # a second later: a coarse clock
+    os.utime(cached, ns=(before.st_atime_ns, mtime_ns))  # may not show an edit made right after the download
+    cached.chmod(0o444)
+
+
+def test_a_changed_cached_copy_is_never_handed_out(server: str, project: Path, tmp_path: Path, monkeypatch) -> None:
+    """A cached copy changed where its size cannot show it (same size, made read-only again) has another mtime:
+    it is read, found changed and downloaded again."""
     root = tmp_path / "root"
     monkeypatch.setenv("SCHUB_ROOT", str(root))
     fetch(f"{server}/data.bin", dest=tmp_path / "a" / "data.bin", sha256=SHA, pause_s=0)
-    [cached] = (root / "cache" / "fetch").rglob("data.bin")
-    cached.chmod(0o644)
-    cached.write_bytes(bytes(len(PAYLOAD)))
-    cached.chmod(0o444)
+    _edit_cached(root, keep_mtime=False)
     ledger.drain()
-    with pytest.raises(FetchError, match="sha256"):
-        fetch(f"{server}/data.bin", dest=tmp_path / "b" / "data.bin", sha256=SHA, pause_s=0)
-    assert ledger.drain()[-1]["status"] == "failed" and not (tmp_path / "b" / "data.bin").exists()
-    again = fetch(f"{server}/data.bin", dest=tmp_path / "b" / "data.bin", sha256=SHA, pause_s=0)
-    assert again.read_bytes() == PAYLOAD and Handler.requests == 2
+    path = fetch(f"{server}/data.bin", dest=tmp_path / "b" / "data.bin", sha256=SHA, pause_s=0)
+    assert path.read_bytes() == PAYLOAD and Handler.requests == 2
+    [event] = ledger.drain()
+    assert event["status"] == "ok" and event["sha256"] == SHA
+
+
+def test_a_cached_copy_edited_with_its_mtime_restored_is_caught_only_in_a_copy(server: str, project: Path,
+                                                                              tmp_path: Path, monkeypatch) -> None:
+    """The limit of the cheap check: an edit that also restores the mtime (os.utime) is not seen on a hit, and the
+    linked file is handed out as recorded. A copy, made where a hard link is not possible, is read and caught."""
+    root = tmp_path / "root"
+    monkeypatch.setenv("SCHUB_ROOT", str(root))
+    fetch(f"{server}/data.bin", dest=tmp_path / "a" / "data.bin", sha256=SHA, pause_s=0)
+    _edit_cached(root, keep_mtime=True)
+    ledger.drain()
+    linked = fetch(f"{server}/data.bin", dest=tmp_path / "b" / "data.bin", sha256=SHA, pause_s=0)
+    assert linked.read_bytes() != PAYLOAD and ledger.drain()[-1]["sha256"] == SHA  # not seen: trusted as recorded
+    monkeypatch.setattr(fetch_module.os, "link", lambda *args: (_ for _ in ()).throw(OSError("cross-device link")))
+    with pytest.raises(FetchError, match="does not match"):
+        fetch(f"{server}/data.bin", dest=tmp_path / "c" / "data.bin", sha256=SHA, pause_s=0)
+    assert not (tmp_path / "c" / "data.bin").exists() and ledger.drain()[-1]["status"] == "failed"
+    again = fetch(f"{server}/data.bin", dest=tmp_path / "c" / "data.bin", sha256=SHA, pause_s=0)
+    assert again.read_bytes() == PAYLOAD and Handler.requests == 2  # removed from the cache, so downloaded again
 
 
 def test_a_cache_an_older_version_wrote_is_still_used(server: str, project: Path, tmp_path: Path,

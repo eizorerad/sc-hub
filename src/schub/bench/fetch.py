@@ -194,13 +194,24 @@ def _cached_file(folder: Path) -> Path | None:
         return None
 
 
-def _intact(cache: Path, record: dict) -> bool:
-    """A cached file is kept read-only; one made writable again may have been edited in place, so it is re-hashed."""
+def _record_of(url: str, cache: Path) -> dict:
+    """What record.json says of a cached file: its checksums, and its size and mtime, to see a change without
+    reading it (not the ctime, which a hard link changes)."""
+    sha, md5 = digests_of(cache)
+    info = cache.stat()
+    return {"url": public(url), "size": info.st_size, "mtime_ns": info.st_mtime_ns, "sha256": sha, "md5": md5}
+
+
+def _checked(url: str, cache: Path, record: dict) -> dict | None:
+    """The record of an intact cached file, None to fetch it again. A cached file is kept read-only: one that still
+    has its recorded size and mtime is not read. One made writable again or changed since may have been edited in
+    place, and an older version's record has no mtime: that file is re-hashed and recorded anew."""
     if not cache.exists() or record.get("size") != cache.stat().st_size:
-        return False
-    if cache.stat().st_mode & 0o222:
-        return digests_of(cache)[0] == record.get("sha256")
-    return True
+        return None
+    if not cache.stat().st_mode & 0o222 and record.get("mtime_ns") == cache.stat().st_mtime_ns:
+        return record
+    renewed = _record_of(url, cache)
+    return renewed if renewed["sha256"] == record.get("sha256") else None
 
 
 def _via_cache(url: str, target: Path, cache: Path, sha256: str | None, md5: str | None, attempts: int,
@@ -208,7 +219,7 @@ def _via_cache(url: str, target: Path, cache: Path, sha256: str | None, md5: str
     """Projects asking for the same checksummed file share one download (the first fetches, the others wait
     on the lock and link it); every project's journal still records its own copy. The shared file is read-only:
     editing one project's copy in place would change every other copy (they are hard links). The journal records
-    the checksum of the file handed out, hashed after every write here."""
+    the checksums of the file handed out: a hard link is the cached file as checked here, a copy is read again."""
     folder = cache.parent.parent  # the checksum's folder, above files/
     cache.parent.mkdir(parents=True, exist_ok=True)
     record_path = folder / "record.json"
@@ -218,17 +229,20 @@ def _via_cache(url: str, target: Path, cache: Path, sha256: str | None, md5: str
             moved = older.replace(cache.parent / older.name)
             cache = cache if cache.exists() else moved
         record = read_json(record_path) or {}
-        fresh = not _intact(cache, record)
+        checked = _checked(url, cache, record)
+        fresh = checked is None
         if fresh:
             if cache.exists():
                 cache.chmod(0o644)
                 cache.unlink()  # edited in place: fetch it again rather than hand out a changed file
-            _fetch_locked(url, cache, sha256, md5, attempts, pause_s, record=False)
-            digest = digests_of(cache)[0]
+            _fetch_locked(url, cache, sha256, md5, attempts, pause_s, record=False)  # checks the expected checksums
             cache.chmod(0o444)
-            write_json_atomic(record_path, {"url": public(url), "size": cache.stat().st_size, "sha256": digest})
+            checked = _record_of(url, cache)
+        if checked != record:
+            write_json_atomic(record_path, checked)
         _link(cache, target)
-        digest, md5_digest = digests_of(target)
+        digest, md5_digest = ((checked["sha256"], checked.get("md5", "")) if target.samefile(cache)
+                              else digests_of(target))
         if (sha256 and digest != sha256.lower()) or (md5 and md5_digest != md5.lower().removeprefix("md5:")):
             cache.chmod(0o644)
             target.unlink()
