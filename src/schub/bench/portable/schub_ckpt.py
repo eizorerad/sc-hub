@@ -69,6 +69,33 @@ def _durable_json(path: Path, value: Any) -> None:
 
 LOCK_STALE_S = 300.0  # an owner file untouched this long belongs to a process that died
 LOCK_BEAT_S = 60.0
+LOCK_BREAK_S = 30.0  # a .owner.break left by a process that died while breaking a stale owner file
+LOCK_POLL_S = 0.1
+
+
+def _break_stale(path: Path, judged: os.stat_result, owner: str) -> bool:
+    """Remove the owner file judged stale if it still is that very file (same inode and owner, untouched
+    since). One process at a time breaks, under .owner.break made with O_EXCL: two that judged the same
+    file stale must not both remove it, or the second removes the owner file the first made meanwhile and
+    both train the run. False while another process breaks it."""
+    guard = path.with_name(path.name + ".break")
+    try:
+        os.close(os.open(guard, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644))
+    except FileExistsError:
+        with contextlib.suppress(OSError):
+            if time.time() - guard.stat().st_mtime > LOCK_BREAK_S:
+                guard.unlink()  # its breaker died halfway
+                return True
+        return False
+    try:
+        now = path.stat()
+        if now.st_ino == judged.st_ino and path.read_text() == owner and time.time() - now.st_mtime > LOCK_STALE_S:
+            path.unlink()
+    except FileNotFoundError:
+        pass
+    finally:
+        guard.unlink(missing_ok=True)
+    return True
 
 
 def _plain(value: Any) -> Any:
@@ -103,6 +130,7 @@ class Run:
         self._asked = False
         self.stop_signal = ""
         self._lock: Path | None = None
+        self._owner = ""  # the owner file's text while this process holds the run
         self._beat: threading.Event | None = None
         self._started = 0.0
 
@@ -151,38 +179,49 @@ class Run:
 
     def _take(self) -> None:
         """One process per run, on any node: an owner file made with O_EXCL (flock is node-local on Lustre
-        mounted with localflock), touched every LOCK_BEAT_S while held."""
+        mounted with localflock), touched every LOCK_BEAT_S while held. It names this taking with a token:
+        only its taker touches or removes it."""
         path = self.folder / ".owner"
+        mine = (f"{socket.gethostname()} pid {os.getpid()} job {os.environ.get('SLURM_JOB_ID', '-')} "
+                f"token {uuid.uuid4().hex[:8]}\n")
         while True:
             try:
                 fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
                 break
             except FileExistsError:
                 try:
-                    if time.time() - path.stat().st_mtime > LOCK_STALE_S:
-                        path.unlink(missing_ok=True)  # its process died without closing
-                        continue
-                    owner = path.read_text().strip()
+                    judged, owner = path.stat(), path.read_text()
                 except OSError:
                     continue
-                raise CheckpointError(f"another process trains {self.folder} ({owner})") from None
+                if time.time() - judged.st_mtime <= LOCK_STALE_S:
+                    raise CheckpointError(f"another process trains {self.folder} ({owner.strip()})") from None
+                if not _break_stale(path, judged, owner):  # its process died without closing
+                    time.sleep(LOCK_POLL_S)  # another process breaks it: see what that one leaves
         with os.fdopen(fd, "w") as handle:
-            handle.write(f"{socket.gethostname()} pid {os.getpid()} job {os.environ.get('SLURM_JOB_ID', '-')}\n")
+            handle.write(mine)
         stop = threading.Event()
 
         def beat() -> None:
             while not stop.wait(LOCK_BEAT_S):
-                with contextlib.suppress(OSError):
+                try:
+                    if path.read_text() != mine:
+                        return  # taken for dead and taken over: touching it would keep another's lock alive
                     os.utime(path)
+                except FileNotFoundError:
+                    return  # broken as stale: nothing of this taking is left to keep fresh
+                except OSError:
+                    continue  # a passing file-server error (ESTALE, EIO) must not stop it
         threading.Thread(target=beat, daemon=True).start()
-        self._lock, self._beat = path, stop
+        self._lock, self._beat, self._owner = path, stop, mine
 
     def close(self) -> None:
         if self._beat is not None:
             self._beat.set()
             self._beat = None
         if self._lock is not None:
-            self._lock.unlink(missing_ok=True)
+            with contextlib.suppress(OSError):
+                if self._lock.read_text() == self._owner:
+                    self._lock.unlink()  # only its own: a process that took the run over keeps its file
             self._lock = None
 
     def latest(self) -> dict | None:
