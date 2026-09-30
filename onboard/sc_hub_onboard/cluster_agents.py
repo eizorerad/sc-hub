@@ -45,11 +45,81 @@ claude_bin() { for c in "$HOME/.local/bin/claude" "$(command -v claude)"; do
 until_hangup() { exec 3<&0; "$@" </dev/null 3<&- & p=$!; ( cat <&3 >/dev/null; kill "$p" 2>/dev/null ) >/dev/null 2>&1 &
   exec 3<&-; wait "$p"; }
 """
+# Codex and Claude Code on the student's own PATH (python3 on the login node): the installers skip this when
+# ~/.local/bin is already on PATH, as it is in these commands. A marked block, rewritten on every run, goes at the end
+# of ~/.bashrc (interactive shells) and of the file a login shell reads first. Only whole blocks of its own are ever
+# replaced: a file whose markers do not pair up (one edited by hand) is left alone, and so is a file of another owner
+# (a linked, shared dotfile). A linked dotfile of the student's is edited where it lives, through a temporary file, so
+# a full disk never leaves half a file; its line endings stay as they were.
+REGISTER_PATH = r"""
+import os, re, shutil, tempfile
+home = os.path.expanduser("~")
+BEGIN, END = "# >>> sc-hub >>>", "# <<< sc-hub <<<"
+BLOCK = "\n".join([BEGIN, "# Codex and Claude Code, installed by the sc-hub setup, live in ~/.local/bin.",
+                   'case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$HOME/.local/bin:$PATH" ;; esac',
+                   END]) + "\n"
+OURS = re.compile("^" + re.escape(BEGIN) + r"\r?\n(?:(?!" + re.escape(BEGIN) + "|" + re.escape(END) +
+                  r").*\r?\n){0,8}?" + re.escape(END) + r"[ \t]*(?:\r?\n|\Z)", re.M)
+login = next((n for n in (".bash_profile", ".bash_login", ".profile") if os.path.lexists(os.path.join(home, n))),
+             ".profile")
+names = [".bashrc", login] + ([".zshrc"] if os.path.basename(os.environ.get("SHELL", "")) == "zsh" else [])
+for name in names:
+    real = os.path.realpath(os.path.join(home, name))
+    try:
+        if os.stat(real).st_uid != os.getuid():
+            print("PATH: left ~/%s alone (another account owns it)" % name)
+            continue
+        with open(real, newline="") as handle:
+            old = handle.read()
+    except FileNotFoundError:
+        old = ""
+    except (OSError, UnicodeDecodeError) as exc:
+        print("PATH: could not read ~/%s (%s)" % (name, getattr(exc, "strerror", None) or exc))
+        continue
+    rest, count = OURS.subn("", old)
+    starts = len(re.findall("^" + re.escape(BEGIN), old, re.M))
+    ends = len(re.findall("^" + re.escape(END), old, re.M))
+    if starts != count or ends != count:
+        print("PATH: left ~/%s alone (its sc-hub lines were edited; remove them and run this again)" % name)
+        continue
+    eol = "\r\n" if "\r\n" in old else "\n"
+    new = rest.rstrip("\r\n") + (eol * 2 if rest.strip() else "") + BLOCK.replace("\n", eol)
+    if new == old:
+        print("PATH: ~/%s already has it" % name)
+        continue
+    temp = None
+    try:
+        fd, temp = tempfile.mkstemp(dir=os.path.dirname(real), prefix=".schub-")
+        with os.fdopen(fd, "w", newline="") as handle:
+            handle.write(new)
+        if os.path.exists(real):
+            shutil.copymode(real, temp)
+        os.replace(temp, real)
+        print("PATH: added to ~/%s" % name)
+    except OSError as exc:
+        if temp and os.path.exists(temp):
+            os.remove(temp)
+        print("PATH: could not write ~/%s (%s)" % (name, exc.strerror or exc))
+"""
+# What a new ssh login finds: a login shell with the student's own files and an empty environment. The files may print
+# or ask things, so only paths ending in /codex or /claude count, stdin is closed and it gets 30 seconds (where
+# `timeout` exists: the cluster has it, macOS does not).
+login_path = r"""login_path() {
+  case "$(basename "${SHELL:-bash}")" in zsh) sh_=zsh ;; bash | sh) sh_=bash ;; *) return 0 ;; esac  # (fish, tcsh: not these files)
+  s_=$(command -v "$sh_") || return 0
+  t_=$(command -v timeout) && set -- "$t_" 30 || set --
+  env -i HOME="$HOME" USER="${USER:-}" LOGNAME="${LOGNAME:-${USER:-}}" SHELL="${SHELL:-/bin/bash}" TERM=dumb \
+    "$@" "$s_" -lic 'command -v codex; command -v claude' </dev/null 2>/dev/null | grep -E '/(codex|claude)$' | tr '\n' ' '
+}"""
 INSTALL = PRELUDE + r"""set -o pipefail
 if ! codex_bin >/dev/null; then echo "installing Codex"; curl -fsSL https://chatgpt.com/codex/install.sh | sh || exit 1; fi
 if ! claude_bin >/dev/null; then echo "installing Claude Code"; curl -fsSL https://claude.ai/install.sh | bash || exit 1; fi
+python3 - <<'SCHUB_PATH' || echo "PATH: could not update the shell's files (python3 failed)"
+""" + REGISTER_PATH.strip() + "\nSCHUB_PATH\n" + login_path + r"""
+echo "PATH at login: $(login_path)"
 echo "Codex: $("$(codex_bin)" --version 2>/dev/null)"; echo "Claude Code: $("$(claude_bin)" --version 2>/dev/null)"
 """
+PATH_AT_LOGIN = "PATH at login:"
 CODEX_DEVICE = PRELUDE + 'until_hangup "$(codex_bin)" login --device-auth'
 # The usual sign-in listens on 127.0.0.1:1455 of a login node that other users share: stop if that port is taken
 # (Codex would otherwise cancel whatever holds it: another student's sign-in).
