@@ -5,8 +5,9 @@ from pathlib import Path
 
 import pytest
 
+from schub.bench import journal as journal_module
 from schub.bench.journal import Journal, JournalError, parse_ref
-from schub.bench.models import Actor, CellEntry, CheckResult, JobRef
+from schub.bench.models import Actor, CellEntry, CheckResult, JobRef, OutputItem
 
 
 class Ticks:
@@ -152,3 +153,83 @@ def test_reading_on_from_since_misses_nothing(journal: Journal) -> None:
     third = journal.changes(since=second[-1][0], limit=2)
     texts = [e.text for _, e in first + second + third]
     assert texts == ["note 0", "note 1", "note 2", "note 3", "note 4"]
+
+
+def read_on(journal: Journal, since: str | None, limit: int = 1) -> list[str]:
+    seen = []
+    for _ in range(20):
+        page = journal.changes(since=since, limit=limit)
+        if not page:
+            break
+        seen += [e.text for _, e in page]
+        since = page[-1][0]
+    return seen
+
+
+def test_reading_on_misses_no_record_made_in_the_same_millisecond(tmp_path: Path) -> None:
+    journal = Journal(tmp_path / "projects" / "demo", "demo", now=lambda: "2026-09-24T10:00:00.000+00:00")
+    for i in range(5):
+        journal.add_note("note", f"note {i}")
+    assert read_on(journal, "2026-09-24T09:00:00.000+00:00") == [f"note {i}" for i in range(5)]
+
+
+def stall_before_publishing(monkeypatch, stalled, meanwhile) -> dict:
+    """The writer of the record that `stalled` picks has taken its time and stops right before it publishes:
+    `meanwhile` runs then (others write, a reader reads), and its answer is kept."""
+    publish, kept = journal_module.create_json_exclusive, {}
+
+    def publish_late(path: Path, payload: dict) -> bool:
+        if stalled(payload) and not kept:
+            kept["answer"] = meanwhile()
+        return publish(path, payload)
+
+    monkeypatch.setattr(journal_module, "create_json_exclusive", publish_late)
+    return kept
+
+
+def test_reading_on_finds_a_note_published_after_a_later_one(tmp_path: Path, monkeypatch) -> None:
+    folder = tmp_path / "projects" / "demo"
+    slow = Journal(folder, "demo", now=lambda: "2026-09-24T10:00:01.000+00:00")
+    fast = Journal(folder, "demo", now=lambda: "2026-09-24T10:00:02.000+00:00")
+    reader = Journal(folder, "demo")
+
+    def meanwhile() -> list:
+        fast.add_note("note", "fast")
+        return reader.changes(since="2026-09-24T10:00:00.000+00:00")
+
+    kept = stall_before_publishing(monkeypatch, lambda payload: payload.get("text") == "slow", meanwhile)
+    slow.add_note("note", "slow")
+    first = kept["answer"]
+    assert [e.text for _, e in first] == ["fast"]
+    assert [e.text for _, e in reader.changes(since=first[-1][0])] == ["slow"]
+
+
+def test_reading_on_finds_an_addendum_published_after_a_later_one(tmp_path: Path, monkeypatch) -> None:
+    folder = tmp_path / "projects" / "demo"
+    journal = Journal(folder, "demo", now=Ticks())
+    cid = journal.allocate("c")
+    journal.write_cell(cell(journal, cid, status="ok", jobs=(JobRef(job_id="5", state="PENDING"),)))
+    report = Journal(folder, "demo", now=lambda: "2026-09-24T11:00:01.000+00:00")
+    watchdog = Journal(folder, "demo", now=lambda: "2026-09-24T11:00:02.000+00:00")
+
+    def meanwhile() -> list:
+        watchdog.add_addendum(cid, "jobend-5", {"kind": "job", "source": "watchdog",
+                                                "job": {"job_id": "5", "state": "ENDED"}})
+        return journal.changes(since="2026-09-24T11:00:00.000+00:00")
+
+    kept = stall_before_publishing(monkeypatch, lambda p: p.get("kind") == "job" and "source" not in p, meanwhile)
+    report.add_addendum(cid, "job-5", {"kind": "job", "job": {"job_id": "5", "state": "COMPLETED", "exit_code": 0}})
+    first = kept["answer"]
+    assert [e.jobs[0].state for _, e in first] == ["ENDED"]
+    assert [e.jobs[0].state for _, e in journal.changes(since=first[-1][0])] == ["COMPLETED"]
+
+
+def test_outputs_written_while_a_cell_runs_are_not_a_change(journal: Journal) -> None:
+    cid = journal.allocate("c")
+    running = cell(journal, cid, status="running", started=journal.now())
+    journal.write_cell(running)
+    since = journal.changes(since=None)[-1][0]
+    journal.write_cell(running.model_copy(update={"outputs": (OutputItem(kind="stream", text="epoch 1"),)}))
+    assert journal.changes(since=since) == []
+    journal.write_cell(running.model_copy(update={"status": "ok", "finished": journal.now()}))
+    assert [e.status for _, e in journal.changes(since=since)] == ["ok"]

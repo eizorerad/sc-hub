@@ -79,7 +79,7 @@ def journal_view(settings: Settings, project: str, since: str | None, kinds: Ite
     project_dir = ProjectStore(settings).require(project)
     journal = Journal(project_dir, project)
     store = CheckpointStore(project_dir)
-    changes = journal.changes(since=since, kinds=kinds, limit=limit)
+    changes, after = journal.page(since=since, kinds=kinds, limit=limit)
     budget = max(300, max_chars // max(1, len(changes)))
     entries = [compact(e, budget) for _, e in changes]
     left_out = 0
@@ -94,7 +94,7 @@ def journal_view(settings: Settings, project: str, since: str | None, kinds: Ite
             entries.pop()
             changes.pop()
         left_out += 1
-    newest = max((changed for changed, _ in changes), default=since or "")
+    newest = changes[-1][0] if since is not None and left_out else after
     return JournalView(
         project=project, handoff=store.read_handoff(), checkpoint=store.read(),
         entries=tuple(entries), newest=newest, left_out=left_out,

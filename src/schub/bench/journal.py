@@ -6,10 +6,19 @@
       cells/c0007.job-812.json  addenda (a job ended, a check ran); created once, never changed
       cells/c0007/              artifacts (figures)
       notes/n0003.json          decisions, findings, errors, registrations...
+      changes/000042.json       the 42nd change, {"id": "c0007"}: numbered once it can be read
 
 Ids are handed out by the server when a record is appended (VCC2026 once gave two
 findings the same number, F48/F49). A decision must name the cells it rests on and
 the condition that would reverse it; a finding must name its cells.
+
+Reading on from an earlier read goes by the change numbers, not by time. A time is
+taken before its record is published: records made in the same millisecond share
+one, and a writer that stalls in between publishes a record older than those a
+reader has seen already. A change gets its number after it is published, and number
+n only once n-1 exists (exclusive create), so a reader that has every change up to n
+and reads on from there misses none, whatever their times. (A writer that dies or
+fails between the two leaves a change that only a read without `since` shows.)
 """
 
 from __future__ import annotations
@@ -30,6 +39,9 @@ from .models import (
 
 REF = re.compile(r"^(?P<project>[a-z0-9][a-z0-9_/-]*)#(?P<id>[cn]\d{4,})$")
 SUFFIX = re.compile(r"^[a-z0-9][a-z0-9_-]{0,80}$")
+# where a read ended (see Journal.page): "#42", after change 42; while an older client's time is read on
+# from, "#42,<time>,<ref>", after that record, then on from change 42
+PLACE = re.compile(r"^#(?P<number>\d+)(?:,(?P<changed>[^,]+),(?P<ref>[^,]+))?$")
 ADDENDUM_KINDS = ("job", "check", "download", "files")
 NEEDS_BECAUSE = ("decision", "finding", "verdict")
 
@@ -79,6 +91,10 @@ class Journal:
     def notes_dir(self) -> Path:
         return self.folder / "notes"
 
+    @property
+    def changes_dir(self) -> Path:
+        return self.folder / "changes"
+
     def ref(self, record_id: str) -> str:
         return f"{self.project}#{record_id}"
 
@@ -102,6 +118,20 @@ class Journal:
             except FileExistsError:
                 n += 1
 
+    def _number_change(self, record_id: str) -> None:
+        """Number a change that can be read now (see the module's docstring)."""
+        n = self._last_change() + 1
+        while not create_json_exclusive(self.changes_dir / f"{n:06d}.json", {"id": record_id}):
+            n += 1
+
+    def _last_change(self) -> int:
+        return max((n for n, _ in self._change_files()), default=0)
+
+    def _change_files(self) -> list[tuple[int, Path]]:
+        if not self.changes_dir.is_dir():
+            return []
+        return sorted((int(p.stem), p) for p in self.changes_dir.glob("*.json") if p.stem.isdigit())
+
     # ---- cells ----------------------------------------------------------------
 
     def write_cell(self, entry: CellEntry) -> None:
@@ -110,7 +140,10 @@ class Journal:
         current = read_json(path)
         if current is not None and current.get("status") in FINAL_STATUSES:
             raise FinalEntryError(f"{entry.ref} is final ({current['status']}); add an addendum instead")
-        write_json_atomic(path, entry.model_dump(mode="json"))
+        data = entry.model_dump(mode="json")
+        write_json_atomic(path, data)
+        if current is None or any(current.get(key) != data[key] for key in ("status", "started", "finished")):
+            self._number_change(entry.cid)  # outputs written while it runs are not a change
 
     def raw_cell(self, cid: str) -> CellEntry | None:
         data = read_json(self.cells_dir / f"{check_cid(cid)}.json")
@@ -143,7 +176,10 @@ class Journal:
         if payload.get("kind") not in ADDENDUM_KINDS:
             raise JournalError(f"addendum kind must be one of {ADDENDUM_KINDS}")
         stamped = {**payload, "added": self.now()}
-        return create_json_exclusive(self.cells_dir / f"{cid}.{suffix}.json", stamped)
+        if not create_json_exclusive(self.cells_dir / f"{cid}.{suffix}.json", stamped):
+            return False
+        self._number_change(cid)
+        return True
 
     # ---- notes ----------------------------------------------------------------
 
@@ -168,6 +204,7 @@ class Journal:
         )
         if not create_json_exclusive(self.notes_dir / f"{nid}.json", note.model_dump(mode="json")):
             raise JournalError(f"note {nid} already exists")
+        self._number_change(nid)
         return note
 
     def _check_note(self, kind: str, text: str, because: Sequence[str], reverses_if: str, verdict: str | None) -> None:
@@ -220,16 +257,37 @@ class Journal:
     def entries(
         self, since: str | None = None, kinds: Iterable[str] | None = None, limit: int | None = None,
     ) -> list[CellEntry | NoteEntry]:
-        """Without `since`: the newest `limit` records in the order they were made. With `since`:
-        records made or changed after it (a cell that finished, a job that reported), oldest
-        change first, so reading on from the last one returned misses nothing."""
+        """Without `since`: the newest `limit` records in the order they were made. With `since` (the
+        place where an earlier read ended, see page(), or a time): records made or changed after it (a
+        cell that finished, a job that reported), oldest change first, so reading on misses nothing."""
         return [entry for _, entry in self.changes(since, kinds, limit)]
 
     def changes(
         self, since: str | None = None, kinds: Iterable[str] | None = None, limit: int | None = None,
     ) -> list[tuple[str, CellEntry | NoteEntry]]:
-        """(time of the last change, record) pairs; see entries()."""
+        """(the place to read on from after the record, record) pairs; see entries()."""
+        return self.page(since, kinds, limit)[0]
+
+    def page(
+        self, since: str | None = None, kinds: Iterable[str] | None = None, limit: int | None = None,
+    ) -> tuple[list[tuple[str, CellEntry | NoteEntry]], str]:
+        """changes(), and the place to read on from after all of them (also when there are none). Places
+        go on by change number; a time (an older client's place) is read on from by time, and the places
+        after it go on by number from the last change there was when that began."""
         wanted = set(kinds) if kinds is not None else None
+        place = PLACE.fullmatch(since) if since is not None else None
+        if place is not None and place["changed"] is None:
+            return self._numbered_after(int(place["number"]), wanted, limit)
+        if place is not None:
+            return self._changed_after((place["changed"], place["ref"]), int(place["number"]), wanted, limit)
+        last = self._last_change()  # before the records are read: a change numbered later is new next time
+        if since is not None:
+            return self._changed_after((since, ""), last, wanted, limit)
+        found = sorted(self._changed(wanted), key=lambda pair: (pair[1].created, pair[1].ref))
+        return [(f"#{last}", entry) for _, entry in (found[-limit:] if limit else found)], f"#{last}"
+
+    def _changed(self, wanted: set[str] | None) -> list[tuple[str, CellEntry | NoteEntry]]:
+        """(time of the last change, record) pairs of every record."""
         addenda = self._all_addenda()
         found: list[tuple[str, CellEntry | NoteEntry]] = []
         for record_id in self._ids():
@@ -242,15 +300,37 @@ class Journal:
             else:
                 entry = self.note(record_id)
                 changed = entry.created if entry is not None else ""
-            if entry is None or (wanted is not None and entry.kind not in wanted):
-                continue
-            if since is None or changed > since:
+            if entry is not None and (wanted is None or entry.kind in wanted):
                 found.append((changed, entry))
-        if since is None:
-            found.sort(key=lambda pair: (pair[1].created, pair[1].ref))
-            return found[-limit:] if limit else found
-        found.sort(key=lambda pair: (pair[0], pair[1].ref))
-        return found[:limit] if limit else found
+        return found
+
+    def _changed_after(self, after: tuple[str, str], last: int, wanted: set[str] | None,
+                       limit: int | None) -> tuple[list[tuple[str, CellEntry | NoteEntry]], str]:
+        """Records changed after `after`, a (time, ref), in that order. Once they are all read, on by number
+        from change `last`: what was published meanwhile with an earlier time comes then."""
+        found = sorted(((changed, entry) for changed, entry in self._changed(wanted) if (changed, entry.ref) > after),
+                       key=lambda pair: (pair[0], pair[1].ref))
+        return _cut([(f"#{last},{changed},{entry.ref}", entry) for changed, entry in found], limit, f"#{last}")
+
+    def _numbered_after(self, number: int, wanted: set[str] | None,
+                        limit: int | None) -> tuple[list[tuple[str, CellEntry | NoteEntry]], str]:
+        """Every record changed after change `number`, once, as it is now, in the order of its last change."""
+        last: dict[str, int] = {}
+        for n, path in self._change_files():
+            if n <= number:
+                continue
+            record_id = str((read_json(path) or {}).get("id", ""))
+            if not record_id:
+                break  # still being written (where link() is not allowed): the changes after it wait
+            last.pop(record_id, None)
+            last[record_id] = n
+        found = []
+        for record_id, n in last.items():
+            entry = self.cell(record_id) if re.fullmatch(CID_PATTERN, record_id) else \
+                self.note(record_id) if re.fullmatch(NID_PATTERN, record_id) else None
+            if entry is not None and (wanted is None or entry.kind in wanted):
+                found.append((f"#{n}", entry))
+        return _cut(found, limit, f"#{max(last.values(), default=number)}")
 
     def _all_addenda(self) -> dict[str, list[dict[str, Any]]]:
         """Every addendum, by cell, from one listing of the folder."""
@@ -276,6 +356,17 @@ class Journal:
                 ids += [p.stem for p in folder.glob("*.json")
                         if re.fullmatch(CID_PATTERN, p.stem) or re.fullmatch(NID_PATTERN, p.stem)]
         return sorted(ids, key=lambda i: (i[0], _number(i)))
+
+
+def _cut(found: list[tuple[str, CellEntry | NoteEntry]], limit: int | None,
+         end: str) -> tuple[list[tuple[str, CellEntry | NoteEntry]], str]:
+    """The first `limit` pairs and the place to read on from after them: after the last one given, or `end`
+    (after every change read) when none is left out."""
+    if limit and len(found) > limit:
+        return found[:limit], found[limit - 1][0]
+    if not found:
+        return [], end
+    return found[:-1] + [(end, found[-1][1])], end
 
 
 def _merge(base: CellEntry, addenda: list[dict[str, Any]]) -> CellEntry:

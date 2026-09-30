@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+from schub.bench import journal as journal_module
 from schub.bench.journal import Journal
 from schub.bench.models import NOTE_KINDS, CellEntry, NoteEntry, OutputItem
 from schub.bench.service import BenchService
@@ -53,6 +54,50 @@ def test_paging_with_since_never_skips_an_entry(settings: Settings) -> None:
         seen += [e["ref"] for e in view.entries]
         since = view.newest
     assert seen == [f"demo#c{n:04d}" for n in range(1, 21)]
+
+
+def page_on(settings: Settings, since: str | None, limit: int, max_chars: int) -> list[str]:
+    seen = []
+    for _ in range(40):
+        view = journal_view(settings, "demo", since=since, kinds=None, limit=limit, max_chars=max_chars)
+        if not view.entries:
+            break
+        seen += [e["text"] for e in view.entries]
+        since = view.newest
+    return seen
+
+
+def test_paging_on_never_skips_entries_made_in_the_same_millisecond(settings: Settings) -> None:
+    ProjectStore(settings).create("demo")
+    journal = Journal(settings.projects_dir / "demo", "demo", now=lambda: "2026-09-24T10:00:00.000+00:00")
+    journal.add_note("note", "read already")
+    read = journal_view(settings, "demo", since=None, kinds=None, limit=20, max_chars=16000).newest
+    for i in range(6):
+        journal.add_note("note", f"note {i}")
+    notes = [f"note {i}" for i in range(6)]
+    for limit, max_chars in ((1, 16000), (20, 700)):  # a page cut by the limit, or by the client's size
+        assert page_on(settings, read, limit, max_chars) == notes, (limit, max_chars)
+        assert page_on(settings, "2026-09-24T09:00:00.000+00:00", limit, max_chars) == ["read already"] + notes
+
+
+def test_paging_on_finds_a_note_published_after_a_later_one(settings: Settings, monkeypatch) -> None:
+    ProjectStore(settings).create("demo")
+    folder = settings.projects_dir / "demo"
+    slow = Journal(folder, "demo", now=lambda: "2026-09-24T10:00:01.000+00:00")
+    fast = Journal(folder, "demo", now=lambda: "2026-09-24T10:00:02.000+00:00")
+    publish, first = journal_module.create_json_exclusive, []
+
+    def publish_late(path, payload):  # the slow writer has its time and stops just before publishing its note
+        if payload.get("text") == "slow" and not first:
+            fast.add_note("note", "fast")
+            first.append(journal_view(settings, "demo", since="2026-09-24T10:00:00.000+00:00", kinds=None,
+                                      limit=20, max_chars=16000))
+        return publish(path, payload)
+
+    monkeypatch.setattr(journal_module, "create_json_exclusive", publish_late)
+    slow.add_note("note", "slow")
+    assert [e["text"] for e in first[0].entries] == ["fast"]
+    assert page_on(settings, first[0].newest, 20, 16000) == ["slow"]
 
 
 def test_a_note_for_the_student_shows_the_assistant_none_of_its_words() -> None:
