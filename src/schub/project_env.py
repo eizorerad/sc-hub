@@ -194,7 +194,8 @@ def build_script(settings: Settings, project: str, pip: Sequence[str], conda: Se
         # The shared torch is a CUDA 12.8 build (+cu128): resolve against the same index.
         f"export UV_CACHE_DIR={q(str(settings.cache_dir / 'uv'))} UV_PYTHON_PREFERENCE=only-managed UV_TORCH_BACKEND=cu128",
         f"ROOT={q(str(root))}; NEW=\"$ROOT\"/{q(stamp)}; BASE={q(str(settings.python))}; UV={q(str(uv))}",
-        f"KERNEL={q(str(kernel_dir(project)))}",
+        # undo's state starts empty, whatever the caller exported
+        f"KERNEL={q(str(kernel_dir(project)))}; PUBLISHING=; PREVIOUS=",
         'point() { ln -sfn "$1" "$ROOT/current.new" && mv -T "$ROOT/current.new" "$ROOT/current"; }',
         # A build without its .ok marker is deleted; once it has begun to publish, the previous kernel and
         # `current` are put back first (every step tried).
