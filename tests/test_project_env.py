@@ -36,6 +36,28 @@ def test_build_script_layers_on_the_shared_env(hub, settings):
     assert "micromamba" not in build_script(settings, "crispr", ["harmonypy"], [], "x")
 
 
+def test_packages_leave_what_the_shared_environment_is_still_getting_to_it(hub, settings, tmp_path):
+    import re
+    import subprocess
+    import sys
+
+    lock = settings.root / "env-lock.txt"
+    lock.write_text("scanpy==1.12.4\n    # via schub\ntorch==2.11.0+cu128\nscvi-tools==1.5.1\n")
+    script = build_script(settings, "crispr", ["scvi-tools", "harmonypy"], [], "20260930-120000")
+    assert "-c constraints.txt -c coming.txt" in script  # the versions the shared environment will have
+    work = tmp_path / "build"
+    work.mkdir()
+    (work / "shared.txt").write_text("scanpy==1.12.4\n-e file:///src/sc-hub\n")  # torch not there yet
+    (work / "resolved.txt").write_text("harmonypy==0.0.10\nscvi-tools==1.5.1\ntorch==2.11.0+cu128\n")
+    coming, extra = re.findall(r"<<'PY'\n(.*?)\nPY", script, re.S)
+    subprocess.run([sys.executable, "-", str(lock)], input=coming, text=True, cwd=work, check=True)
+    assert (work / "coming.txt").read_text() == "torch==2.11.0+cu128\nscvi-tools==1.5.1\n"
+    subprocess.run([sys.executable, "-"], input=extra, text=True, cwd=work, check=True, capture_output=True)
+    assert (work / "extra.txt").read_text().split() == ["harmonypy==0.0.10"]  # not 6.5 GB of torch here as well
+    lock.unlink()
+    assert "-c coming.txt" not in build_script(settings, "crispr", ["harmonypy"], [], "x")  # all is there
+
+
 def test_packages_build_on_what_is_installed_and_can_be_removed(hub, settings, cluster):
     job = hub.add_project_packages("crispr", pip=["harmonypy"])
     assert job.kernel == "sc-hub: crispr" and job.pip == ("harmonypy",) and "bash" in cluster.scripts[job.job_id]

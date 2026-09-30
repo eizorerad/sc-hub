@@ -10,6 +10,9 @@ from typing import Callable
 
 from pydantic import BaseModel, ConfigDict
 
+from ...config import load_settings
+from ...setup_status import install_note, live_queue
+from ...slurm import Slurm
 from ..models import CheckResult
 from . import CheckDef, failed, passed
 
@@ -37,6 +40,16 @@ def _probe_other(python: str) -> CheckResult:
     return passed("gpu_visible", f"{info['count']} GPU(s): {info['name']} ({python})", cuda=info["cuda"])
 
 
+def _coming() -> str:
+    """Right after the setup, torch may still be on its way: say so, so nobody installs it by hand meanwhile."""
+    try:
+        settings = load_settings()
+        text = install_note(settings, live_queue(settings, Slurm()))
+    except Exception:  # noqa: BLE001 - the check's own answer stands without it
+        return ""
+    return f" yet. {text}" if text else ""
+
+
 def check_gpu(path_of: Callable[[str], Path], p: NoParams) -> CheckResult:
     """torch sees a GPU. The default cu130 wheels import fine on this cluster but see none."""
     if os.environ.get(CHECK_PYTHON):
@@ -44,7 +57,7 @@ def check_gpu(path_of: Callable[[str], Path], p: NoParams) -> CheckResult:
     try:
         import torch
     except ImportError:
-        return failed("gpu_visible", "torch is not installed in this environment")
+        return failed("gpu_visible", "torch is not installed in this environment" + _coming())
     if not torch.cuda.is_available():
         build = getattr(torch.version, "cuda", None)
         return failed("gpu_visible", f"torch {torch.__version__} (CUDA {build}) sees no GPU; the node driver "

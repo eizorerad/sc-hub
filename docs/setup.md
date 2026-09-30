@@ -26,8 +26,12 @@ something only where it has to:
    never reaches the assistant. On Windows 10, whose OpenSSH does not take a
    password from a program, a console window opens and you type it there.
 3. **sc-hub on the cluster**, in `/l/users/LOGIN/schub`, set up in a Slurm job:
-   your own environment and the starter datasets (about 6 GB, 10-20 minutes the
-   first time).
+   your own environment with the analysis tools (scanpy, CellTypist, DE, Jupyter;
+   about 1.3 GB) and the starter datasets (about 150 MB): a few minutes. The
+   deep-learning tools (torch with its CUDA libraries and scvi-tools: up to 6.5 GB, most
+   of the download) follow in a background job you do not wait for; it starts ten
+   minutes later and takes a few minutes to half an hour, depending on the network.
+   The dashboard, `cluster()` and `schub doctor` say while it is on its way.
 4. **A first run**: a kernel cell and a small Slurm job with a check, in the
    project `hello`.
 5. **Your assistants**: `~/sc-hub-workspace` is created, and sc-hub is switched on
@@ -171,11 +175,17 @@ exist as a CLI on the cluster:
 
 By default every student's workspace is self-contained: `bootstrap_cluster.sh`
 builds a private environment and downloads the starter datasets and models into
-`$SCHUB_ROOT/library-local` (about 6 GB). micromamba (for a project's conda
-packages) and R + Seurat (for `bench.import_seurat`) are installed there the first
-time a cell needs them; cellxgene, kallisto indices and Cell Ranger come only with a
-library, and the tools that need them say so. Sharing datasets between students is
-for later.
+`$SCHUB_ROOT/library-local` (`scripts/setup_steps.sh quick`), then a background job
+(`setup_steps.sh extras`, state in `$SCHUB_ROOT/setup-extras.json`) adds the
+deep-learning stack (about 8 GB in all). Both parts install the versions of one
+resolution (`$SCHUB_ROOT/env-lock.txt`), so the background part never changes what a
+running kernel uses; running the setup again keeps those versions unless sc-hub's
+requirements changed. One install into the environment at a time (a lock folder,
+`.env-install.lock`). Re-running the setup's cluster step (`start.sh retry cluster`)
+restarts a background part that failed or ended without finishing. micromamba (for a project's conda packages) and R + Seurat
+(for `bench.import_seurat`) are installed there the first time a cell needs them;
+cellxgene, kallisto indices and Cell Ranger come only with a library, and the tools that
+need them say so. Sharing datasets between students is for later.
 
 Optionally, someone can publish a read-only library (`scripts/publish_library.sh`)
 and point a workspace at it with `SCHUB_LIBRARY`:
@@ -194,7 +204,7 @@ and point a workspace at it with `SCHUB_LIBRARY`:
 ```
 
 With `SCHUB_LIBRARY` set and readable, `bootstrap_cluster.sh` uses it: no private
-environment (saves ~6 GB each) and no duplicate datasets. If it is missing or
+environment (saves about 8 GB each) and no duplicate datasets. If it is missing or
 unreadable, bootstrap builds a private environment as above. If the library lacks
 one asset, only that asset is downloaded into `library-local`. At any time `bench.fetch` in a cell or `schub fetch` in a job fetches a
 download job. Datasets with a recorded checksum get the same cache keys whether

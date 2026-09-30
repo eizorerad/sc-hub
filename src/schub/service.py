@@ -23,7 +23,8 @@ from .runs import LimitExceeded, PlanRejected, RunManifest, RunResults, RunStatu
 from .sessions import SessionError, SessionInfo, SessionStore
 from .seurat import ImportJob, SeuratImportError, submit_import
 from .slurm import ActiveJob, JobSpec, PartitionInfo, Slurm, render_script
-from .state import Frozen
+from .setup_status import install_note, live_queue, pending as setup_pending
+from .state import Frozen, warning
 
 PLAN_ID = re.compile(r"[0-9a-f]{12}")
 RUN_ID = re.compile(r"\d{8}-\d{6}-[0-9a-f]{6}-[0-9a-f]{4}")
@@ -197,6 +198,11 @@ class Hub:
         if project is not None:
             self.projects.require(project)
         plan = build_plan(self._profile(path), self.fingerprint(path), requests, self._context(), overrides)
+        queue = live_queue(self.settings, self.slurm) if plan.gpu_hours else None
+        if plan.gpu_hours and setup_pending(self.settings, queue):  # scvi-tools and torch are still on their way
+            coming = warning("setup_in_progress", f"{install_note(self.settings, queue)} Submit the GPU steps when it "
+                             "has finished.")
+            plan = plan.model_copy(update={"issues": (*plan.issues, coming)})
         return plan.model_copy(update={"project": project, "branch": branch})
 
     def preview_branch(self, project: str, branch: str) -> Plan:

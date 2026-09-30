@@ -3,8 +3,10 @@
 #
 #   bash scripts/bootstrap_cluster.sh
 #
-# Builds the user's own environment and downloads the starter datasets into
-# $ROOT/library-local. With SCHUB_LIBRARY set to a shared library this user can
+# Builds the user's own environment in two parts (scripts/setup_steps.sh): the analysis
+# tools and the starter datasets (into $ROOT/library-local) in a few minutes, after which
+# the student can work; then, in a background job, the deep-learning stack (torch,
+# scvi-tools: up to 6.5 GB). With SCHUB_LIBRARY set to a shared library this user can
 # read (scripts/publish_library.sh), it uses that instead: no private environment
 # and no duplicate datasets.
 #
@@ -122,15 +124,88 @@ build_private_env() {
   install_uv
   PYTHON="$ROOT/env/bin/python"
   write_wrappers
-  HEAVY_CMD="set -euo pipefail
-export UV_CACHE_DIR='$ROOT/.cache/uv' UV_PYTHON_INSTALL_DIR='$ROOT/.cache/python'
-export UV_PYTHON_PREFERENCE=only-managed UV_TORCH_BACKEND='$TORCH_BACKEND'
-[ -x '$ROOT/env/bin/python' ] || '$ROOT/bin/uv' venv --quiet --python $PYTHON_VERSION '$ROOT/env'
-'$ROOT/bin/uv' pip install --quiet --python '$ROOT/env/bin/python' -e '$SRC_DIR[analysis]'
-'$ROOT/bin/schub' gpu-check || [ '$INSTALL_MODE' = login ]
-'$ROOT/bin/schub' fetch -- $ASSETS"
-  log "fallback: building a private environment and fetching $ASSETS (several minutes)..."
-  if [ "$INSTALL_MODE" = "job" ]; then run_heavy --gres=gpu:1; else run_heavy; fi
+  export SCHUB_ROOT="$ROOT" SCHUB_SRC="$SRC_DIR" SCHUB_PYTHON_VERSION="$PYTHON_VERSION" \
+    SCHUB_TORCH_BACKEND="$TORCH_BACKEND" SCHUB_ASSETS="$ASSETS"
+  # (while the background part installs, this waits for it: setup_steps.sh keeps to one install at a time)
+  HEAVY_CMD="bash '$SRC_DIR/scripts/setup_steps.sh' quick"
+  log "installing the analysis tools (scanpy, CellTypist, DE, Jupyter) and the starter datasets: about 5 minutes"
+  run_heavy
+  start_extras
+}
+
+extras_field() {  # a field of setup-extras.json (written by setup_steps.sh; plain words, no quotes inside)
+  [ -f "$ROOT/setup-extras.json" ] || return 0  # (not there yet: the first run)
+  sed -n "s/.*\"$1\": \"\([^\"]*\)\".*/\1/p" "$ROOT/setup-extras.json" | head -n 1 || true
+}
+
+extras_status() {  # state job error: the background part's status before its job runs (setup_steps.sh writes it after)
+  printf '{"state": "%s", "step": "", "job": "%s", "updated": "%s", "started": "", "lock": "", "error": "%s"}\n' \
+    "$1" "$2" "$(date +%Y-%m-%dT%H:%M:%S%z)" "${3:-}" > "$ROOT/setup-extras.json.tmp"
+  mv "$ROOT/setup-extras.json.tmp" "$ROOT/setup-extras.json"
+}
+
+extras_job_state() {  # prints the job's state while it is queued or running, nothing once it is gone;
+  # fails when Slurm does not answer (then nobody can tell, and nothing is queued twice)
+  local out
+  [ -n "$1" ] || return 0
+  if ! out="$(squeue -h -j "$1" -o %T 2>&1)"; then
+    case "$out" in *"Invalid job id"*) return 0 ;; esac
+    return 1
+  fi
+  printf '%s\n' "$out" | grep -E '^(PENDING|CONFIGURING|RUNNING|COMPLETING|SUSPENDED)$' | head -n 1 || true
+}
+
+start_extras() {
+  # The deep-learning stack: a background job the student does not wait for. It starts ten minutes later,
+  # so the setup's first Slurm jobs find a free job slot (2 on ws-ia; the workbench takes one).
+  local state job lock_sum active prefix out
+  state="$(extras_field state)"
+  job="$(extras_field job)"
+  lock_sum="$(sha256sum "$ROOT/env-lock.txt" 2>/dev/null | cut -c1-16 || true)"
+  if [ "$state" = done ] && [ "$(extras_field lock)" = "$lock_sum" ]; then
+    log "the deep-learning tools (torch, scvi-tools) are installed"
+    return
+  fi
+  if [ "$state" = queued ] || [ "$state" = running ]; then
+    if ! active="$(extras_job_state "$job")"; then
+      log "Slurm did not answer about the background install (job $job), so it is not queued again; if it"
+      log "does not finish, run this setup step again"
+      return
+    fi
+    if [ -n "$active" ]; then
+      log "the background install (job $job) is still on its way"
+      return
+    fi
+  fi
+  if [ "$INSTALL_MODE" != "job" ]; then
+    # (right here, where no GPU can be checked; SLURM_JOB_ID would name an enclosing job as the background part's)
+    env -u SLURM_JOB_ID SCHUB_GPU_CHECK=skip bash "$SRC_DIR/scripts/setup_steps.sh" extras 2>&1 \
+      | tee "$ROOT/logs/setup-extras-local.log" \
+      || log "the background part stopped (setup-extras.json says where); the rest of the setup goes on"
+    return
+  fi
+  # this folder's job names (another sc-hub folder of the same account has its own: schub.config)
+  prefix="$("$PYTHON" -c 'from schub.config import load_settings; print(load_settings().job_prefix)' \
+    2>/dev/null || echo schub)"
+  local err="$ROOT/logs/setup-extras-sbatch.err" why
+  # (its warnings go to their own file: stdout is only the job id, "id" or "id;cluster")
+  out="$(sbatch --parsable --partition="$PARTITION" --gres=gpu:1 --cpus-per-task=8 --mem=16G --time=02:00:00 \
+    --begin=now+10minutes --job-name="$prefix-setup-extras" --output="$ROOT/logs/setup-extras-%j.log" \
+    "$SRC_DIR/scripts/setup_steps.sh" extras 2>"$err")" || out=""
+  job="$(printf '%s\n' "$out" | tail -n 1)"
+  job="${job%%;*}"
+  if ! [[ "$job" =~ ^[0-9]+$ ]]; then
+    why="$(tr -d '"\\' < "$err" 2>/dev/null | tr '\n\r\t' '   ' | cut -c1-160 || true)"
+    extras_status failed "" "could not queue it: ${why:-sbatch gave no job id}"
+    log "could not queue the background install (${why:-sbatch gave no job id}). The rest of the setup"
+    log "goes on; run this setup step again later for the deep-learning tools (torch, scvi-tools)"
+    return
+  fi
+  extras_status queued "$job"
+  local begin
+  begin="$(date -d '+10 minutes' +%H:%M 2>/dev/null || date -v+10M +%H:%M)"
+  log "you can start working now. In the background (job $job, from $begin): the deep-learning tools"
+  log "(torch, scvi-tools: up to 6.5 GB to download, a few minutes to half an hour)"
 }
 
 fetch_missing() {

@@ -223,6 +223,20 @@ def test_the_cluster_answer_names_the_engines(server, bench: Settings) -> None:
     assert any(line.startswith("codex: paused until") for line in engines)
 
 
+def test_cluster_says_what_the_setup_still_installs(server, bench: Settings, cluster: FakeCluster) -> None:
+    from datetime import datetime, timezone
+
+    assert ok(call(server, "cluster"))["setup"] == ""
+    job = "4242"
+    cluster.jobs[job], cluster.names[job] = "RUNNING", "schub-setup-extras"
+    status = {"state": "running", "job": job, "step": "the GPU check", "updated": datetime.now(timezone.utc).isoformat()}
+    (bench.root / "setup-extras.json").write_text(json.dumps(status))
+    assert ok(call(server, "cluster"))["setup"].startswith(
+        f"Still installing the deep-learning tools (torch, scvi-tools) in the background (job {job}: now the GPU check)")
+    (bench.root / "setup-extras.json").write_text(json.dumps({**status, "job": "999999", "updated": "2026-01-01T00:00"}))
+    assert "ended without finishing" in ok(call(server, "cluster"))["setup"]  # its job left the queue
+
+
 def test_a_report_through_mcp(server, bench: Settings, monkeypatch) -> None:
     from schub.bench.journal import Journal
     from schub.bench.models import CellEntry, OutputItem

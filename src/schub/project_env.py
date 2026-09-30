@@ -33,6 +33,7 @@ from .config import Settings
 from .slurm import JobSpec, Slurm, render_script
 from .state import Frozen
 from .locking import LockTimeout, exclusive
+from .setup_status import LOCK_FILE, private_env
 from .streaming import run_streamed
 
 # A requirement like "harmonypy", "decoupler>=1.6", "r-seurat=5.1" (no URLs or paths).
@@ -168,6 +169,10 @@ def kernel_ready(settings: Settings, project: str) -> bool:
     return built(settings, project) is not None and (kernel_dir(project) / "kernel.json").is_file()
 
 
+# A requirement line's package name, normalized (used by the build script's Python snippets).
+NAME = "name = lambda line: re.split(r'[=<>!~ ;\\[]', line.strip(), maxsplit=1)[0].lower().replace('_', '-')"
+
+
 def build_script(settings: Settings, project: str, pip: Sequence[str], conda: Sequence[str], stamp: str) -> str:
     """Bash that builds the environment in its own folder and switches `current` to it
     only when everything worked (a failed build never breaks the working kernel)."""
@@ -197,18 +202,37 @@ def build_script(settings: Settings, project: str, pip: Sequence[str], conda: Se
         '"$NEW/venv/bin/python" -c "import sysconfig; print(sysconfig.get_paths()[\'purelib\'])" > own-site.txt',
         'printf "import site; site.addsitedir(%s)\\n" "$("$BASE" -c "import sys; print(repr(open(\'base-site.txt\').read().strip()))")" > "$(cat own-site.txt)/_schub_shared.pth"',
     ]
+    lock = settings.root / LOCK_FILE
+    coming = pip and lock.is_file() and private_env(settings)  # what the setup's background part may still add
     if pip:
         lines += [
             '"$UV" pip freeze --python "$BASE" > shared.txt',
             # sc-hub itself (local or editable) and URL installs are no constraint for others.
             "grep -v -E '^(-e |schub[ =@])|@ (file|git\\+)' shared.txt > constraints.txt || true",
             f"printf '%s\\n' {' '.join(q(p) for p in pip)} > requested.txt",
+        ]
+    if coming:
+        # What the shared environment has not got yet (torch, scvi-tools, right after the setup): the same
+        # versions as it will have, and left to it rather than installed here too (6.5 GB).
+        lines.append(f'"$BASE" - {q(str(lock))} <<\'PY\'\n'
+                     "import re, sys\n"
+                     f"{NAME}\n"
+                     "shared = {name(l) for l in open('shared.txt') if l.strip() and not l.startswith(('#', '-e'))}\n"
+                     "keep = [l for l in open(sys.argv[1]) if l.strip() and not l.startswith(('#', ' ', '-'))\n"
+                     "        and name(l) not in shared]\n"
+                     "open('coming.txt', 'w').write(''.join(keep))\n"
+                     "PY")
+    if pip:
+        lines += [
             # Resolve against the shared pins, then install only what is new.
-            '"$UV" pip compile --quiet --python "$NEW/venv/bin/python" requested.txt -c constraints.txt -o resolved.txt',
+            '"$UV" pip compile --quiet --python "$NEW/venv/bin/python" requested.txt -c constraints.txt'
+            + (" -c coming.txt" if coming else "") + " -o resolved.txt",
             '"$BASE" - <<\'PY\'\n'
-            "import re\n"
-            "name = lambda line: re.split(r'[=<>!~ ;\\[]', line.strip(), maxsplit=1)[0].lower().replace('_', '-')\n"
+            "import os, re\n"
+            f"{NAME}\n"
             "shared = {name(l) for l in open('shared.txt') if l.strip() and not l.startswith(('#', '-e'))}\n"
+            "if os.path.exists('coming.txt'):\n"
+            "    shared |= {name(l) for l in open('coming.txt') if l.strip()}\n"
             "new = [l.strip() for l in open('resolved.txt') if l.strip() and not l.startswith(('#', ' ')) and name(l) not in shared]\n"
             "open('extra.txt', 'w').write('\\n'.join(new) + '\\n')\n"
             "print('installing', len(new), 'new packages:', ' '.join(new))\n"

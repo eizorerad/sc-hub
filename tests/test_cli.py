@@ -61,6 +61,23 @@ def test_doctor_reports_without_raising(env, capsys):
     assert report["imports"]["anndata"] != ""
 
 
+def test_doctor_tells_a_module_still_coming_from_a_broken_one(env, capsys, monkeypatch):
+    import schub.cli
+    from schub import setup_status
+
+    monkeypatch.setattr(schub.cli, "DOCTOR_IMPORTS", {"schub_heavy_x": "x", "schub_light_y": "y"})
+    monkeypatch.setattr(setup_status, "HEAVY_MODULES", frozenset({"schub_heavy_x"}))
+    monkeypatch.setattr(schub.cli, "_torch_cuda_build", lambda: "FAILED: No module named 'torch'")
+    report = json.loads(run(capsys, "doctor")[1])
+    assert report["imports"]["schub_heavy_x"].startswith("FAILED") and report["setup"] == "complete"
+    (env.root / "setup-extras.json").write_text(json.dumps({"state": "running", "job": "4242"}))
+    report = json.loads(run(capsys, "doctor")[1])
+    assert report["imports"]["schub_heavy_x"] == "coming: the background install adds it"
+    assert report["imports"]["schub_light_y"].startswith("FAILED")  # not the background part's: still a failure
+    assert report["torch_cuda_build"] == "coming: the background install adds it"
+    assert report["setup"].startswith("Still installing the deep-learning tools (torch, scvi-tools)")
+
+
 def test_project_commands(env, capsys, tmp_path):
     assert run(capsys, "project-new", "pbmc", "--question", "Which clusters?", "--dataset", "pbmc3k")[0] == 0
     spec = tmp_path / "main.yaml"

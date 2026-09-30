@@ -51,6 +51,18 @@ def test_rejects_paths_outside_roots_wrong_suffix_and_missing(hub, tmp_path, wri
         hub.resolve_dataset("data/missing.h5ad")
 
 
+def test_a_gpu_plan_right_after_the_setup_says_scvi_tools_is_still_coming(hub, settings, shared_pbmc, cluster):
+    scvi = {"brick": "integrate_scvi", "params": {"batch_key": "donor", "condition_key": "label"}}
+    assert "setup_in_progress" not in [i.code for i in hub.plan("pbmc3k", [QC, scvi]).issues]
+    cluster.jobs["4242"], cluster.names["4242"] = "RUNNING", "schub-setup-extras"
+    (settings.root / "setup-extras.json").write_text('{"state": "running", "job": "4242"}')
+    [coming] = [i for i in hub.plan("pbmc3k", [QC, scvi]).issues if i.code == "setup_in_progress"]
+    assert coming.level == "warning" and "Still installing the deep-learning tools" in coming.message
+    assert all(i.code != "setup_in_progress" for i in hub.plan("pbmc3k", [QC]).issues)  # no GPU step: no word
+    del cluster.jobs["4242"]  # its job is gone: not "still installing" any more
+    assert all(i.code != "setup_in_progress" for i in hub.plan("pbmc3k", [QC, scvi]).issues)
+
+
 def test_plan_submit_status_roundtrip(hub, shared_pbmc, cluster):
     plan = hub.plan("pbmc3k", [QC, {"brick": "normalize_embed"}])
     assert plan.ok

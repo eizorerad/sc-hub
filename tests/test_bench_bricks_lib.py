@@ -33,8 +33,26 @@ def test_the_bricks_own_checks_refuse_wrong_data(data: dict[str, Path]) -> None:
             "condition_key": "label", "reference": "ctrl", "treatment": "stim", "replicate_key": "donor"}, None)
 
 
-def test_gpu_bricks_ask_for_a_gpu_job(data: dict[str, Path]) -> None:
+def test_gpu_bricks_ask_for_a_gpu_job(data: dict[str, Path], monkeypatch) -> None:
+    import sys
+    import types
+
+    no_gpu = types.SimpleNamespace(cuda=types.SimpleNamespace(is_available=lambda: False))
+    monkeypatch.setitem(sys.modules, "torch", no_gpu)
     with pytest.raises(BrickError, match="%%slurm --gpus 1"):
+        run_brick("integrate_scvi", data["counts"], None, {"batch_key": "donor"}, None)
+
+
+def test_gpu_bricks_without_torch_say_whether_it_is_on_its_way(data: dict[str, Path], settings: Settings,
+                                                               monkeypatch) -> None:
+    import sys
+
+    monkeypatch.setitem(sys.modules, "torch", None)
+    monkeypatch.delenv("SCHUB_PYTHON", raising=False)
+    with pytest.raises(BrickError, match="needs torch, which is not installed in this environment$"):
+        run_brick("integrate_scvi", data["counts"], None, {"batch_key": "donor"}, None)
+    (settings.root / "setup-extras.json").write_text('{"state": "running", "job": "4242"}')
+    with pytest.raises(BrickError, match="needs torch, which is not installed yet. Still installing the deep-learning"):
         run_brick("integrate_scvi", data["counts"], None, {"batch_key": "donor"}, None)
 
 
