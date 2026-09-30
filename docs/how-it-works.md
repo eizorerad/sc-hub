@@ -152,6 +152,8 @@ projects/<project>/
   data/                   downloads (bench.fetch), twins in data/twins/<hash>/
   journal/cells/          one JSON per cell (single writer) + addenda (job, files, checks)
   journal/notes/          registrations, decisions, findings, verdicts, errors, incidents
+  journal/changes/        one small file per change (a note, a cell's start or end, an addendum), numbered
+                          once it can be read: reading on from `newest` goes by these numbers, never by time
   journal/handoff.md      where the work stands (at most 120 lines); checkpoint.json
   jobs/<cell>-<key>/      %%slurm snapshots, logs and results
   goal/                   a lab agent's goal.md and state

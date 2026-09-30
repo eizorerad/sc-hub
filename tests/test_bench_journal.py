@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import multiprocessing
+import os
+import re
 from pathlib import Path
 
 import pytest
@@ -167,10 +169,11 @@ def read_on(journal: Journal, since: str | None, limit: int = 1) -> list[str]:
 
 
 def test_reading_on_misses_no_record_made_in_the_same_millisecond(tmp_path: Path) -> None:
-    journal = Journal(tmp_path / "projects" / "demo", "demo", now=lambda: "2026-09-24T10:00:00.000+00:00")
+    writer = Journal(tmp_path / "projects" / "demo", "demo", now=lambda: "2026-09-24T10:00:00.000+00:00")
     for i in range(5):
-        journal.add_note("note", f"note {i}")
-    assert read_on(journal, "2026-09-24T09:00:00.000+00:00") == [f"note {i}" for i in range(5)]
+        writer.add_note("note", f"note {i}")
+    reader = Journal(tmp_path / "projects" / "demo", "demo")  # (a reader's clock runs: where it began is a time)
+    assert read_on(reader, "2026-09-24T09:00:00.000+00:00") == [f"note {i}" for i in range(5)]
 
 
 def stall_before_publishing(monkeypatch, stalled, meanwhile) -> dict:
@@ -235,6 +238,11 @@ def test_outputs_written_while_a_cell_runs_are_not_a_change(journal: Journal) ->
     assert [e.status for _, e in journal.changes(since=since)] == ["ok"]
 
 
+def number_of(place: str) -> int:
+    """The change number in a place: '#5' or '#5@<time>' (the time is where the look at old code's records goes on)."""
+    return int(re.fullmatch(r"#(\d+)(?:@.*)?", place)[1])
+
+
 def hide_from_listing(monkeypatch, journal: Journal, *numbers: int) -> None:
     """A directory listing made while files are being created can skip one that is there (readdir is not atomic)."""
     listed = journal._change_files
@@ -249,11 +257,12 @@ def test_a_listing_that_skips_a_change_does_not_make_the_reader_skip_it_for_good
         journal.add_note("note", f"note {i}")
     hide_from_listing(monkeypatch, journal, 3)
     changes, after = journal.page(since="#0")
-    assert [e.text for _, e in changes] == [f"note {i}" for i in range(5)] and after == "#5"
+    assert [e.text for _, e in changes] == [f"note {i}" for i in range(5)] and number_of(after) == 5
     assert [e.text for _, e in journal.page(since="#2")[0]] == ["note 2", "note 3", "note 4"]
-    assert journal.page(since=None)[1] == "#5"  # the place after a full read is not the last number listed
+    assert number_of(journal.page(since=None)[1]) == 5  # the place after a full read is not the last number listed
     journal.add_note("note", "note 5")
-    assert journal.page(since="#5")[1] == "#6" and sorted(p.name for p in journal.changes_dir.iterdir())[-1] == "000006.json"
+    assert number_of(journal.page(since="#5")[1]) == 6
+    assert sorted(p.name for p in journal.changes_dir.iterdir())[-1] == "000006.json"
 
 
 def test_a_number_that_is_really_missing_holds_the_read_there_until_it_is_filled(tmp_path: Path) -> None:
@@ -263,7 +272,111 @@ def test_a_number_that_is_really_missing_holds_the_read_there_until_it_is_filled
         journal.add_note("note", f"note {i}")
     (journal.changes_dir / "000003.json").unlink()
     changes, after = journal.page(since="#0")
-    assert [e.text for _, e in changes] == ["note 0", "note 1"] and after == "#2"
+    assert [e.text for _, e in changes] == ["note 0", "note 1"] and number_of(after) == 2
     journal.add_note("note", "note 4")  # takes number 3
     assert (journal.changes_dir / "000003.json").exists()
     assert [e.text for _, e in journal.page(since="#2")[0]] == ["note 4", "note 3"]  # (note 2's number was lost)
+
+
+class OldCodeJournal(Journal):
+    """The journal code from before the change numbers: it writes every record and never numbers it (a workbench,
+    a kernel or a job started before the upgrade keeps it until it ends: up to a day)."""
+
+    def _number_change(self, record_id: str, changed: str) -> bool:
+        return True
+
+
+def test_records_of_code_from_before_the_numbers_are_found_while_it_can_still_be_running(tmp_path: Path) -> None:
+    """Found in review: after an upgrade, running workbenches write without numbers, and a read on from a number
+    skipped all of it (54 of 108 records in the review's run, every old note, for good)."""
+    folder, now = tmp_path / "projects" / "demo", Ticks()
+    new, old = Journal(folder, "demo", now=now), OldCodeJournal(folder, "demo", now=now)
+    new.add_note("note", "new one")
+    cid = new.allocate("c")
+    new.write_cell(cell(new, cid, status="running", started=new.now()))
+    _, place = new.page(since=None)
+    old.add_note("note", "old one")  # the old worker finishes the cell the new code started, and writes a note
+    old.write_cell(cell(old, cid, status="ok", started=old.now(), finished=old.now()))
+    new.add_note("note", "new two")
+    changes, after = new.page(since=place)
+    seen = [(e.kind, e.text if e.kind == "note" else e.status) for _, e in changes]
+    assert ("note", "new two") in seen and ("note", "old one") in seen and ("cell", "ok") in seen and len(seen) == 3
+    assert new.page(since=after)[0] == []  # and each only once: the place has moved past them
+
+
+def test_the_look_at_old_codes_records_ends_when_it_cannot_be_running_any_more(tmp_path: Path, monkeypatch) -> None:
+    folder, now = tmp_path / "projects" / "demo", Ticks()
+    new, old = Journal(folder, "demo", now=now), OldCodeJournal(folder, "demo", now=now)
+    new.add_note("note", "new one")
+    _, place = new.page(since=None)
+    old.add_note("note", "old one")
+    assert [e.text for _, e in new.page(since=place)[0]] == ["old one"]
+    monkeypatch.setattr(journal_module, "LEGACY_S", -1.0)  # the first number is older than any old process can be
+    _, late = new.page(since=None)
+    assert "@" not in late  # nothing to go on looking for: a plain number from now on
+    old.add_note("note", "too late")
+    assert new.page(since=late)[0] == []
+    assert "too late" in [e.text for e in new.entries()]  # a read without `since` always has everything
+
+
+def test_a_numbering_that_fails_does_not_fail_the_write_and_can_be_done_again(tmp_path: Path, monkeypatch) -> None:
+    """Found in review: the record was on disk but the call raised, so the agent's retry made a duplicate note, and
+    a job's recovery found 'already exists' and never numbered it."""
+    journal = Journal(tmp_path / "projects" / "demo", "demo", now=Ticks())
+    monkeypatch.setattr(journal_module, "NUMBERING_PAUSE_S", 0.0)
+    real, failing = journal_module.create_json_exclusive, {"on": True}
+
+    def refuse_numbers(path: Path, payload: dict, *args):
+        if failing["on"] and path.parent.name == "changes":
+            raise OSError(5, "Input/output error")
+        return real(path, payload, *args)
+
+    monkeypatch.setattr(journal_module, "create_json_exclusive", refuse_numbers)
+    note = journal.add_note("note", "written all the same")
+    cid = journal.allocate("c")
+    journal.write_cell(cell(journal, cid, status="ok", started=journal.now(), finished=journal.now()))
+    assert journal.add_addendum(cid, "job-5", {"kind": "job", "job": {"job_id": "5", "state": "COMPLETED"}}) is True
+    assert [e.text for e in journal.entries(kinds=("note",))] == ["written all the same"] and note.ref.endswith("n0001")
+    assert not journal.changes_dir.is_dir() or not list(journal.changes_dir.glob("*.json"))
+    # a reader that went on from a number still finds them: they are recent, and old code may be running
+    assert {e.ref for _, e in journal.page(since="#0@2026-09-24T09:00:00.000+00:00")[0]} == {note.ref, f"demo#{cid}"}
+    assert journal.note_change(cid) is False  # the file server still refuses
+    failing["on"] = False
+    assert journal.note_change("n0001") is True and journal.note_change(cid) is True
+    assert [e.ref for _, e in journal.page(since="#0")[0]] == [note.ref, f"demo#{cid}"]
+
+
+def test_an_empty_change_file_that_nobody_is_writing_any_more_is_skipped(tmp_path: Path) -> None:
+    """Where link() is refused a writer killed mid-write leaves an empty file, and the writers after it number on:
+    the reads must not stop at it for good."""
+    journal = Journal(tmp_path / "projects" / "demo", "demo", now=Ticks())
+    for i in range(4):
+        journal.add_note("note", f"note {i}")
+    lost = journal.changes_dir / "000002.json"
+    lost.write_text("")
+    changes, after = journal.page(since="#0")
+    assert [e.text for _, e in changes] == ["note 0"] and number_of(after) == 1  # still being written: it waits
+    old = journal_module.time.time() - 10 * journal_module.LOST_CHANGE_S
+    os.utime(lost, (old, old))
+    changes, after = journal.page(since="#0")
+    assert [e.text for _, e in changes] == ["note 0", "note 2", "note 3"] and number_of(after) == 4
+
+
+def test_reading_on_reads_only_what_it_needs(tmp_path: Path, monkeypatch) -> None:
+    """Found in review: a read from an old place loaded every changed record (each one listing the whole cells
+    folder) before the limit applied: 18.9 s for 3,000 cells against 1.1 s for a full read."""
+    journal = Journal(tmp_path / "projects" / "demo", "demo", now=Ticks())
+    for _ in range(60):
+        cid = journal.allocate("c")
+        journal.write_cell(cell(journal, cid, status="ok", started=journal.now(), finished=journal.now()))
+        journal.add_addendum(cid, "job-1", {"kind": "job", "job": {"job_id": "1", "state": "COMPLETED"}})
+    reads = []
+    real = journal_module.read_json
+    monkeypatch.setattr(journal_module, "read_json", lambda path: reads.append(path) or real(path))
+    changes, after = journal.page(since="#0", limit=3)
+    assert len(changes) == 3 and len(reads) < 40, len(reads)  # (every cell and addendum file: 180 and more)
+    first_three = [e.ref for _, e in changes]
+    rest = journal.page(since=changes[-1][0], limit=100)[0]
+    # (the third cell's addendum came after the page ended: that cell is read again, as it is now)
+    assert {e.ref for _, e in rest} | set(first_three) == {f"demo#c{i:04d}" for i in range(1, 61)}
+    assert len(rest) in (57, 58)

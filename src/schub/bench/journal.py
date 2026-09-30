@@ -6,7 +6,7 @@
       cells/c0007.job-812.json  addenda (a job ended, a check ran); created once, never changed
       cells/c0007/              artifacts (figures)
       notes/n0003.json          decisions, findings, errors, registrations...
-      changes/000042.json       the 42nd change, {"id": "c0007"}: numbered once it can be read
+      changes/000042.json       the 42nd change, {"id": "c0007", "changed": <its time>}: numbered once it can be read
 
 Ids are handed out by the server when a record is appended (VCC2026 once gave two
 findings the same number, F48/F49). A decision must name the cells it rests on and
@@ -17,20 +17,30 @@ taken before its record is published: records made in the same millisecond share
 one, and a writer that stalls in between publishes a record older than those a
 reader has seen already. A change gets its number after it is published, and number
 n only once n-1 exists (exclusive create), so a reader that has every change up to n
-and reads on from there misses none, whatever their times. (A writer that dies or
-fails between the two leaves a change that only a read without `since` shows.)
+and reads on from there misses none, whatever their times.
+
+Two things keep that honest where the numbers do not reach. Code from before the
+numbers (a workbench, a kernel, a job started before an upgrade, for up to a day)
+writes records and never numbers them: while such code can still be running, a read
+that goes on from a place also takes the records changed since the time the place
+carries ("#42@<time>"), each once. And a writer that fails to number a record, or
+dies between the two, does not fail the write: the record is on disk, found by that
+same look while it lasts and by every read without `since`; note_change() numbers it
+again.
 """
 
 from __future__ import annotations
 
 import os
 import re
+import time
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 from pydantic import ValidationError
 
-from .clock import Clock, stamp
+from .clock import Clock, parse, stamp
 from .fsio import create_json_exclusive, read_json, write_json_atomic
 from .models import (
     CID_PATTERN, FINAL_STATUSES, MAX_TEXT_CHARS, NID_PATTERN, NOTE_KINDS, Actor, CellEntry, CheckResult, Download,
@@ -39,9 +49,17 @@ from .models import (
 
 REF = re.compile(r"^(?P<project>[a-z0-9][a-z0-9_/-]*)#(?P<id>[cn]\d{4,})$")
 SUFFIX = re.compile(r"^[a-z0-9][a-z0-9_-]{0,80}$")
-# where a read ended (see Journal.page): "#42", after change 42; while an older client's time is read on
+# where a read ended (see Journal.page): "#42", after change 42; "#42@<time>", and also after what old code
+# changed before that time; "#42@<time>;<ref>", after that record of it; while an older client's time is read on
 # from, "#42,<time>,<ref>", after that record, then on from change 42
-PLACE = re.compile(r"^#(?P<number>\d+)(?:,(?P<changed>[^,]+),(?P<ref>[^,]+))?$")
+PLACE = re.compile(r"^#(?P<number>\d+)(?:@(?P<time>[^;,]+)(?:;(?P<tref>[^;,]+))?|,(?P<changed>[^,]+),(?P<cref>[^,]+))?$")
+LEGACY_S = 48 * 3600.0  # code from before the numbers cannot run longer than this after the first number
+LOST_CHANGE_S = 60.0  # an empty change file this old is not being written any more
+LEGACY_OVERLAP_S = 0.5  # old code takes a record's time before it publishes it: look this far back of a read's start
+ANNOUNCED_SLACK_S = 60.0  # numbers do not come in exactly the order of their times (a writer that stalls)
+ANNOUNCED_MAX_LOOKBACK = 2000
+NUMBERING_TRIES = 3
+NUMBERING_PAUSE_S = 0.05
 ADDENDUM_KINDS = ("job", "check", "download", "files")
 NEEDS_BECAUSE = ("decision", "finding", "verdict")
 
@@ -118,12 +136,45 @@ class Journal:
             except FileExistsError:
                 n += 1
 
-    def _number_change(self, record_id: str) -> None:
-        """Number a change that can be read now (see the module's docstring)."""
-        n = self._last_change() + 1
-        while not create_json_exclusive(self.changes_dir / f"{n:06d}.json", {"id": record_id}):
-            n += 1
+    def _number_change(self, record_id: str, changed: str) -> bool:
+        """Number a change, made at `changed`, that can be read now (see the module's docstring): the file says
+        when the record last changed, so the look at old code's records can tell what a number already brought.
+        False if the file server refused every try: the record is written all the same, and is found as the
+        module's docstring says."""
+        for attempt in range(NUMBERING_TRIES):
+            try:
+                n = self._last_change() + 1
+                payload = {"id": record_id, "changed": changed}
+                while not create_json_exclusive(self.changes_dir / f"{n:06d}.json", payload):
+                    n += 1
+                return True
+            except OSError:
+                time.sleep(NUMBERING_PAUSE_S * (attempt + 1))
+        return False
 
+    def note_change(self, record_id: str) -> bool:
+        """Number the last change of a record again (once more is harmless: a read shows a record once, as it is
+        now). For whoever finds it was never numbered; False while the file server refuses, or if there is no
+        such record."""
+        if not (re.fullmatch(CID_PATTERN, record_id) or re.fullmatch(NID_PATTERN, record_id)):
+            return False
+        pairs = self._changed(None, only=record_id)
+        return bool(pairs) and self._number_change(record_id, pairs[0][0])
+
+    def _legacy_open(self) -> bool:
+        """Whether code from before the numbers can still be writing here: not longer than LEGACY_S after the
+        first number (none yet: it may be all there is)."""
+        try:
+            return time.time() - (self.changes_dir / "000001.json").stat().st_mtime < LEGACY_S
+        except OSError:
+            return True
+
+    def _lost(self, path: Path) -> bool:
+        """A change file nobody is writing any more (where link() is refused a writer can be killed halfway)."""
+        try:
+            return time.time() - path.stat().st_mtime > LOST_CHANGE_S
+        except OSError:
+            return False
     def _last_change(self) -> int:
         """The newest change number up to which every number exists (see _listed_change)."""
         listed = dict(self._change_files())
@@ -157,7 +208,8 @@ class Journal:
         data = entry.model_dump(mode="json")
         write_json_atomic(path, data)
         if current is None or any(current.get(key) != data[key] for key in ("status", "started", "finished")):
-            self._number_change(entry.cid)  # outputs written while it runs are not a change
+            # (outputs written while it runs are not a change)
+            self._number_change(entry.cid, max(entry.created, entry.started or "", entry.finished or ""))
 
     def raw_cell(self, cid: str) -> CellEntry | None:
         data = read_json(self.cells_dir / f"{check_cid(cid)}.json")
@@ -192,7 +244,7 @@ class Journal:
         stamped = {**payload, "added": self.now()}
         if not create_json_exclusive(self.cells_dir / f"{cid}.{suffix}.json", stamped):
             return False
-        self._number_change(cid)
+        self._number_change(cid, stamped["added"])
         return True
 
     # ---- notes ----------------------------------------------------------------
@@ -218,7 +270,7 @@ class Journal:
         )
         if not create_json_exclusive(self.notes_dir / f"{nid}.json", note.model_dump(mode="json")):
             raise JournalError(f"note {nid} already exists")
-        self._number_change(nid)
+        self._number_change(nid, note.created)
         return note
 
     def _check_note(self, kind: str, text: str, because: Sequence[str], reverses_if: str, verdict: str | None) -> None:
@@ -289,25 +341,32 @@ class Journal:
         go on by change number; a time (an older client's place) is read on from by time, and the places
         after it go on by number from the last change there was when that began."""
         wanted = set(kinds) if kinds is not None else None
+        began = self.now()  # before anything is read: what changes after it is read again next time, not lost
         place = PLACE.fullmatch(since) if since is not None else None
-        if place is not None and place["changed"] is None:
-            return self._numbered_after(int(place["number"]), wanted, limit)
+        if place is not None and place["changed"] is not None:
+            return self._changed_after((place["changed"], place["cref"]), int(place["number"]), wanted, limit, began)
         if place is not None:
-            return self._changed_after((place["changed"], place["ref"]), int(place["number"]), wanted, limit)
+            after = (place["time"], place["tref"] or "") if place["time"] is not None else None
+            return self._numbered_after(int(place["number"]), after, wanted, limit, began)
         last = self._last_change()  # before the records are read: a change numbered later is new next time
         if since is not None:
-            return self._changed_after((since, ""), last, wanted, limit)
+            return self._changed_after((since, ""), last, wanted, limit, began)
         found = sorted(self._changed(wanted), key=lambda pair: (pair[1].created, pair[1].ref))
-        return [(f"#{last}", entry) for _, entry in (found[-limit:] if limit else found)], f"#{last}"
+        end = self._place(last, began)
+        return [(end, entry) for _, entry in (found[-limit:] if limit else found)], end
 
-    def _changed(self, wanted: set[str] | None) -> list[tuple[str, CellEntry | NoteEntry]]:
-        """(time of the last change, record) pairs of every record."""
-        addenda = self._all_addenda()
+    def _place(self, number: int, began: str) -> str:
+        """The place after change `number` and, while old code can be running, after what it changed before `began`."""
+        return f"#{number}@{began}" if self._legacy_open() else f"#{number}"
+
+    def _changed(self, wanted: set[str] | None, only: str | None = None) -> list[tuple[str, CellEntry | NoteEntry]]:
+        """(time of the last change, record) pairs of every record (of `only`, if given)."""
+        addenda = self._all_addenda() if only is None else None
         found: list[tuple[str, CellEntry | NoteEntry]] = []
-        for record_id in self._ids():
+        for record_id in self._ids() if only is None else [only]:
             if record_id.startswith("c"):
                 base = self.raw_cell(record_id)
-                extra = addenda.get(record_id, [])
+                extra = addenda.get(record_id, []) if addenda is not None else self._addenda(record_id)
                 entry = _merge(base, extra) if base is not None else None
                 changed = max([base.created, base.started or "", base.finished or ""]
                               + [str(a.get("added", "")) for a in extra]) if base is not None else ""
@@ -319,33 +378,95 @@ class Journal:
         return found
 
     def _changed_after(self, after: tuple[str, str], last: int, wanted: set[str] | None,
-                       limit: int | None) -> tuple[list[tuple[str, CellEntry | NoteEntry]], str]:
+                       limit: int | None, began: str) -> tuple[list[tuple[str, CellEntry | NoteEntry]], str]:
         """Records changed after `after`, a (time, ref), in that order. Once they are all read, on by number
         from change `last`: what was published meanwhile with an earlier time comes then."""
         found = sorted(((changed, entry) for changed, entry in self._changed(wanted) if (changed, entry.ref) > after),
                        key=lambda pair: (pair[0], pair[1].ref))
-        return _cut([(f"#{last},{changed},{entry.ref}", entry) for changed, entry in found], limit, f"#{last}")
+        return _cut([(f"#{last},{changed},{entry.ref}", entry) for changed, entry in found], limit,
+                    self._place(last, began))
 
-    def _numbered_after(self, number: int, wanted: set[str] | None,
-                        limit: int | None) -> tuple[list[tuple[str, CellEntry | NoteEntry]], str]:
-        """Every record changed after change `number`, once, as it is now, in the order of its last change."""
-        last: dict[str, int] = {}
+    def _numbered_after(self, number: int, after: tuple[str, str] | None, wanted: set[str] | None,
+                        limit: int | None, began: str) -> tuple[list[tuple[str, CellEntry | NoteEntry]], str]:
+        """Every record changed after change `number`, once, as it is now, in the order of its last change. Then,
+        if `after` (a time and a ref) is given and old code can still be running, what that changed after it and
+        never numbered, by time. Without a kind filter a page is full once it has `limit` records: the changes
+        after that wait for the next page."""
         listed = dict(self._change_files())
+        last: dict[str, int] = {}  # record id -> the number of its last change, in the order of those
         end = number
-        while (path := self._listed_change(listed, end + 1)) is not None:
+        while wanted is not None or not limit or len(last) < limit:
+            path = self._listed_change(listed, end + 1)
+            if path is None:
+                break
             record_id = str((read_json(path) or {}).get("id", ""))
             if not record_id:
-                break  # still being written (where link() is not allowed): the changes after it wait
+                if not self._lost(path):
+                    break  # still being written (where link() is not allowed): the changes after it wait
+                end += 1  # a number nobody writes any more
+                continue
             end += 1
             last.pop(record_id, None)
             last[record_id] = end
-        found = []
+        index = self._addenda_index()
+        found: list[tuple[str, CellEntry | NoteEntry]] = []
         for record_id, n in last.items():
-            entry = self.cell(record_id) if re.fullmatch(CID_PATTERN, record_id) else \
-                self.note(record_id) if re.fullmatch(NID_PATTERN, record_id) else None
+            entry = self._record(record_id, index)
             if entry is not None and (wanted is None or entry.kind in wanted):
-                found.append((f"#{n}", entry))
-        return _cut(found, limit, f"#{end}")
+                found.append((_place_after(n, after), entry))
+        if after is not None and self._legacy_open():
+            found += self._unnumbered_after(after, set(last), end, listed, wanted)
+        return _cut(found, limit, self._place(end, began))
+
+    def _unnumbered_after(self, after: tuple[str, str], seen: set[str], end: int, listed: dict[int, Path],
+                          wanted: set[str] | None) -> list[tuple[str, CellEntry | NoteEntry]]:
+        """Records changed after `after`, a (time, ref), that the numbers above did not bring: what old code wrote.
+        A place from a finished read has no ref: then a little before its time too, since old code takes the time
+        before it publishes (a record can appear after a read that began later than its time)."""
+        if not after[1]:
+            after = (_earlier(after[0], LEGACY_OVERLAP_S), "")
+        announced = self._announced(after[0], end, listed)
+        found = sorted(((changed, entry) for changed, entry in self._changed(wanted)
+                        if (changed, entry.ref) > after and parse_ref(entry.ref)[1] not in seen
+                        and announced.get(parse_ref(entry.ref)[1], "") < changed),  # (a number already says it)
+                       key=lambda pair: (pair[0], pair[1].ref))
+        return [(f"#{end}@{changed};{entry.ref}", entry) for changed, entry in found]
+
+    def _announced(self, since: str, end: int, listed: dict[int, Path]) -> dict[str, str]:
+        """Record id -> the latest change time the numbers up to `end` announce, looking back from `end` until
+        their changes are older than `since`: a record whose last change has a number needs no second look."""
+        oldest = _earlier(since, ANNOUNCED_SLACK_S)
+        found: dict[str, str] = {}
+        for n in range(end, max(0, end - ANNOUNCED_MAX_LOOKBACK), -1):
+            path = self._listed_change(listed, n)
+            if path is None:
+                break
+            data = read_json(path) or {}
+            changed, record_id = str(data.get("changed", "")), str(data.get("id", ""))
+            if changed and changed < oldest:
+                break
+            if changed and record_id:  # (a number written without a time says nothing)
+                found[record_id] = max(found.get(record_id, ""), changed)
+        return found
+
+    def _record(self, record_id: str, index: dict[str, list[Path]]) -> CellEntry | NoteEntry | None:
+        """A record as it is now, its addenda taken from `index` (see _addenda_index)."""
+        if re.fullmatch(CID_PATTERN, record_id):
+            base = self.raw_cell(record_id)
+            if base is None:
+                return None
+            return _merge(base, [d for d in (read_json(p) for p in index.get(record_id, ())) if d is not None])
+        return self.note(record_id) if re.fullmatch(NID_PATTERN, record_id) else None
+
+    def _addenda_index(self) -> dict[str, list[Path]]:
+        """Every addendum's path, by cell, from one listing of the folder (none of them read)."""
+        grouped: dict[str, list[Path]] = {}
+        if self.cells_dir.is_dir():
+            for path in sorted(self.cells_dir.glob("c*.*.json")):
+                cid = path.name.partition(".")[0]
+                if re.fullmatch(CID_PATTERN, cid):
+                    grouped.setdefault(cid, []).append(path)
+        return grouped
 
     def _all_addenda(self) -> dict[str, list[dict[str, Any]]]:
         """Every addendum, by cell, from one listing of the folder."""
@@ -371,6 +492,21 @@ class Journal:
                 ids += [p.stem for p in folder.glob("*.json")
                         if re.fullmatch(CID_PATTERN, p.stem) or re.fullmatch(NID_PATTERN, p.stem)]
         return sorted(ids, key=lambda i: (i[0], _number(i)))
+
+
+def _earlier(time: str, seconds: float) -> str:
+    """`time` (a stamp) some seconds before; unchanged if it is not a stamp."""
+    try:
+        return (parse(time) - timedelta(seconds=seconds)).isoformat(timespec="milliseconds")
+    except ValueError:
+        return time
+
+
+def _place_after(number: int, after: tuple[str, str] | None) -> str:
+    """The place after change `number`, the look at old code's records going on from `after` (a time, a ref)."""
+    if after is None:
+        return f"#{number}"
+    return f"#{number}@{after[0]}" + (f";{after[1]}" if after[1] else "")
 
 
 def _cut(found: list[tuple[str, CellEntry | NoteEntry]], limit: int | None,

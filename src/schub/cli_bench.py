@@ -33,8 +33,16 @@ def add_bench_parsers(sub: Any) -> None:
     sub.add_parser("ide-proxy", help="VS Code's ProxyCommand: sshd inside the workbench job on stdin/stdout")
     journal = sub.add_parser("bench-journal", help="a project's journal entries")
     journal.add_argument("project")
-    journal.add_argument("--since", default=None)
+    journal.add_argument("--since", default=None, help="a time, or the place an earlier read ended at (its newest)")
     journal.add_argument("--limit", type=int, default=20)
+    journal.add_argument("--with-newest", action="store_true",
+                         help="print {entries, newest}: newest is the place to read on from next time (--since)")
+
+
+def _journal(bench: Any, args: argparse.Namespace) -> Any:
+    changes, newest = bench.journal(args.project).page(since=args.since, limit=args.limit)
+    entries = [entry.model_dump(mode="json") for _, entry in changes]
+    return {"entries": entries, "newest": newest} if args.with_newest else entries
 
 
 def _checks(raw: str) -> list[CheckSpec]:
@@ -59,6 +67,5 @@ def bench_handlers(hub: Hub, args: argparse.Namespace) -> dict[str, Callable[[],
         "bench-status": lambda: bench.status(),
         "bench-stop": lambda: bench.stop_workbench(),
         "bench-watchdog": lambda: check(hub.settings, hub.slurm),
-        "bench-journal": lambda: [e.model_dump(mode="json") for e in
-                                  bench.journal(args.project).entries(since=args.since, limit=args.limit)],
+        "bench-journal": lambda: _journal(bench, args),
     }
