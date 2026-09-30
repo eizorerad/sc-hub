@@ -286,9 +286,11 @@ class OldCodeJournal(Journal):
         return True
 
 
-def test_records_of_code_from_before_the_numbers_are_found_while_it_can_still_be_running(tmp_path: Path) -> None:
+def test_records_of_code_from_before_the_numbers_are_found_while_it_can_still_be_running(tmp_path: Path,
+                                                                                         monkeypatch) -> None:
     """Found in review: after an upgrade, running workbenches write without numbers, and a read on from a number
     skipped all of it (54 of 108 records in the review's run, every old note, for good)."""
+    monkeypatch.setattr(journal_module, "LEGACY_OVERLAP_S", 0.0)  # (the overlap can show a record twice: next test)
     folder, now = tmp_path / "projects" / "demo", Ticks()
     new, old = Journal(folder, "demo", now=now), OldCodeJournal(folder, "demo", now=now)
     new.add_note("note", "new one")
@@ -302,6 +304,35 @@ def test_records_of_code_from_before_the_numbers_are_found_while_it_can_still_be
     seen = [(e.kind, e.text if e.kind == "note" else e.status) for _, e in changes]
     assert ("note", "new two") in seen and ("note", "old one") in seen and ("cell", "ok") in seen and len(seen) == 3
     assert new.page(since=after)[0] == []  # and each only once: the place has moved past them
+
+
+def test_a_record_old_code_publishes_after_a_read_that_began_later_than_its_time_is_still_found(
+        tmp_path: Path, monkeypatch) -> None:
+    """Old code takes a record's time before it publishes it, and on Lustre that can be a long while: a read that
+    began in between has a later time than the record that shows up after it (on Lustre, with four old writers,
+    6 of 108 records were lost that way at half a second). The look goes back from a read's start by
+    LEGACY_OVERLAP_S."""
+    folder = tmp_path / "projects" / "demo"
+    old = OldCodeJournal(folder, "demo", now=lambda: "2026-09-24T10:00:10.000+00:00")
+    first = Journal(folder, "demo", now=lambda: "2026-09-24T10:00:09.000+00:00")
+    during = Journal(folder, "demo", now=lambda: "2026-09-24T10:00:11.000+00:00")
+    after = Journal(folder, "demo", now=lambda: "2026-09-24T10:00:12.000+00:00")
+    _, place = first.page(since=None)
+    seen = {}
+    publish = journal_module.create_json_exclusive
+
+    def publish_late(path: Path, payload: dict, *args) -> bool:
+        if payload.get("text") == "slow old note" and not seen:
+            seen["meanwhile"] = during.page(since=place)  # a read that begins after the note's time, before it exists
+        return publish(path, payload, *args)
+
+    monkeypatch.setattr(journal_module, "create_json_exclusive", publish_late)
+    old.add_note("note", "slow old note")
+    changes, place = seen["meanwhile"]
+    assert changes == []  # not published yet: nothing to find
+    assert [e.text for _, e in after.page(since=place)[0]] == ["slow old note"]
+    monkeypatch.setattr(journal_module, "LEGACY_OVERLAP_S", 0.5)  # (an overlap this short would have lost it)
+    assert after.page(since=place)[0] == []
 
 
 def test_the_look_at_old_codes_records_ends_when_it_cannot_be_running_any_more(tmp_path: Path, monkeypatch) -> None:
