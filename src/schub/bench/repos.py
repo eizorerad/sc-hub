@@ -7,22 +7,24 @@
 
 The journal records the commit the ref resolved to (not the branch), so the run can
 be repeated. Environments are built with uv once per spec (python, torch, CUDA,
-requirements) under $SCHUB_ROOT/repo-envs/<hash>, shared by the student's projects,
-with environment.lock (uv pip freeze) beside them. The nodes' driver runs CUDA up to
-12.8, so torch comes from the cu118-cu128 builds; the default cu130 wheels import
-fine but see no GPU.
+requirements with the files they include and the local packages they install) under
+$SCHUB_ROOT/repo-envs/<hash>, shared by the student's projects, with environment.lock
+(uv pip freeze) beside them. The nodes' driver runs CUDA up to 12.8, so torch comes
+from the cu118-cu128 builds; the default cu130 wheels import fine but see no GPU.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
 import subprocess
 from pathlib import Path
 from typing import Sequence
+from urllib.parse import unquote, urlsplit
 
-from ..hashing import stable_hash
+from ..hashing import file_fingerprint, stable_hash
 from ..locking import long_held
 from ..project_env import EnvError, check_packages
 from . import ledger
@@ -36,10 +38,28 @@ PYTHON = re.compile(r"3\.\d{1,2}(\.\d{1,3})?")
 TORCH = re.compile(r"\d{1,2}(\.\d{1,3}){0,2}")
 CLONE_TIMEOUT_S = 1800
 BUILD_TIMEOUT_S = 3600
+# Requirements-file lines (pip's and uv's syntax) that bring in more than their own text; a short option's
+# value may also be attached, as pip reads it (-rbase.txt).
+INCLUDE = re.compile(r"(?:-[rc]\s*=?|--(?:requirement|constraint)(?:\s*=|\s))\s*(\S.*)")
+EDITABLE = re.compile(r"(?:-e\s*=?|--editable(?:\s*=|\s))\s*(\S+)")
+LINKS = re.compile(r"(?:-f\s*=?|--find-links(?:\s*=|\s))\s*(\S+)")
+INDEX = re.compile(r"(?:-i\s*=?|--(?:index-url|extra-index-url)(?:\s*=|\s))\s*(\S+)")
+NAMED = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\s*(\[[^\]]*\])?\s*@\s*(\S+)")  # name @ url
+UNSET = re.compile(r"\$\{[A-Z0-9_]+\}")  # left by _filled: a variable that is not set
+ARCHIVES = (".whl", ".zip", ".tar.gz", ".tgz", ".tar.bz2", ".tar.xz", ".tar")
 
 
 class RepoError(RuntimeError):
     pass
+
+
+class Unfollowable(RepoError):
+    """The requirements include a file by URL, which no spec can follow: no new environment. `before` is the
+    spec sc-hub gave such files before it followed includes, when that covered all the rest (else None)."""
+
+    def __init__(self, message: str, before: dict | None) -> None:
+        super().__init__(message)
+        self.before = before
 
 
 def _git(repo: Path | None, *args: str, timeout: int = 300) -> str:
@@ -145,14 +165,111 @@ def _spec(repo: Path, python: str, torch: str | None, cuda: str, requirements: s
         if not req_path.is_relative_to(repo.resolve()) or not req_path.is_file():
             raise RepoError(f"requirements={requirements!r} must be a file inside the repository")
     local = install_repo or (req_path is not None and re.search(r"^\s*-e\s", req_path.read_text(), re.M))
+    brought = _brought(req_path, repo.resolve(), req_path.parent, {req_path}) if req_path else []
+    if local:  # this checkout installed editable is in the spec already (install_repo, packaging below)
+        brought = [b for b in brought if b != [str(repo.resolve()), _packaging_hash(repo)]]
     spec = {"python": python, "torch": torch, "cuda": cuda, "extra": sorted(extra),
+            # the text, as sc-hub had it before it followed what the file brings in (added below)
             "requirements": stable_hash(req_path.read_text()) if req_path else None,
             # an editable install (install_repo, or '-e .' in the requirements) points at this checkout: two
             # projects' clones of one repo must not share it
             "install_repo": str(repo.resolve()) if local else None,
             # the repository's own package: its dependencies change with its packaging files
             "packaging": _packaging_hash(repo) if local else None}
-    return spec, req_path
+    by_url = [b[1] for b in brought if isinstance(b, tuple)]
+    if by_url:  # an environment built before still serves its checkout when that spec covered all the rest
+        raise Unfollowable(by_url[0], spec if len(by_url) == len(brought) else None)
+    # with what the file brings in; one that brings in nothing hashes as before: its environment stays
+    return {**spec, "requirements": stable_hash(req_path.read_text(), *brought) if req_path else None}, req_path
+
+
+def _brought(req_path: Path, repo: Path, cwd: Path, seen: set[Path]) -> list:
+    """What a requirements file brings in besides its own text: the files it includes (_included), and what it
+    takes from this computer (relative to where uv runs, `cwd`: see _build): packages by _local_package,
+    --find-links folders by _local_links. A local package index is refused."""
+    found: list = []
+    for line in _statements(req_path.read_text()):
+        include, links, index = INCLUDE.fullmatch(line), LINKS.match(line), INDEX.match(line)
+        editable = EDITABLE.match(line)
+        if include:
+            found += _included(include[1], req_path, repo, cwd, seen)
+        elif links and _is_local(_filled(links[1]), bare_is_path=True):
+            found.append(_local_links(_filled(links[1]), cwd))
+        elif index and _is_local(_filled(index[1]), bare_is_path=True):
+            raise RepoError(f"{req_path.name}: {line!r} is a package index on this computer, which the environment's "
+                            "spec cannot follow: pass requirements= a copy of the requirements, in the repository, "
+                            "that reads its package files with --find-links <their folder> instead")
+        elif editable or not line.startswith("-"):
+            named = NAMED.match(line)
+            target = _filled(editable[1] if editable else named[2] if named else re.split(r"[\s;]", line)[0])
+            if _is_local(target, bare_is_path=bool(editable)):
+                found.append(_local_package(target, cwd))
+    return found
+
+
+def _included(text: str, req_path: Path, repo: Path, cwd: Path, seen: set[Path]) -> list:
+    """An -r/-c file, relative to the one including it and inside the repository: its content and what it
+    brings in, once (a loop ends). By URL it cannot be followed: ("url", what to do instead)."""
+    value = _filled(text)
+    if value.lower().startswith(("http://", "https://")):
+        return [("url", f"{req_path.name} includes {text!r} by URL, whose content the environment's spec cannot "
+                        "follow: save it in the repository (bench.fetch(url, dest=...)) and pass requirements= a copy "
+                        "of the requirements, also in the repository, that includes the saved file instead")]
+    path = (req_path.parent / _file_path(value)).resolve()
+    if not path.is_file():
+        raise RepoError(f"{req_path.name} includes {text!r}, which is not a file")
+    if not path.is_relative_to(repo):
+        raise RepoError(f"{req_path.name} includes {text!r}, which is outside the repository: copy it into the "
+                        "repository and pass requirements= a copy of the requirements, also in the repository, that "
+                        "includes that copy instead")
+    if path in seen:
+        return []
+    seen.add(path)
+    return [stable_hash(path.read_text()), *_brought(path, repo, cwd, seen)]
+
+
+def _statements(text: str) -> list[str]:
+    """A requirements file's lines as pip and uv read them: continuations joined, comments dropped."""
+    lines = (re.sub(r"(^|\s)#.*", "", line).strip() for line in re.sub(r"\\\r?\n", "", text).splitlines())
+    return [line for line in lines if line]
+
+
+def _filled(value: str) -> str:
+    """${VARS} filled in from the environment, as uv does; only to find files (a message shows the text: a
+    variable may hold a token)."""
+    return re.sub(r"\$\{([A-Z0-9_]+)\}", lambda m: os.environ.get(m[1], m[0]), value)
+
+
+def _is_local(target: str, bare_is_path: bool = False) -> bool:
+    """A path, an archive or a file: URL (after -e, -f or -i any value without a URL scheme is a path:
+    uv reads '-e name' as './name'). With a variable that is not set it names nothing: uv, run with the
+    same variables, cannot read a folder through it either."""
+    if UNSET.search(target):
+        return False
+    scheme = re.match(r"([A-Za-z][A-Za-z0-9+.-]*):", target)
+    if scheme:
+        return scheme[1].lower() == "file"
+    return bare_is_path or target.startswith((".", "/", "~")) or "/" in target or target.lower().endswith(ARCHIVES)
+
+
+def _local_package(target: str, cwd: Path) -> list:
+    """A package installed from this computer: a folder by its path and packaging files (as install_repo),
+    an archive by its path, size and time."""
+    path = (cwd / _file_path(re.sub(r"\[[^\]]*\]$", "", target))).resolve()  # without [extras]
+    return [str(path), file_fingerprint(path) if path.is_file() else _packaging_hash(path)]
+
+
+def _local_links(value: str, cwd: Path) -> list:
+    """A --find-links on this computer: a folder by the package files in it (uv looks no deeper), a page by its
+    path, size and time."""
+    path = (cwd / _file_path(value)).resolve()
+    files = sorted(p for p in path.iterdir() if p.name.lower().endswith(ARCHIVES)) if path.is_dir() else [path]
+    return [str(path), [file_fingerprint(f) for f in files if f.is_file()]]
+
+
+def _file_path(value: str) -> Path:
+    """A path as written, or a file: URL's."""
+    return Path(unquote(urlsplit(value).path) if value.lower().startswith("file:") else value).expanduser()
 
 
 def _packaging_hash(repo: Path) -> str:
@@ -164,8 +281,16 @@ def environment(repo: str | os.PathLike, python: str = "3.11", torch: str | None
                 requirements: str | None = None, install_repo: bool = False, extra: Sequence[str] = ()) -> Path:
     """The python of an environment for the repository's code (built once per spec)."""
     repo = Path(repo)
-    spec, req_path = _spec(repo, python, torch, cuda, requirements, install_repo, extra)
     root = Path(os.environ.get("SCHUB_ROOT", Path.home() / "schub"))
+    try:
+        spec, req_path = _spec(repo, python, torch, cuda, requirements, install_repo, extra)
+    except Unfollowable as exc:  # no new environment; a replayed cell keeps the one built for this checkout
+        before = root / "repo-envs" / stable_hash(exc.before) if exc.before else None
+        if before is None or not _built_for(before, repo):
+            raise
+        print(f"environment already built for this checkout: {before / 'bin' / 'python'} "
+              f"(a new one would be refused: {exc})")
+        return before / "bin" / "python"
     env = root / "repo-envs" / stable_hash(spec)
     env.parent.mkdir(parents=True, exist_ok=True)
     with long_held(env.parent / f"{env.name}.lock"):  # a second cell asking for the same spec waits, then reuses it
@@ -185,6 +310,17 @@ def environment(repo: str | os.PathLike, python: str = "3.11", torch: str | None
     return env / "bin" / "python"
 
 
+def _built_for(env: Path, repo: Path) -> bool:
+    """A finished environment built for this checkout, at the commit it is at now (its spec.json)."""
+    try:
+        record = json.loads((env / "spec.json").read_text())
+        commit = _git(repo, "rev-parse", "HEAD") if (repo / ".git").exists() else ""
+    except (OSError, ValueError, RepoError):
+        return False
+    return ((env / "ready").exists() and bool(record.get("repo")) and record.get("commit") == commit
+            and Path(record["repo"]).resolve() == repo.resolve())
+
+
 def _build(env: Path, root: Path, spec: dict, req_path: Path | None) -> None:
     uv = str(_uv())
     run_env = {**{k: v for k, v in os.environ.items() if k not in ("FORCE_COLOR", "CLICOLOR_FORCE")},
@@ -193,7 +329,9 @@ def _build(env: Path, root: Path, spec: dict, req_path: Path | None) -> None:
                "UV_PYTHON_INSTALL_DIR": str(root / "python"), "UV_PYTHON_PREFERENCE": "managed"}
     python = str(env / "bin" / "python")
 
-    cwd = req_path.parent if req_path else Path(spec["install_repo"] or env)  # "-e ." in a requirements file
+    # "-e ." in a requirements file; without one, a folder that exists (uv venv makes env) and, like the
+    # spec, belongs to no checkout
+    cwd = req_path.parent if req_path else Path(spec["install_repo"] or env.parent)
 
     def uv_run(*args: str) -> str:
         try:

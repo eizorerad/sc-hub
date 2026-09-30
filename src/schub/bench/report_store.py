@@ -10,9 +10,13 @@
         report.html      the same without code (when nbconvert is installed)
         spec.json        what the author asked for
         report.json      when and by whom, what it covers, its warnings, sha256 of the notebook
+                         and of what it shows (content_sha256)
 
-A new publish takes the next number; publishing the same spec over the same journal
-again keeps the existing report instead of adding a copy.
+A new publish takes the next number. Publishing the same spec again keeps the existing
+report instead of adding a copy while it would show the same (when and by whom it was
+built aside): a note, a job's result or a check that came in since makes a new one. A
+report published before sc-hub kept content_sha256 is never taken for the same (its
+notebook has when and by whom in its text): the next publish makes a new one.
 """
 
 from __future__ import annotations
@@ -125,7 +129,8 @@ class ReportStore:
         spec_sha = _sha(spec.model_dump_json())
         if latest is not None:
             meta = read_json(self.folder / latest.folder.removeprefix("reports/") / "report.json") or {}
-            if meta.get("spec_sha256") == spec_sha and meta.get("covers") == built.covers:
+            # what it shows, not the newest cell: a note or a job's result that came in since adds no cell
+            if meta.get("spec_sha256") == spec_sha and meta.get("content_sha256") == built.content_sha256:
                 write_json_atomic(self.folder / "last-publish.json", {"at": when, "folder": latest.folder})
                 return self._answer("unchanged", self.folder / latest.folder.removeprefix("reports/"), meta)
         staged, meta = self._stage(built, spec, actor, when)
@@ -175,7 +180,8 @@ class ReportStore:
         (staged / "spec.json").write_text(spec.model_dump_json(indent=1))
         meta = {"title": spec.title, "built": when, "by": actor.model_dump(mode="json"), "covers": built.covers,
                 "cited": list(built.cited), "warnings": list(built.warnings) + ([] if html is not None else [NO_HTML]),
-                "notebook_sha256": _sha(text), "spec_sha256": _sha(spec.model_dump_json()), "html": html is not None}
+                "notebook_sha256": _sha(text), "spec_sha256": _sha(spec.model_dump_json()),
+                "content_sha256": built.content_sha256, "html": html is not None}
         write_json_atomic(staged / "report.json", meta)
         return meta
 

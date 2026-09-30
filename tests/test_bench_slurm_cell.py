@@ -109,6 +109,39 @@ def test_a_failing_job_is_recorded_as_failed(settings: Settings, cluster: FakeCl
     assert job.state == "FAILED" and job.exit_code == 1
 
 
+@pytest.mark.parametrize("lost", ["job-", "files-", "check-"])
+def test_what_the_journal_could_not_take_is_added_before_the_job_is_closed(settings: Settings, cluster: FakeCluster,
+                                                                           project: Path, monkeypatch,
+                                                                           lost: str) -> None:
+    """Lustre sometimes answers a write with EIO. result.json is saved first, so the report survives; the
+    watchdog adds from it what the journal is missing, once each, and only then closes the job."""
+    import errno
+
+    from schub.bench.jobs import lookup, open_records, reap
+
+    add = Journal.add_addendum
+
+    def flaky(self, cid, suffix, payload):
+        if suffix.startswith(lost):
+            raise OSError(errno.EIO, "Input/output error")
+        return add(self, cid, suffix, payload)
+
+    monkeypatch.setattr(Journal, "add_addendum", flaky)
+    with pytest.raises(OSError):
+        _run_job(settings, cluster, project, "open('out.txt', 'w').write('x')", monkeypatch,
+                 checks=[{"name": "file", "params": {"path": "work/missing.txt"}}])
+    [record] = open_records(settings)
+    cluster.jobs.pop(record.job_id)  # it ended
+    assert reap(settings, Slurm(cluster)) == [] and open_records(settings) == [record]  # the journal still fails
+    monkeypatch.setattr(Journal, "add_addendum", add)
+    assert reap(settings, Slurm(cluster)) == [] and open_records(settings) == []
+    entry = Journal(project, "demo").cell("c0001")
+    assert [(j.job_id, j.state, j.exit_code) for j in entry.jobs] == [(record.job_id, "COMPLETED", 0)]
+    assert [(f.path, f.change) for f in entry.files] == [("work/out.txt", "created")]
+    assert [(c.name, c.status) for c in entry.check_results] == [("file", "fail")]
+    assert lookup(settings, record.job_id) is not None  # kept for ownership
+
+
 def test_an_edited_snapshot_is_refused(settings: Settings, cluster: FakeCluster, project: Path, monkeypatch) -> None:
     submitted = submit_cell(settings, Slurm(cluster), "demo", project, "demo#c0001", "print('original')",
                             parse_line("", "ws-ia"), [])
@@ -175,6 +208,15 @@ def test_jobs_are_warned_before_their_time_limit(settings: Settings, cluster: Fa
     long = submit_cell(settings, Slurm(cluster), "demo", project, "demo#c0002", "x = 1", parse_line("--time 8h", "gpu"),
                        [])
     assert "#SBATCH --signal=B:USR1@600" in (Path(long.job_dir) / "job.sbatch").read_text()
+
+
+def test_a_cell_job_is_never_requeued_under_its_id(settings: Settings, cluster: FakeCluster, project: Path) -> None:
+    """A requeue (Slurm's default after a node failure) would run the body again under the same id: the second
+    run's result.json would replace the first one's, while the journal keeps the first run's parts, named by
+    the job id. A cell's job runs once; a job that lost its node is sent again and resumes from its checkpoints."""
+    submitted = submit_cell(settings, Slurm(cluster), "demo", project, "demo#c0001", "x = 1", parse_line("", "ws-ia"),
+                            [])
+    assert "#SBATCH --no-requeue" in (Path(submitted.job_dir) / "job.sbatch").read_text()
 
 
 def test_a_time_warning_does_not_kill_the_job_and_checkpoints_import(settings: Settings, cluster: FakeCluster,

@@ -77,9 +77,14 @@ def check_finite(path_of: PathOf, p: FiniteParams) -> CheckResult:
                 bad += 1
                 continue
             bad += 0 if math.isfinite(value) else 1
+        unread = next(reader, None) is not None  # the scan stopped at MAX_ROWS_SCANNED, not at the end
     if total == 0 or bad:
         return failed("finite_values", f"{p.column}: {bad} of {total} values are NaN, infinite or not numbers",
                       bad=bad, total=total)
+    if unread:  # a pass would vouch for rows nobody read (a loss that turns NaN late in training)
+        return CheckResult(name="finite_values", status="error", details={"total": total},
+                           message=f"{p.column}: the first {total} values are finite, but {p.path} has more rows "
+                                   f"than the {MAX_ROWS_SCANNED} this check reads; the rest was not checked")
     return passed("finite_values", f"{p.column}: all {total} values finite", total=total)
 
 

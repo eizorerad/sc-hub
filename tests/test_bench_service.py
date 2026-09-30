@@ -172,6 +172,12 @@ def test_cli_runs_and_reads_the_journal(bench: Settings, cluster: FakeCluster, m
     assert out["ref"] == "demo#c0001" and out["status"] == "queued"
     assert cli.main(["bench-journal", "demo"]) == 0
     assert json.loads(capsys.readouterr().out) == []
+    # reading on: --with-newest also says where the read ended, and --since takes that place
+    assert cli.main(["bench-journal", "demo", "--with-newest"]) == 0
+    first = json.loads(capsys.readouterr().out)
+    assert first["entries"] == [] and first["newest"].startswith("#")
+    assert cli.main(["bench-journal", "demo", "--since", first["newest"], "--with-newest"]) == 0
+    assert json.loads(capsys.readouterr().out)["entries"] == []
     assert cli.main(["bench-wait", "demo#c0042", "--wait", "0"]) == 1
     assert "does not exist" in capsys.readouterr().err
 

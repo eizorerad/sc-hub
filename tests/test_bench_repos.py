@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -152,3 +153,177 @@ def test_an_editable_install_is_not_shared_between_checkouts(tmp_path: Path) -> 
     first, _ = _spec(tmp_path / "a" / "model", "3.11", None, "cu128", "requirements.txt", False, ())
     second, _ = _spec(tmp_path / "b" / "model", "3.11", None, "cu128", "requirements.txt", False, ())
     assert first != second  # the same files, but each env points at its own checkout
+
+
+def test_an_environment_without_requirements_is_built_too(origin: Path, fake_uv: Path) -> None:
+    """bench.repo_env(repo), or with only torch= or extra=: uv was started in the environment's own
+    folder, which did not exist yet, and never ran (ENOENT)."""
+    from schub.bench.kernel_api import repo_env
+
+    repo = clone(URL)
+    for options in ({}, {"torch": "2.4.1"}, {"extra": ["numpy"]}):
+        env = repo_env(repo, **options).parent.parent
+        assert (env / "ready").is_file() and "numpy==2.0.0" in (env / "environment.lock").read_text()
+    calls = [c.split(" :: ", 1)[1] for c in fake_uv.read_text().splitlines()]
+    assert [c.split()[0] for c in calls].count("venv") == 3
+    installs = [c for c in calls if c.startswith("pip install")]
+    assert len(installs) == 2 and installs[0].endswith(" torch==2.4.1") and installs[1].endswith(" numpy")
+
+
+def test_files_the_requirements_include_are_part_of_the_spec(origin: Path, fake_uv: Path, tmp_path: Path) -> None:
+    """A changed -r/-c file got the first environment back: the key hashed only the file named."""
+    repo = clone(URL)
+    (repo / "reqs").mkdir()
+    (repo / "requirements.txt").write_text("-r reqs/base.txt\n")
+    (repo / "reqs" / "base.txt").write_text("numpy\n-c pins.txt\n-r ../requirements.txt\n")  # beside it; a loop
+    (repo / "reqs" / "pins.txt").write_text("numpy==1.26.4\n")
+    first = environment(repo, requirements="requirements.txt")
+    assert environment(repo, requirements="requirements.txt") == first  # nothing changed: reused
+    (repo / "reqs" / "pins.txt").write_text("numpy==2.0.0\n")
+    second = environment(repo, requirements="requirements.txt")
+    assert second != first
+    other = tmp_path / "other" / "model"  # another project's checkout
+    shutil.copytree(repo, other)
+    assert environment(other, requirements="requirements.txt") == second  # the same full spec: shared
+    (other / "reqs" / "base.txt").write_text("numpy\nscipy\n-c pins.txt\n")  # the same top file
+    assert environment(other, requirements="requirements.txt") not in (first, second)
+    assert fake_uv.read_text().count(" :: venv ") == 3
+
+
+def test_local_packages_in_the_requirements_are_part_of_the_spec(tmp_path: Path) -> None:
+    """'.', '--editable .', './pkg', file: URLs and archives install from the checkout; only '-e ' reached the
+    key, so another checkout (or changed packaging) got the first environment back."""
+    from schub.bench.repos import _spec
+
+    installs = [(".", "pyproject.toml"), ("--editable .", "pyproject.toml"), ("-r more.txt", "pyproject.toml"),
+                ("--editable=./pkg", "pkg/setup.py"), ("-e ./pkg", "pkg/setup.py"), ("./pkg[extra]", "pkg/setup.py"),
+                ("-e./pkg", "pkg/setup.py"), ("pkg @ file://{here}/pkg", "pkg/setup.py"),
+                ("dist/pkg-1.0-py3-none-any.whl", "dist/pkg-1.0-py3-none-any.whl")]
+    for n, (line, packaging) in enumerate(installs):
+        specs = []
+        for name in ("a", "b"):
+            here = tmp_path / str(n) / name / "model"
+            (here / "pkg").mkdir(parents=True)
+            (here / "dist").mkdir()
+            (here / "pyproject.toml").write_text('[project]\nname = "model"\n')
+            (here / "pkg" / "setup.py").write_text("from setuptools import setup\nsetup()\n")
+            (here / "dist" / "pkg-1.0-py3-none-any.whl").write_bytes(b"wheel")
+            (here / "more.txt").write_text("--editable .\n")  # what `-r more.txt` installs
+            (here / "requirements.txt").write_text(line.format(here=here) + "\nnumpy\n")
+            specs.append(_spec(here, "3.11", None, "cu128", "requirements.txt", False, ())[0])
+        assert specs[0] != specs[1], line  # the same files in another checkout
+        (here / "README.md").write_text("notes\n")  # nothing the line installs
+        (here / "outputs").mkdir()
+        assert _spec(here, "3.11", None, "cu128", "requirements.txt", False, ())[0] == specs[1], line
+        (here / packaging).write_bytes((here / packaging).read_bytes() + b"# with a new dependency\n")
+        assert _spec(here, "3.11", None, "cu128", "requirements.txt", False, ())[0] != specs[1], line
+
+
+def test_an_include_counts_in_every_form_pip_reads(tmp_path: Path) -> None:
+    """pip also takes a short option's value attached (-rbase.txt): that file's content was left out."""
+    from schub.bench.repos import _spec
+
+    here = tmp_path / "model"
+    here.mkdir()
+    for line in ("-rbase.txt", "-cbase.txt", "-r=base.txt", "-r base.txt", "--requirement=base.txt",
+                 "--constraint base.txt"):
+        (here / "requirements.txt").write_text(f"numpy\n{line}\n")
+        (here / "base.txt").write_text("scipy==1.13.0\n")
+        first = _spec(here, "3.11", None, "cu128", "requirements.txt", False, ())[0]
+        (here / "base.txt").write_text("scipy==1.14.0\n")
+        assert _spec(here, "3.11", None, "cu128", "requirements.txt", False, ())[0] != first, line
+
+
+def test_a_local_find_links_folder_is_part_of_the_spec(tmp_path: Path) -> None:
+    """--find-links ./wheels was refused: uv takes packages from the files in that folder (where it runs), so
+    they count like any local package; another checkout's folder, or a new wheel, is another environment."""
+    from schub.bench.repos import _spec
+
+    for n, line in enumerate(("--find-links ./wheels", "-f./wheels", "--find-links=wheels")):
+        specs = []
+        for name in ("a", "b"):
+            here = tmp_path / str(n) / name / "model"
+            (here / "wheels").mkdir(parents=True)
+            (here / "wheels" / "pkg-1.0-py3-none-any.whl").write_bytes(b"wheel")
+            (here / "requirements.txt").write_text(f"{line}\npkg\n")
+            specs.append(_spec(here, "3.11", None, "cu128", "requirements.txt", False, ())[0])
+        assert specs[0] != specs[1], line
+        (here / "wheels" / "README").write_text("not a package\n")  # uv takes no such file
+        assert _spec(here, "3.11", None, "cu128", "requirements.txt", False, ())[0] == specs[1], line
+        (here / "wheels" / "pkg-1.1-py3-none-any.whl").write_bytes(b"a newer wheel")
+        assert _spec(here, "3.11", None, "cu128", "requirements.txt", False, ())[0] != specs[1], line
+
+
+def test_requirements_the_spec_cannot_follow_are_refused(origin: Path, fake_uv: Path, monkeypatch) -> None:
+    """Saying what to change, with the file's text: never what a variable holds."""
+    repo = clone(URL)
+    (repo.parent / "outside.txt").write_text("numpy\n")
+    monkeypatch.setenv("PIP_TOKEN", "s3cret")
+    for line, reason in (("-r ../outside.txt", "outside the repository: copy it into"),
+                         ("--constraint missing.txt", "which is not a file"),
+                         ("-c https://${PIP_TOKEN}@example.org/pins.txt", r"by URL.*bench\.fetch"),
+                         ("-i file://${PIP_TOKEN}/index", "package index.*--find-links"),
+                         ("--extra-index-url=./index", "package index.*--find-links")):
+        (repo / "requirements.txt").write_text(f"numpy\n{line}\n")
+        with pytest.raises(RepoError, match=reason) as refused:
+            environment(repo, requirements="requirements.txt")
+        assert "s3cret" not in str(refused.value)  # the file's text, not what a variable holds
+    assert not fake_uv.exists()
+
+
+def test_a_file_included_by_url_keeps_the_environment_its_checkout_had(origin: Path, fake_uv: Path,
+                                                                      tmp_path: Path) -> None:
+    """What a URL serves cannot be followed: no new environment. A cell replayed after this change still gets
+    the environment built for it before, for the same checkout at the same commit, when the key of then
+    covered everything else the file brings in."""
+    from schub.hashing import stable_hash
+
+    def built_before(folder: Path, text: str) -> Path:  # what sc-hub left before it followed includes
+        spec = {"python": "3.11", "torch": None, "cuda": "cu128", "extra": [], "requirements": stable_hash(text),
+                "install_repo": None, "packaging": None}
+        env = tmp_path / "root" / "repo-envs" / stable_hash(spec)
+        (env / "bin").mkdir(parents=True)
+        (env / "bin" / "python").symlink_to(sys.executable)
+        commit = git("rev-parse", "HEAD", cwd=folder)
+        (env / "spec.json").write_text(json.dumps({**spec, "repo": str(folder), "commit": commit, "built": "x"}))
+        (env / "ready").write_text("x")
+        return env / "bin" / "python"
+
+    repo = clone(URL)
+    text = "numpy\n-r https://example.org/lab/model/requirements-extra.txt\n"
+    (repo / "requirements.txt").write_text(text)
+    with pytest.raises(RepoError, match=r"bench\.fetch"):  # a new environment
+        environment(repo, requirements="requirements.txt")
+    python = built_before(repo, text)
+    assert environment(repo, requirements="requirements.txt") == python  # the replayed cell
+    other = tmp_path / "other" / "model"
+    shutil.copytree(repo, other)
+    with pytest.raises(RepoError, match=r"bench\.fetch"):  # another checkout
+        environment(other, requirements="requirements.txt")
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "v3", cwd=repo)
+    with pytest.raises(RepoError, match=r"bench\.fetch"):  # the checkout moved on
+        environment(repo, requirements="requirements.txt")
+    mixed = "-r base.txt\n-r https://example.org/lab/model/requirements-extra.txt\n"
+    (repo / "requirements.txt").write_text(mixed)
+    (repo / "base.txt").write_text("numpy\n")
+    built_before(repo, mixed)
+    with pytest.raises(RepoError, match=r"bench\.fetch"):  # the key of then did not cover base.txt
+        environment(repo, requirements="requirements.txt")
+    assert not fake_uv.exists()  # nothing was built
+
+
+def test_plain_requirements_keep_their_environment(tmp_path: Path, monkeypatch) -> None:
+    """Environments built before includes and local packages counted are still found for files that have
+    neither (or only an editable '-e .', which was counted already). An index behind a variable that is not
+    set names no folder here (uv, run with the same variables, cannot read one either): not refused."""
+    from schub.bench.repos import _spec
+    from schub.hashing import stable_hash
+
+    monkeypatch.delenv("SCHUB_NOT_SET", raising=False)
+    (tmp_path / "model").mkdir()
+    for text in ("numpy\ntorch==2.4.1  # pinned\n--extra-index-url https://download.pytorch.org/whl/cu121\n",
+                 "-e .\nnumpy\n",
+                 "numpy\n--extra-index-url ${SCHUB_NOT_SET}\n-i ${SCHUB_NOT_SET}/simple\n-f ${SCHUB_NOT_SET}/wheels\n"):
+        (tmp_path / "model" / "requirements.txt").write_text(text)
+        spec, _ = _spec(tmp_path / "model", "3.11", None, "cu128", "requirements.txt", False, ())
+        assert spec["requirements"] == stable_hash(text)

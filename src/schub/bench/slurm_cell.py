@@ -222,6 +222,7 @@ def _job_spec(settings: Settings, project: str, project_dir: Path, job_dir: Path
         log_path=job_dir / "slurm-%j.log", workdir=project_dir / "work",
         command=(python, "-m", "schub.bench.jobrun", "--job-dir", str(job_dir)),
         env=tuple(dict(env).items()), comment=comment, signal=f"B:USR1@{warning_s(spec.minutes)}",
+        requeue=False,  # a rerun keeps the job id, which names its journal addenda: a lost job is sent again
     )
 
 

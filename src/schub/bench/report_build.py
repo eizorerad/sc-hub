@@ -10,6 +10,8 @@ appendix, so a negative result cannot quietly disappear.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from dataclasses import dataclass
 from typing import Any, Sequence
@@ -37,6 +39,7 @@ class Built:
     warnings: tuple[str, ...]
     covers: str  # the newest cell in the journal
     cited: tuple[str, ...]  # journal ids the report shows
+    content_sha256: str  # of what the notebook shows, when and by whom it was built aside
 
 
 def _local(ref: str, project: str, prefix: str) -> str:
@@ -232,6 +235,16 @@ class Assembler:
         cells.append(_markdown(_id(self.project, "checks"), "## Notes on this report\n\n" + "\n".join(notes)))
         return cells
 
+    def notebook(self, body: list[dict[str, Any]], warnings: Sequence[str], covers: str, actor: Actor,
+                 when: str) -> dict[str, Any]:
+        cells = self.head(covers, when) + body + self.appendix(warnings, actor, when, covers)
+        return {
+            "nbformat": 4, "nbformat_minor": 5, "cells": cells,
+            "metadata": {"kernelspec": {"name": "python3", "display_name": "Python 3", "language": "python"},
+                         "language_info": {"name": "python"},
+                         "schub": {"project": self.project, "source": "report", "covers": covers, "built": when}},
+        }
+
     def _reason_key(self, ref: str) -> str:
         return ref.strip().rpartition("#")[2]
 
@@ -277,11 +290,8 @@ def build(journal: Journal, project: str, question: str, spec: ReportSpec, actor
         raise ReportError("; ".join(assembler.errors))
     covers = assembler.order[-1] if assembler.order else ""
     warnings = tuple(assembler.warnings())
-    cells = assembler.head(covers, when) + body + assembler.appendix(warnings, actor, when, covers)
-    notebook = {
-        "nbformat": 4, "nbformat_minor": 5, "cells": cells,
-        "metadata": {"kernelspec": {"name": "python3", "display_name": "Python 3", "language": "python"},
-                     "language_info": {"name": "python"},
-                     "schub": {"project": project, "source": "report", "covers": covers, "built": when}},
-    }
-    return Built(notebook=notebook, warnings=warnings, covers=covers, cited=tuple(assembler.cited))
+    # The same notebook built by nobody at no time: it changes with anything the report shows (a note, a job's
+    # state, a check that came in later, without a new cell), never with when or by whom it is built.
+    shown = json.dumps(assembler.notebook(body, warnings, covers, Actor(), ""), sort_keys=True)
+    return Built(notebook=assembler.notebook(body, warnings, covers, actor, when), warnings=warnings, covers=covers,
+                 cited=tuple(assembler.cited), content_sha256=hashlib.sha256(shown.encode()).hexdigest())

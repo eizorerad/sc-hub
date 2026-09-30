@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from schub.project_env import EnvError, build_script, built, check_packages, kernel_ready
@@ -31,8 +33,9 @@ def test_build_script_layers_on_the_shared_env(hub, settings):
     assert "UV_TORCH_BACKEND=cu128" in script and "--channel bioconda" in script
     assert "--name schub-crispr.screen" in script and "'sc-hub: crispr/screen'" in script
     assert "^(-e |schub[ =@])" in script  # editable / local installs are no constraints
-    # built in its own folder; `current` moves only after the .ok marker
-    assert script.index('touch "$NEW/.ok"') < script.index('mv -T "$ROOT/current.new"')
+    # built in its own folder; the .ok marker comes last, after the kernel and `current` (undo puts them back)
+    publish = [script.index(s) for s in ("-m ipykernel install", 'point "$(basename "$NEW")"', 'touch "$NEW/.ok"')]
+    assert publish == sorted(publish)
     assert "micromamba" not in build_script(settings, "crispr", ["harmonypy"], [], "x")
 
 
@@ -200,6 +203,117 @@ def test_a_kernel_started_while_the_build_was_unreadable_is_not_restarted_for_it
     first = worker._ensure_kernel(settings.projects_dir / "crispr")
     assert worker._ensure_kernel(settings.projects_dir / "crispr") is first
     assert worker._ensure_kernel(settings.projects_dir / "crispr") is first and worker.kernel_env == ("python3", "")
+
+
+def real_tools(settings, tmp_path, monkeypatch):
+    """What the real build script needs, faked: uv (no solution for a package named "broken"; its venv's python
+    registers kernels, as jupyter_client does: the old spec is removed first; exit 42 while `fail-kernel`
+    exists), the shared python (this one), GNU mv -T (the cluster's) and a clock for distinct build stamps.
+    Returns the failure switch."""
+    import sys
+    from datetime import datetime
+
+    from schub import project_env
+
+    failing = tmp_path / "fail-kernel"
+    python = tmp_path / "venv-python"
+    python.write_text(f"""#!/bin/sh
+if [ "$1" = -m ]; then  # -m ipykernel install --user --name NAME --display-name ...
+  rm -rf "$JUPYTER_DATA_DIR/kernels/$6"
+  [ ! -e {failing} ] || {{ echo ipykernel_registration_failed >&2; exit 42; }}
+  mkdir -p "$JUPYTER_DATA_DIR/kernels/$6" && printf '{{"argv": ["%s"]}}' "$0" > "$JUPYTER_DATA_DIR/kernels/$6/kernel.json"
+fi
+case "$2" in *purelib*) mkdir -p "$0-site" && echo "$0-site" ;; *scanpy*) echo "environment works on 3.12" ;; esac
+""")
+    uv = settings.library / "bin" / "uv"
+    uv.write_text(f"""#!/bin/sh
+if [ "$1" = venv ]; then for last; do :; done; mkdir -p "$last/bin" && cp {python} "$last/bin/python"; fi
+if [ "$1 $2" = "pip compile" ]; then
+  ! grep -qx broken requested.txt || {{ echo "No solution found when resolving dependencies" >&2; exit 1; }}
+  cp requested.txt resolved.txt
+fi
+exit 0
+""")
+    gnu = tmp_path / "gnu"
+    gnu.mkdir()
+    (gnu / "mv").write_text(f"""#!/bin/sh
+if [ "$1" = -T ]; then exec {sys.executable} -c 'import os, sys; os.replace(*sys.argv[1:])' "$2" "$3"; fi
+exec /bin/mv "$@"
+""")
+    for tool in (python, uv, gnu / "mv"):
+        tool.chmod(0o755)
+    settings.python.parent.mkdir(parents=True)
+    settings.python.symlink_to(sys.executable)
+    monkeypatch.setenv("PATH", f"{gnu}:{os.environ['PATH']}")
+    monkeypatch.setenv("JUPYTER_DATA_DIR", str(tmp_path / "jupyter"))
+    seconds = iter(range(1, 60))
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 9, 30, 0, 0, next(seconds), tzinfo=tz)
+
+    monkeypatch.setattr(project_env, "datetime", Clock)
+    return failing
+
+
+def published(settings, project="crispr"):
+    """What `current`, kernel.json and the worker each say the project's environment is."""
+    import json
+    from types import SimpleNamespace
+
+    from schub.bench.worker import ProjectWorker
+    from schub.project_env import env_root, kernel_dir
+
+    root, spec = env_root(settings, project), kernel_dir(project) / "kernel.json"
+    worker = ProjectWorker(SimpleNamespace(settings=settings), project)  # type: ignore[arg-type]
+    return (os.readlink(root / "current") if (root / "current").is_symlink() else None,
+            json.loads(spec.read_text())["argv"][0] if spec.is_file() else None, worker._environment())
+
+
+def test_a_failed_kernel_registration_keeps_the_working_environment(hub, settings, tmp_path, monkeypatch):
+    """The generated build, run: `ipykernel install` failing after a good build left `current` (so built() and
+    the build the worker reported) on the new build while kernel.json still started the old one."""
+    from schub.bench.kernels import DEFAULT_KERNEL
+    from schub.project_env import build_here, env_root
+
+    failing = real_tools(settings, tmp_path, monkeypatch)
+    root = env_root(settings, "crispr")
+    failing.touch()
+    with pytest.raises(EnvError, match="exit 42"):  # the very first build
+        build_here(settings, "crispr", ["harmonypy"], [])
+    assert published(settings) == (None, None, (DEFAULT_KERNEL, "")) and built(settings, "crispr") is None
+    failing.unlink()
+    first = build_here(settings, "crispr", ["harmonypy"], [])
+    working = (first.built, str(root / first.built / "venv" / "bin" / "python"), ("schub-crispr", first.built))
+    assert published(settings) == working
+    failing.touch()
+    with pytest.raises(EnvError, match="keeps its previous kernel"):
+        build_here(settings, "crispr", ["harmonypy", "decoupler"], [])
+    assert published(settings) == working and built(settings, "crispr") == first  # all of it the working build
+    assert sorted(p.name for p in root.iterdir()) == [first.built, "current"]  # the failed one is gone
+    failing.unlink()
+    second = build_here(settings, "crispr", ["harmonypy", "decoupler"], [])
+    assert published(settings) == (second.built, str(root / second.built / "venv" / "bin" / "python"),
+                                   ("schub-crispr", second.built))
+
+
+def test_a_build_does_not_take_its_undo_state_from_the_environment(hub, settings, tmp_path, monkeypatch):
+    """PUBLISHING (and PREVIOUS) exported by whatever started the build: an early failure deleted the working
+    kernel, then stopped on the unset PREVIOUS before removing the failed build (or pointed `current` at it)."""
+    from schub.project_env import build_here, env_root
+
+    real_tools(settings, tmp_path, monkeypatch)
+    root = env_root(settings, "crispr")
+    first = build_here(settings, "crispr", ["harmonypy"], [])
+    working = published(settings)
+    for inherited in ({"PUBLISHING": "1"}, {"PUBLISHING": "1", "PREVIOUS": "elsewhere"}):
+        for name, value in inherited.items():
+            monkeypatch.setenv(name, value)
+        with pytest.raises(EnvError, match="No solution found"):  # before anything is published
+            build_here(settings, "crispr", ["harmonypy", "broken"], [])
+        assert published(settings) == working, inherited
+        assert sorted(p.name for p in root.iterdir()) == [first.built, "current"], inherited
 
 
 def test_conda_packages_bring_their_own_micromamba(settings, monkeypatch, tmp_path, capsys):

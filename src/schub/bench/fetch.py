@@ -19,7 +19,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, unquote_plus, urlencode, urlsplit, urlunsplit
 
 from ..locking import long_held
 from . import ledger
@@ -31,13 +31,31 @@ TIMEOUT_S = 60
 SCHEMES = ("https", "http")  # GEO and the others serve https (urllib's ftp has no status to check)
 USER_AGENT = "sc-hub-bench/1 (+https://github.com/eizorerad/sc-hub)"
 SECRET_PARAM = re.compile(r"token|key|sig|signature|secret|password|passwd|auth|credential|session|^x-amz-", re.I)
+# A query's name= in some text, then its value: the value runs to &, #, the line's end or a closing quote (one before
+# a space or the end), not to a space, since http.client quotes a URL that has one.
+QUERY_NAME = re.compile(r"(?<=[?&])([^=&#?\s'\"]+)=")
+QUERY_VALUE = re.compile(r"(?:[^&#'\"\r\n]|['\"](?!\s|$))*")
 
 
 def public(url: str) -> str:
-    """The URL as the journal shows it: values of secret-looking query parameters are hidden."""
+    """The URL as the journal, the printed lines and the errors show it: values of secret-looking query
+    parameters are hidden."""
     parts = urlsplit(url)
     query = [(k, "REDACTED" if SECRET_PARAM.search(k) else v) for k, v in parse_qsl(parts.query, keep_blank_values=True)]
     return urlunsplit(parts._replace(query=urlencode(query, safe="/:")))
+
+
+def _redacted(text: str) -> str:
+    """An error's text that may quote a URL (http.client quotes the path it refuses, urllib a redirect it does not
+    follow): the same values hidden as in `public`. Only a secret's value is skipped: another may run into a URL."""
+    kept, at = [], 0
+    while name := QUERY_NAME.search(text, at):
+        kept.append(text[at:name.end()])
+        at = name.end()
+        if SECRET_PARAM.search(unquote_plus(name[1])):
+            kept.append("REDACTED")
+            at = QUERY_VALUE.match(text, at).end()
+    return "".join(kept) + text[at:]
 
 
 class FetchError(RuntimeError):
@@ -101,6 +119,7 @@ def _complete_416(exc: urllib.error.HTTPError, offset: int) -> bool:
 
 def _attempt(url: str, part: Path) -> int | None:
     """Download into `part` from where it stops. Returns the expected total, if known."""
+    shown = public(url)
     offset, validator = _resumable(url, part)
     try:
         response = _open(url, offset, validator)
@@ -108,14 +127,15 @@ def _attempt(url: str, part: Path) -> int | None:
         if exc.code == 416 and offset and _complete_416(exc, offset):
             return offset
         if exc.code in (408, 429) or exc.code >= 500:  # busy or failing for a moment: the retry loop waits
-            raise ConnectionError(f"{url}: HTTP {exc.code} {exc.reason}") from exc
-        raise FetchError(f"{url}: HTTP {exc.code} {exc.reason}") from exc
+            raise ConnectionError(f"HTTP {exc.code} {exc.reason}") from exc  # the retry loop's error adds the URL
+        # not chained: a traceback would print urllib's own text, which quotes a refused redirect's URL whole
+        raise FetchError(f"{shown}: HTTP {exc.code} {_redacted(str(exc.reason))}") from None
     with response:
         status = getattr(response, "status", None)
         if status not in (200, 206):
-            raise FetchError(f"{url}: HTTP {status}")
+            raise FetchError(f"{shown}: HTTP {status}")
         if status == 206 and not re.match(rf"bytes {offset}-", response.headers.get("Content-Range", "")):
-            raise FetchError(f"{url}: the server resumed from another byte than {offset}")
+            raise FetchError(f"{shown}: the server resumed from another byte than {offset}")
         total = _expected_total(response, offset)
         write_json_atomic(_sidecar(part), {"url": public(url), "url_sha256": _url_key(url), "total": total, "validator":
                                            response.headers.get("ETag") or response.headers.get("Last-Modified") or ""})
@@ -164,14 +184,15 @@ def fetch(url: str, dest: str | os.PathLike | None = None, sha256: str | None = 
 
 
 def _cache_path(name: str, sha256: str | None, md5: str | None) -> Path | None:
-    """With a published checksum, one copy per student: $SCHUB_ROOT/cache/fetch/<checksum>/<name>."""
+    """With a published checksum, one copy per student: $SCHUB_ROOT/cache/fetch/<checksum>/files/<name>. The
+    folder's own record.json and .lock sit beside files/, where no name a download is given can land."""
     root = os.environ.get("SCHUB_ROOT")
     if not root or not (sha256 or md5):
         return None
     key = f"sha256-{sha256.lower()}" if sha256 else f"md5-{md5.lower().removeprefix('md5:')}"
     if not re.fullmatch(r"(sha256-[0-9a-f]{64}|md5-[0-9a-f]{32})", key):
         raise FetchError(f"{key.split('-')[0]}: not a hexadecimal checksum")
-    return Path(root) / "cache" / "fetch" / key / name
+    return Path(root) / "cache" / "fetch" / key / "files" / name
 
 
 def _cached_file(folder: Path) -> Path | None:
@@ -183,36 +204,63 @@ def _cached_file(folder: Path) -> Path | None:
         return None
 
 
-def _intact(cache: Path, record: dict) -> bool:
-    """A cached file is kept read-only; one made writable again may have been edited in place, so it is re-hashed."""
+def _record_of(url: str, cache: Path) -> dict:
+    """What record.json says of a cached file: its checksums, and its size and mtime, to see a change without
+    reading it (not the ctime, which a hard link changes)."""
+    sha, md5 = digests_of(cache)
+    info = cache.stat()
+    return {"url": public(url), "size": info.st_size, "mtime_ns": info.st_mtime_ns, "sha256": sha, "md5": md5}
+
+
+def _checked(url: str, cache: Path, record: dict) -> dict | None:
+    """The record of an intact cached file, None to fetch it again. A cached file is kept read-only: one that still
+    has its recorded size and mtime is not read. One made writable again or changed since may have been edited in
+    place, and an older version's record has no mtime: that file is re-hashed and recorded anew."""
     if not cache.exists() or record.get("size") != cache.stat().st_size:
-        return False
-    if cache.stat().st_mode & 0o222:
-        return digests_of(cache)[0] == record.get("sha256")
-    return True
+        return None
+    if not cache.stat().st_mode & 0o222 and record.get("mtime_ns") == cache.stat().st_mtime_ns:
+        return record
+    renewed = _record_of(url, cache)
+    return renewed if renewed["sha256"] == record.get("sha256") else None
 
 
 def _via_cache(url: str, target: Path, cache: Path, sha256: str | None, md5: str | None, attempts: int,
                pause_s: float) -> Path:
     """Projects asking for the same checksummed file share one download (the first fetches, the others wait
     on the lock and link it); every project's journal still records its own copy. The shared file is read-only:
-    editing one project's copy in place would change every other copy (they are hard links)."""
+    editing one project's copy in place would change every other copy (they are hard links). The journal records
+    the checksums of the file handed out: a hard link is the cached file as checked here, a copy is read again."""
+    folder = cache.parent.parent  # the checksum's folder, above files/
     cache.parent.mkdir(parents=True, exist_ok=True)
-    record_path = cache.parent / "record.json"
-    with long_held(cache.parent / ".lock"):
+    record_path = folder / "record.json"
+    with long_held(folder / ".lock"):
+        older = _cached_file(folder)  # kept beside record.json by an older version, whose kernels still look there
+        if older is not None:
+            shared = cache.parent / older.name
+            if not shared.exists():
+                _link(older, shared)  # one file under both names (a copy only where no hard link can be made)
+            cache = cache if cache.exists() else shared
         record = read_json(record_path) or {}
-        fresh = not _intact(cache, record)
+        checked = _checked(url, cache, record)
+        fresh = checked is None
         if fresh:
             if cache.exists():
                 cache.chmod(0o644)
                 cache.unlink()  # edited in place: fetch it again rather than hand out a changed file
-            _fetch_locked(url, cache, sha256, md5, attempts, pause_s, record=False)
-            digest = digests_of(cache)[0]
+            _fetch_locked(url, cache, sha256, md5, attempts, pause_s, record=False)  # checks the expected checksums
             cache.chmod(0o444)
-            write_json_atomic(record_path, {"url": public(url), "size": cache.stat().st_size, "sha256": digest})
-            record = read_json(record_path) or {}
+            checked = _record_of(url, cache)
+        if checked != record:
+            write_json_atomic(record_path, checked)
         _link(cache, target)
-    size, digest = int(record["size"]), str(record["sha256"])
+        digest, md5_digest = ((checked["sha256"], checked.get("md5", "")) if target.samefile(cache)
+                              else digests_of(target))
+        if (sha256 and digest != sha256.lower()) or (md5 and md5_digest != md5.lower().removeprefix("md5:")):
+            cache.chmod(0o644)
+            target.unlink()
+            cache.unlink(missing_ok=True)  # never handed out again: the next fetch downloads it
+            _fail(public(url), target, f"the cached copy (sha256 {digest}) does not match the expected checksum")
+    size = target.stat().st_size
     note = "" if fresh else "from the student's download cache (the same checksum was fetched before)"
     ledger.record("download", url=public(url), path=str(target), size=size, sha256=digest, status="ok",
                   message=note)
@@ -277,7 +325,7 @@ def _download(url: str, part: Path, attempts: int, pause_s: float) -> int | None
         except (urllib.error.URLError, TimeoutError, ConnectionError, OSError, http.client.HTTPException) as exc:
             last = exc
             time.sleep(pause_s * attempt)
-    raise FetchError(f"{url}: download failed after {attempts} attempts: {last}")
+    raise FetchError(f"{public(url)}: download failed after {attempts} attempts: {_redacted(str(last))}")
 
 
 def _discard(part: Path) -> None:

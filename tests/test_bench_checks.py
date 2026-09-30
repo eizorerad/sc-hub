@@ -59,6 +59,24 @@ def test_file_and_tables(settings: Settings, project: Path) -> None:
     assert status(settings, "finite_values", path="work/t.csv", column="lfc")[0] == "pass"
 
 
+def test_finite_values_passes_only_after_reading_the_whole_column(settings: Settings, project: Path,
+                                                                  monkeypatch) -> None:
+    """A loss that turned NaN after the rows the check reads (it stops at MAX_ROWS_SCANNED) was a pass:
+    'all 5000000 values finite'. Found by the 2026-09-30 audit on 5,000,000 finite values and a NaN."""
+    from schub.bench.checks import tables
+
+    monkeypatch.setattr(tables, "MAX_ROWS_SCANNED", 3)
+    work = project / "work"
+    (work / "long.csv").write_text("step,loss\n1,0.9\n2,0.8\n3,0.7\n4,nan\n")
+    (work / "exact.csv").write_text("step,loss\n1,0.9\n2,0.8\n3,0.7\n\n")
+    (work / "early.csv").write_text("step,loss\n1,0.9\n2,nan\n3,0.7\n4,0.6\n")
+    result, message = status(settings, "finite_values", path="work/long.csv", column="loss")
+    assert result == "error" and "first 3 values are finite" in message and "not checked" in message
+    assert status(settings, "finite_values", path="work/exact.csv", column="loss") == (
+        "pass", "loss: all 3 values finite")  # as many rows as it reads: nothing is left unread
+    assert status(settings, "finite_values", path="work/early.csv", column="loss")[0] == "fail"
+
+
 def test_h5ad_checks(settings: Settings, project: Path) -> None:
     make_adata().write_h5ad(project / "work" / "counts.h5ad")
     make_adata(x="lognorm").write_h5ad(project / "work" / "lognorm.h5ad")
