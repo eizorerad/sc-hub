@@ -7,6 +7,7 @@ import json
 import nbformat
 import pytest
 
+from schub.bench.jobrun import to_journal
 from schub.bench.journal import Journal
 from schub.bench.models import (Actor, CellEntry, CheckResult, Download, FileChange, JobRef, OutputItem)
 from schub.bench.report_spec import Block, ReportSpec
@@ -200,6 +201,60 @@ def test_numbers_are_claimed_and_repeats_are_confirmed(settings: Settings, clust
     bench.now = lambda: later
     assert bench.report("k562", spec(), publish=True).status == "unchanged"
     assert store.published_since(later).folder == first.folder  # the writer's repeat counts as published
+
+
+def test_a_late_note_makes_a_new_report_and_keeps_the_old_one(settings: Settings, cluster: FakeCluster,
+                                                              study: Journal) -> None:
+    bench = service(settings, cluster)
+    first = bench.report("k562", spec(), publish=True)
+    old = settings.projects_dir / "k562" / first.notebook
+    kept = old.read_bytes()
+    study.add_note("error", "The screen used the wrong guide library.")  # no new cell: covers stays c0003
+    again = bench.report("k562", spec(), publish=True)
+    assert again.status == "published" and again.folder == "reports/02-k562-screen-is-it-usable"
+    assert again.covers == first.covers == "c0003"
+    assert "wrong guide library" in text_of(notebook(settings, again.folder))
+    assert old.read_bytes() == kept and b"wrong guide library" not in kept  # a published report is never edited
+
+
+def test_a_late_job_result_makes_a_new_report(settings: Settings, cluster: FakeCluster, study: Journal) -> None:
+    bench = service(settings, cluster)
+    cid = cell(study, "score the guides", "score(table)", jobs=(JobRef(job_id="207001", state="PENDING"),))
+    report = spec(blocks=(Block(cell=cid),))
+    first = bench.report("k562", report, publish=True)
+    result = {"job_id": "207001", "exit_code": 0, "finished": study.now(), "files": [], "downloads": [],
+              "checks": [{"name": "finite", "status": "fail", "message": "12 NaN"}]}
+    to_journal(settings, {"project": "k562", "cid": cid}, settings.root / "jobs", result)  # the job reports
+    again = bench.report("k562", report, publish=True)
+    assert again.status == "published" and again.covers == first.covers == cid
+    text = text_of(notebook(settings, again.folder))
+    assert "job 207001 completed" in text and "check finite: fail" in text
+    assert f"{cid}: check finite failed" in again.warnings
+    assert "job 207001 pending" in text_of(notebook(settings, first.folder))  # the first report stays as it was
+
+
+def test_a_repeat_is_unchanged_whoever_builds_it_and_whenever(settings: Settings, cluster: FakeCluster,
+                                                              study: Journal) -> None:
+    bench = service(settings, cluster)
+    first = bench.report("k562", spec(), publish=True, actor=WRITER)
+    study.add_note("note", "Leo: the table looks right", audience="human")  # a report never shows it
+    bench.now = lambda: "9999-01-01T00:00:00.000+00:00"
+    again = bench.report("k562", spec(), publish=True, actor=Actor(kind="chat", client="codex"))
+    assert again.status == "unchanged" and again.folder == first.folder
+
+
+def test_a_report_published_before_content_hashes_is_not_taken_for_the_same(settings: Settings,
+                                                                             cluster: FakeCluster,
+                                                                             study: Journal) -> None:
+    bench = service(settings, cluster)
+    first = bench.report("k562", spec(), publish=True)
+    path = settings.projects_dir / "k562" / first.folder / "report.json"
+    meta = json.loads(path.read_text())
+    path.chmod(0o644)
+    path.write_text(json.dumps({k: v for k, v in meta.items() if k != "content_sha256"}))  # as sc-hub wrote it before
+    again = bench.report("k562", spec(), publish=True)
+    assert again.status == "published" and again.folder == "reports/02-k562-screen-is-it-usable"
+    assert bench.report("k562", spec(), publish=True).status == "unchanged"  # compared from this one on
 
 
 def test_a_draft_replaces_the_last_one_and_blocks_can_repeat(settings: Settings, cluster: FakeCluster,
