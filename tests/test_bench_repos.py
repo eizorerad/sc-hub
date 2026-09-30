@@ -197,7 +197,7 @@ def test_local_packages_in_the_requirements_are_part_of_the_spec(tmp_path: Path)
 
     installs = [(".", "pyproject.toml"), ("--editable .", "pyproject.toml"), ("-r more.txt", "pyproject.toml"),
                 ("--editable=./pkg", "pkg/setup.py"), ("-e ./pkg", "pkg/setup.py"), ("./pkg[extra]", "pkg/setup.py"),
-                ("pkg @ file://{here}/pkg", "pkg/setup.py"),
+                ("-e./pkg", "pkg/setup.py"), ("pkg @ file://{here}/pkg", "pkg/setup.py"),
                 ("dist/pkg-1.0-py3-none-any.whl", "dist/pkg-1.0-py3-none-any.whl")]
     for n, (line, packaging) in enumerate(installs):
         specs = []
@@ -219,6 +219,21 @@ def test_local_packages_in_the_requirements_are_part_of_the_spec(tmp_path: Path)
         assert _spec(here, "3.11", None, "cu128", "requirements.txt", False, ())[0] != specs[1], line
 
 
+def test_an_include_counts_in_every_form_pip_reads(tmp_path: Path) -> None:
+    """pip also takes a short option's value attached (-rbase.txt): that file's content was left out."""
+    from schub.bench.repos import _spec
+
+    here = tmp_path / "model"
+    here.mkdir()
+    for line in ("-rbase.txt", "-cbase.txt", "-r=base.txt", "-r base.txt", "--requirement=base.txt",
+                 "--constraint base.txt"):
+        (here / "requirements.txt").write_text(f"numpy\n{line}\n")
+        (here / "base.txt").write_text("scipy==1.13.0\n")
+        first = _spec(here, "3.11", None, "cu128", "requirements.txt", False, ())[0]
+        (here / "base.txt").write_text("scipy==1.14.0\n")
+        assert _spec(here, "3.11", None, "cu128", "requirements.txt", False, ())[0] != first, line
+
+
 def test_requirements_the_spec_cannot_follow_are_refused(origin: Path, fake_uv: Path, monkeypatch) -> None:
     repo = clone(URL)
     (repo.parent / "outside.txt").write_text("numpy\n")
@@ -233,15 +248,18 @@ def test_requirements_the_spec_cannot_follow_are_refused(origin: Path, fake_uv: 
     assert not fake_uv.exists()
 
 
-def test_plain_requirements_keep_their_environment(tmp_path: Path) -> None:
+def test_plain_requirements_keep_their_environment(tmp_path: Path, monkeypatch) -> None:
     """Environments built before includes and local packages counted are still found for files that have
-    neither (or only an editable '-e .', which was counted already)."""
+    neither (or only an editable '-e .', which was counted already). An index behind a variable that is not
+    set names no folder here (uv, run with the same variables, cannot read one either): not refused."""
     from schub.bench.repos import _spec
     from schub.hashing import stable_hash
 
+    monkeypatch.delenv("SCHUB_NOT_SET", raising=False)
     (tmp_path / "model").mkdir()
     for text in ("numpy\ntorch==2.4.1  # pinned\n--extra-index-url https://download.pytorch.org/whl/cu121\n",
-                 "-e .\nnumpy\n"):
+                 "-e .\nnumpy\n",
+                 "numpy\n--extra-index-url ${SCHUB_NOT_SET}\n-i ${SCHUB_NOT_SET}/simple\n-f ${SCHUB_NOT_SET}/wheels\n"):
         (tmp_path / "model" / "requirements.txt").write_text(text)
         spec, _ = _spec(tmp_path / "model", "3.11", None, "cu128", "requirements.txt", False, ())
         assert spec["requirements"] == stable_hash(text)

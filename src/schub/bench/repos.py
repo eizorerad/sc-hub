@@ -37,11 +37,13 @@ PYTHON = re.compile(r"3\.\d{1,2}(\.\d{1,3})?")
 TORCH = re.compile(r"\d{1,2}(\.\d{1,3}){0,2}")
 CLONE_TIMEOUT_S = 1800
 BUILD_TIMEOUT_S = 3600
-# Requirements-file lines (pip's and uv's syntax) that bring in more than their own text.
-INCLUDE = re.compile(r"(?:-r|--requirement|-c|--constraint)(?:\s*=\s*|\s+)(.+)")
-EDITABLE = re.compile(r"(?:-e|--editable)(?:\s*=\s*|\s+)(\S+)")
-INDEX = re.compile(r"(?:-f|--find-links|-i|--index-url|--extra-index-url)(?:\s*=\s*|\s+)(\S+)")
+# Requirements-file lines (pip's and uv's syntax) that bring in more than their own text; a short option's
+# value may also be attached, as pip reads it (-rbase.txt).
+INCLUDE = re.compile(r"(?:-[rc]\s*=?|--(?:requirement|constraint)(?:\s*=|\s))\s*(\S.*)")
+EDITABLE = re.compile(r"(?:-e\s*=?|--editable(?:\s*=|\s))\s*(\S+)")
+INDEX = re.compile(r"(?:-[fi]\s*=?|--(?:find-links|index-url|extra-index-url)(?:\s*=|\s))\s*(\S+)")
 NAMED = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\s*(\[[^\]]*\])?\s*@\s*(\S+)")  # name @ url
+UNSET = re.compile(r"\$\{[A-Z0-9_]+\}")  # left by _filled: a variable that is not set
 ARCHIVES = (".whl", ".zip", ".tar.gz", ".tgz", ".tar.bz2", ".tar.xz", ".tar")
 
 
@@ -206,7 +208,10 @@ def _filled(value: str) -> str:
 
 def _is_local(target: str, bare_is_path: bool = False) -> bool:
     """A path, an archive or a file: URL (after -e, -f or -i any value without a URL scheme is a path:
-    uv reads '-e name' as './name')."""
+    uv reads '-e name' as './name'). With a variable that is not set it names nothing: uv, run with the
+    same variables, cannot read a folder through it either."""
+    if UNSET.search(target):
+        return False
     scheme = re.match(r"([A-Za-z][A-Za-z0-9+.-]*):", target)
     if scheme:
         return scheme[1].lower() == "file"
