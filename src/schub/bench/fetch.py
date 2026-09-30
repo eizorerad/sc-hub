@@ -174,14 +174,15 @@ def fetch(url: str, dest: str | os.PathLike | None = None, sha256: str | None = 
 
 
 def _cache_path(name: str, sha256: str | None, md5: str | None) -> Path | None:
-    """With a published checksum, one copy per student: $SCHUB_ROOT/cache/fetch/<checksum>/<name>."""
+    """With a published checksum, one copy per student: $SCHUB_ROOT/cache/fetch/<checksum>/files/<name>. The
+    folder's own record.json and .lock sit beside files/, where no name a download is given can land."""
     root = os.environ.get("SCHUB_ROOT")
     if not root or not (sha256 or md5):
         return None
     key = f"sha256-{sha256.lower()}" if sha256 else f"md5-{md5.lower().removeprefix('md5:')}"
     if not re.fullmatch(r"(sha256-[0-9a-f]{64}|md5-[0-9a-f]{32})", key):
         raise FetchError(f"{key.split('-')[0]}: not a hexadecimal checksum")
-    return Path(root) / "cache" / "fetch" / key / name
+    return Path(root) / "cache" / "fetch" / key / "files" / name
 
 
 def _cached_file(folder: Path) -> Path | None:
@@ -206,10 +207,16 @@ def _via_cache(url: str, target: Path, cache: Path, sha256: str | None, md5: str
                pause_s: float) -> Path:
     """Projects asking for the same checksummed file share one download (the first fetches, the others wait
     on the lock and link it); every project's journal still records its own copy. The shared file is read-only:
-    editing one project's copy in place would change every other copy (they are hard links)."""
+    editing one project's copy in place would change every other copy (they are hard links). The journal records
+    the checksum of the file handed out, hashed after every write here."""
+    folder = cache.parent.parent  # the checksum's folder, above files/
     cache.parent.mkdir(parents=True, exist_ok=True)
-    record_path = cache.parent / "record.json"
-    with long_held(cache.parent / ".lock"):
+    record_path = folder / "record.json"
+    with long_held(folder / ".lock"):
+        older = _cached_file(folder)  # kept beside record.json by an older version: moved in, not fetched again
+        if older is not None:
+            moved = older.replace(cache.parent / older.name)
+            cache = cache if cache.exists() else moved
         record = read_json(record_path) or {}
         fresh = not _intact(cache, record)
         if fresh:
@@ -220,9 +227,14 @@ def _via_cache(url: str, target: Path, cache: Path, sha256: str | None, md5: str
             digest = digests_of(cache)[0]
             cache.chmod(0o444)
             write_json_atomic(record_path, {"url": public(url), "size": cache.stat().st_size, "sha256": digest})
-            record = read_json(record_path) or {}
         _link(cache, target)
-    size, digest = int(record["size"]), str(record["sha256"])
+        digest, md5_digest = digests_of(target)
+        if (sha256 and digest != sha256.lower()) or (md5 and md5_digest != md5.lower().removeprefix("md5:")):
+            cache.chmod(0o644)
+            target.unlink()
+            cache.unlink(missing_ok=True)  # never handed out again: the next fetch downloads it
+            _fail(public(url), target, f"the cached copy (sha256 {digest}) does not match the expected checksum")
+    size = target.stat().st_size
     note = "" if fresh else "from the student's download cache (the same checksum was fetched before)"
     ledger.record("download", url=public(url), path=str(target), size=size, sha256=digest, status="ok",
                   message=note)

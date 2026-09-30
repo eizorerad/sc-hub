@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from schub import locking
 from schub.bench import fetch as fetch_module
 from schub.bench import ledger
 from schub.bench.fetch import FetchError, fetch
@@ -321,6 +322,61 @@ def test_the_cache_is_read_only_shared_across_names_and_re_fetched_if_edited(ser
     first.write_bytes(b"edited")  # someone made it writable and changed it
     third = fetch(f"{server}/data.bin", dest=tmp_path / "c" / "data.bin", sha256=SHA, pause_s=0)
     assert Handler.requests == 2 and third.read_bytes() == PAYLOAD
+
+
+@pytest.mark.parametrize("name", ["record.json", ".lock"])
+def test_a_download_named_like_the_cache_s_own_files_is_the_download(server: str, project: Path, tmp_path: Path,
+                                                                    monkeypatch, name: str) -> None:
+    """Found in an audit: a download named record.json was replaced by the cache's record of it, and the journal
+    said ok with the expected checksum; one named .lock took the place of the cache's lock."""
+    monkeypatch.setenv("SCHUB_ROOT", str(tmp_path / "root"))
+    monkeypatch.setattr(fetch_module, "long_held", lambda path: locking.exclusive(path, wait_s=2))  # not 12 h
+    for folder in ("p1", "p2"):  # downloaded, then from the cache
+        path = fetch(f"{server}/data.bin", dest=tmp_path / folder / name, sha256=SHA, pause_s=0)
+        assert path.read_bytes() == PAYLOAD
+        [event] = ledger.drain()
+        assert event["status"] == "ok" and event["sha256"] == SHA and event["size"] == len(PAYLOAD)
+    assert Handler.requests == 1
+
+
+def test_a_changed_cached_copy_is_never_recorded_as_ok(server: str, project: Path, tmp_path: Path,
+                                                       monkeypatch) -> None:
+    """The journal's checksum is the returned file's: a cached copy changed where the size check cannot see it
+    (same size, read-only again) is not handed out, and the next fetch downloads it again."""
+    root = tmp_path / "root"
+    monkeypatch.setenv("SCHUB_ROOT", str(root))
+    fetch(f"{server}/data.bin", dest=tmp_path / "a" / "data.bin", sha256=SHA, pause_s=0)
+    [cached] = (root / "cache" / "fetch").rglob("data.bin")
+    cached.chmod(0o644)
+    cached.write_bytes(bytes(len(PAYLOAD)))
+    cached.chmod(0o444)
+    ledger.drain()
+    with pytest.raises(FetchError, match="sha256"):
+        fetch(f"{server}/data.bin", dest=tmp_path / "b" / "data.bin", sha256=SHA, pause_s=0)
+    assert ledger.drain()[-1]["status"] == "failed" and not (tmp_path / "b" / "data.bin").exists()
+    again = fetch(f"{server}/data.bin", dest=tmp_path / "b" / "data.bin", sha256=SHA, pause_s=0)
+    assert again.read_bytes() == PAYLOAD and Handler.requests == 2
+
+
+def test_a_cache_an_older_version_wrote_is_still_used(server: str, project: Path, tmp_path: Path,
+                                                      monkeypatch) -> None:
+    """An older version kept the file beside record.json in the checksum's folder: it is used without a new
+    download, and stays the one file the projects that link it share."""
+    root = tmp_path / "root"
+    monkeypatch.setenv("SCHUB_ROOT", str(root))
+    folder = root / "cache" / "fetch" / f"sha256-{SHA}"
+    folder.mkdir(parents=True)
+    (folder / "data.bin").write_bytes(PAYLOAD)
+    (folder / "data.bin").chmod(0o444)
+    (folder / "record.json").write_text(json.dumps({"url": "https://example.org/data.bin", "size": len(PAYLOAD),
+                                                    "sha256": SHA}))
+    linked = tmp_path / "old" / "data.bin"
+    linked.parent.mkdir()
+    linked.hardlink_to(folder / "data.bin")
+    path = fetch(f"{server}/data.bin", dest=tmp_path / "new" / "renamed.bin", sha256=SHA, pause_s=0)
+    assert Handler.requests == 0 and path.read_bytes() == PAYLOAD and path.stat().st_ino == linked.stat().st_ino
+    [event] = ledger.drain()
+    assert event["status"] == "ok" and "download cache" in event["message"]
 
 
 def test_a_busy_server_is_retried(server: str, project: Path) -> None:
