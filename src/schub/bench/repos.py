@@ -7,10 +7,10 @@
 
 The journal records the commit the ref resolved to (not the branch), so the run can
 be repeated. Environments are built with uv once per spec (python, torch, CUDA,
-requirements) under $SCHUB_ROOT/repo-envs/<hash>, shared by the student's projects,
-with environment.lock (uv pip freeze) beside them. The nodes' driver runs CUDA up to
-12.8, so torch comes from the cu118-cu128 builds; the default cu130 wheels import
-fine but see no GPU.
+requirements with the files they include and the local packages they install) under
+$SCHUB_ROOT/repo-envs/<hash>, shared by the student's projects, with environment.lock
+(uv pip freeze) beside them. The nodes' driver runs CUDA up to 12.8, so torch comes
+from the cu118-cu128 builds; the default cu130 wheels import fine but see no GPU.
 """
 
 from __future__ import annotations
@@ -21,8 +21,9 @@ import shutil
 import subprocess
 from pathlib import Path
 from typing import Sequence
+from urllib.parse import unquote, urlsplit
 
-from ..hashing import stable_hash
+from ..hashing import file_fingerprint, stable_hash
 from ..locking import long_held
 from ..project_env import EnvError, check_packages
 from . import ledger
@@ -36,6 +37,12 @@ PYTHON = re.compile(r"3\.\d{1,2}(\.\d{1,3})?")
 TORCH = re.compile(r"\d{1,2}(\.\d{1,3}){0,2}")
 CLONE_TIMEOUT_S = 1800
 BUILD_TIMEOUT_S = 3600
+# Requirements-file lines (pip's and uv's syntax) that bring in more than their own text.
+INCLUDE = re.compile(r"(?:-r|--requirement|-c|--constraint)(?:\s*=\s*|\s+)(.+)")
+EDITABLE = re.compile(r"(?:-e|--editable)(?:\s*=\s*|\s+)(\S+)")
+INDEX = re.compile(r"(?:-f|--find-links|-i|--index-url|--extra-index-url)(?:\s*=\s*|\s+)(\S+)")
+NAMED = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\s*(\[[^\]]*\])?\s*@\s*(\S+)")  # name @ url
+ARCHIVES = (".whl", ".zip", ".tar.gz", ".tgz", ".tar.bz2", ".tar.xz", ".tar")
 
 
 class RepoError(RuntimeError):
@@ -145,14 +152,75 @@ def _spec(repo: Path, python: str, torch: str | None, cuda: str, requirements: s
         if not req_path.is_relative_to(repo.resolve()) or not req_path.is_file():
             raise RepoError(f"requirements={requirements!r} must be a file inside the repository")
     local = install_repo or (req_path is not None and re.search(r"^\s*-e\s", req_path.read_text(), re.M))
+    brought = _brought(req_path, repo.resolve(), req_path.parent, {req_path}) if req_path else []
+    if local:  # this checkout installed editable is in the spec already (install_repo, packaging below)
+        brought = [b for b in brought if b != [str(repo.resolve()), _packaging_hash(repo)]]
     spec = {"python": python, "torch": torch, "cuda": cuda, "extra": sorted(extra),
-            "requirements": stable_hash(req_path.read_text()) if req_path else None,
+            # with what the file brings in; one that brings in nothing hashes as before: its environment stays
+            "requirements": stable_hash(req_path.read_text(), *brought) if req_path else None,
             # an editable install (install_repo, or '-e .' in the requirements) points at this checkout: two
             # projects' clones of one repo must not share it
             "install_repo": str(repo.resolve()) if local else None,
             # the repository's own package: its dependencies change with its packaging files
             "packaging": _packaging_hash(repo) if local else None}
     return spec, req_path
+
+
+def _brought(req_path: Path, repo: Path, cwd: Path, seen: set[Path]) -> list:
+    """What a requirements file brings in besides its own text: the files it includes (-r, -c; relative to it,
+    inside the repository) by content and what they bring in, and the packages it installs from this computer
+    (relative to where uv runs, `cwd`: see _build) by _local_package. A local package folder or index is refused."""
+    found: list = []
+    for line in _statements(req_path.read_text()):
+        include, editable, index = INCLUDE.fullmatch(line), EDITABLE.match(line), INDEX.match(line)
+        if include:
+            path = (req_path.parent / _filled(include[1])).resolve()
+            if not path.is_relative_to(repo) or not path.is_file():
+                raise RepoError(f"{req_path.name} includes {include[1]!r}, which is not a file inside the repository "
+                                "(what it lists is part of the environment's spec)")
+            if path not in seen:  # a file included twice, or a loop, counts once
+                seen.add(path)
+                found += [stable_hash(path.read_text()), *_brought(path, repo, cwd, seen)]
+        elif index and _is_local(_filled(index[1]), bare_is_path=True):
+            raise RepoError(f"{req_path.name}: {line!r} takes packages from a local folder, which the environment's "
+                            "spec cannot follow; name the package files instead (./wheels/x.whl)")
+        elif editable or not line.startswith("-"):
+            named = NAMED.match(line)
+            target = _filled(editable[1] if editable else named[2] if named else re.split(r"[\s;]", line)[0])
+            if _is_local(target, bare_is_path=bool(editable)):
+                found.append(_local_package(target, cwd))
+    return found
+
+
+def _statements(text: str) -> list[str]:
+    """A requirements file's lines as pip and uv read them: continuations joined, comments dropped."""
+    lines = (re.sub(r"(^|\s)#.*", "", line).strip() for line in re.sub(r"\\\r?\n", "", text).splitlines())
+    return [line for line in lines if line]
+
+
+def _filled(value: str) -> str:
+    """${VARS} filled in from the environment, as uv does; only to find files (a message shows the text: a
+    variable may hold a token)."""
+    return re.sub(r"\$\{([A-Z0-9_]+)\}", lambda m: os.environ.get(m[1], m[0]), value)
+
+
+def _is_local(target: str, bare_is_path: bool = False) -> bool:
+    """A path, an archive or a file: URL (after -e, -f or -i any value without a URL scheme is a path:
+    uv reads '-e name' as './name')."""
+    scheme = re.match(r"([A-Za-z][A-Za-z0-9+.-]*):", target)
+    if scheme:
+        return scheme[1].lower() == "file"
+    return bare_is_path or target.startswith((".", "/", "~")) or "/" in target or target.lower().endswith(ARCHIVES)
+
+
+def _local_package(target: str, cwd: Path) -> list:
+    """A package installed from this computer: a folder by its path and packaging files (as install_repo),
+    an archive by its path, size and time."""
+    target = re.sub(r"\[[^\]]*\]$", "", target)  # extras
+    if target.lower().startswith("file:"):
+        target = unquote(urlsplit(target).path)
+    path = (cwd / Path(target).expanduser()).resolve()
+    return [str(path), file_fingerprint(path) if path.is_file() else _packaging_hash(path)]
 
 
 def _packaging_hash(repo: Path) -> str:
