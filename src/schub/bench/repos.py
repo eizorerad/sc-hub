@@ -193,7 +193,9 @@ def _build(env: Path, root: Path, spec: dict, req_path: Path | None) -> None:
                "UV_PYTHON_INSTALL_DIR": str(root / "python"), "UV_PYTHON_PREFERENCE": "managed"}
     python = str(env / "bin" / "python")
 
-    cwd = req_path.parent if req_path else Path(spec["install_repo"] or env)  # "-e ." in a requirements file
+    # "-e ." in a requirements file; without one, a folder that exists (uv venv makes env) and, like the
+    # spec, belongs to no checkout
+    cwd = req_path.parent if req_path else Path(spec["install_repo"] or env.parent)
 
     def uv_run(*args: str) -> str:
         try:

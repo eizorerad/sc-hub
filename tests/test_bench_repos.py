@@ -152,3 +152,19 @@ def test_an_editable_install_is_not_shared_between_checkouts(tmp_path: Path) -> 
     first, _ = _spec(tmp_path / "a" / "model", "3.11", None, "cu128", "requirements.txt", False, ())
     second, _ = _spec(tmp_path / "b" / "model", "3.11", None, "cu128", "requirements.txt", False, ())
     assert first != second  # the same files, but each env points at its own checkout
+
+
+def test_an_environment_without_requirements_is_built_too(origin: Path, fake_uv: Path) -> None:
+    """bench.repo_env(repo), or with only torch= or extra=: uv was started in the environment's own
+    folder, which did not exist yet, and never ran (ENOENT)."""
+    from schub.bench.kernel_api import repo_env
+
+    repo = clone(URL)
+    for options in ({}, {"torch": "2.4.1"}, {"extra": ["numpy"]}):
+        env = repo_env(repo, **options).parent.parent
+        assert (env / "ready").is_file() and "numpy==2.0.0" in (env / "environment.lock").read_text()
+    calls = [c.split(" :: ", 1)[1] for c in fake_uv.read_text().splitlines()]
+    assert [c.split()[0] for c in calls].count("venv") == 3
+    installs = [c for c in calls if c.startswith("pip install")]
+    assert len(installs) == 2 and installs[0].endswith(" torch==2.4.1") and installs[1].endswith(" numpy")
+
