@@ -174,8 +174,9 @@ NAME = "name = lambda line: re.split(r'[=<>!~ ;\\[]', line.strip(), maxsplit=1)[
 
 
 def build_script(settings: Settings, project: str, pip: Sequence[str], conda: Sequence[str], stamp: str) -> str:
-    """Bash that builds the environment in its own folder and switches `current` to it
-    only when everything worked (a failed build never breaks the working kernel)."""
+    """Bash that builds the environment in its own folder, then registers its kernel and switches
+    `current` to it; a failure at any step leaves the previous kernel and `current` as they were
+    (a failed build never breaks the working kernel)."""
     uv = _tool(settings, "uv")
     mamba = _tool(settings, "micromamba")
     if uv is None:
@@ -193,7 +194,19 @@ def build_script(settings: Settings, project: str, pip: Sequence[str], conda: Se
         # The shared torch is a CUDA 12.8 build (+cu128): resolve against the same index.
         f"export UV_CACHE_DIR={q(str(settings.cache_dir / 'uv'))} UV_PYTHON_PREFERENCE=only-managed UV_TORCH_BACKEND=cu128",
         f"ROOT={q(str(root))}; NEW=\"$ROOT\"/{q(stamp)}; BASE={q(str(settings.python))}; UV={q(str(uv))}",
-        'trap \'[ -e "$NEW/.ok" ] || rm -rf "$NEW"\' EXIT',
+        f"KERNEL={q(str(kernel_dir(project)))}",
+        'point() { ln -sfn "$1" "$ROOT/current.new" && mv -T "$ROOT/current.new" "$ROOT/current"; }',
+        # A build without its .ok marker is deleted; once it has begun to publish, the previous kernel and
+        # `current` are put back first (every step tried).
+        "undo() {",
+        "  set +e",
+        '  if [ -n "${PUBLISHING:-}" ]; then',
+        '    rm -rf "$KERNEL"; [ ! -d "$NEW/kernel.previous" ] || mv "$NEW/kernel.previous" "$KERNEL"',
+        '    if [ -n "$PREVIOUS" ]; then point "$PREVIOUS"; else rm -f "$ROOT/current"; fi',
+        "  fi",
+        '  rm -rf "$NEW"',
+        "}",
+        'trap \'[ -e "$NEW/.ok" ] || undo\' EXIT',
         'mkdir -p "$NEW" && cd "$NEW"',
         '"$UV" venv --quiet --python "$BASE" "$NEW/venv"',
         # The shared packages stay importable (addsitedir also runs their own .pth
@@ -253,12 +266,17 @@ def build_script(settings: Settings, project: str, pip: Sequence[str], conda: Se
     lines += [
         '"$NEW/venv/bin/python" -c "import scanpy, sys; print(\'environment works on\', sys.version.split()[0])"',
         f"printf '%s\\n' {q(record)} > packages.json",
-        'touch "$NEW/.ok"',
-        # Switch atomically, register the kernel, keep one older build.
-        'ln -sfn "$(basename "$NEW")" "$ROOT/current.new" && mv -T "$ROOT/current.new" "$ROOT/current"',
+        # Publish: the kernel first (installing it removes the old one, so that is kept aside), then
+        # `current` atomically, the .ok marker last.
+        'PREVIOUS=$(readlink "$ROOT/current" || true)',
+        '[ ! -d "$KERNEL" ] || cp -R "$KERNEL" "$NEW/kernel.previous"',
+        "PUBLISHING=1",
         # The kernel points at this build: a running notebook never mixes two builds.
         f'"$NEW/venv/bin/python" -m ipykernel install --user --name {q("schub-" + slug(project))} '
         f"--display-name {q(display)}{path_env}",
+        'point "$(basename "$NEW")"',
+        'touch "$NEW/.ok"',
+        # Keep one older build.
         'ls -1dt "$ROOT"/2* 2>/dev/null | tail -n +3 | xargs -r rm -rf',
     ]
     return "\n".join(lines) + "\n"
