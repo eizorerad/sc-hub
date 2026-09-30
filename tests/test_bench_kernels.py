@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import time
 from pathlib import Path
 
@@ -70,6 +71,25 @@ def test_errors_and_interrupts(kernel: ProjectKernel, tmp_path: Path) -> None:
     assert result.status == "interrupted"
     result, outputs = run(kernel, tmp_path, "print('still alive')")
     assert result.status == "ok" and "still alive" in outputs[0].text
+
+
+@pytest.mark.kernel
+def test_a_students_own_python3_kernel_spec_does_not_replace_sc_hubs(tmp_path: Path, monkeypatch) -> None:
+    import json
+    import os
+
+    own = tmp_path / "jupyter" / "kernels" / "python3"  # e.g. `ipykernel install --user` in another environment
+    own.mkdir(parents=True)
+    (own / "kernel.json").write_text(json.dumps({"argv": ["/nowhere/python", "-m", "ipykernel_launcher", "-f",
+                                                          "{connection_file}"], "language": "python"}))
+    monkeypatch.setenv("JUPYTER_DATA_DIR", str(tmp_path / "jupyter"))
+    started = ProjectKernel("python3", tmp_path / "work", kernel_env(os.environ), epoch="local.1")
+    started.start()
+    try:
+        result, outputs = run(started, tmp_path, "import schub, sys\nprint(sys.executable)")
+    finally:
+        started.shutdown()
+    assert result.status == "ok" and outputs[0].text.strip() == sys.executable
 
 
 @pytest.mark.kernel
