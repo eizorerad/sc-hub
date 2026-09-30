@@ -410,7 +410,8 @@ def test_a_cached_copy_edited_with_its_mtime_restored_is_caught_only_in_a_copy(s
 def test_a_cache_an_older_version_wrote_is_still_used(server: str, project: Path, tmp_path: Path,
                                                       monkeypatch) -> None:
     """An older version kept the file beside record.json in the checksum's folder: it is used without a new
-    download, and stays the one file the projects that link it share."""
+    download, stays the one file the projects that link it share, and stays where kernels and jobs still running
+    the older version look for it (for up to a day after an update)."""
     root = tmp_path / "root"
     monkeypatch.setenv("SCHUB_ROOT", str(root))
     folder = root / "cache" / "fetch" / f"sha256-{SHA}"
@@ -426,6 +427,13 @@ def test_a_cache_an_older_version_wrote_is_still_used(server: str, project: Path
     assert Handler.requests == 0 and path.read_bytes() == PAYLOAD and path.stat().st_ino == linked.stat().st_ino
     [event] = ledger.drain()
     assert event["status"] == "ok" and "download cache" in event["message"]
+    assert fetch_module._cached_file(folder) == folder / "data.bin"  # the older version's own lookup
+    again = folder / "data.bin"
+    again.unlink()
+    again.write_bytes(PAYLOAD)  # fetched again by an older version: another file under the old name
+    kept = {p: p.stat().st_ino for p in (again, folder / "files" / "data.bin")}
+    fetch(f"{server}/data.bin", dest=tmp_path / "newer" / "data.bin", sha256=SHA, pause_s=0)
+    assert {p: p.stat().st_ino for p in kept} == kept and Handler.requests == 0  # both names there: none touched
 
 
 def test_a_busy_server_is_retried(server: str, project: Path) -> None:

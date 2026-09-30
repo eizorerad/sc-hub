@@ -224,10 +224,12 @@ def _via_cache(url: str, target: Path, cache: Path, sha256: str | None, md5: str
     cache.parent.mkdir(parents=True, exist_ok=True)
     record_path = folder / "record.json"
     with long_held(folder / ".lock"):
-        older = _cached_file(folder)  # kept beside record.json by an older version: moved in, not fetched again
+        older = _cached_file(folder)  # kept beside record.json by an older version, whose kernels still look there
         if older is not None:
-            moved = older.replace(cache.parent / older.name)
-            cache = cache if cache.exists() else moved
+            shared = cache.parent / older.name
+            if not shared.exists():
+                _link(older, shared)  # one file under both names (a copy only where no hard link can be made)
+            cache = cache if cache.exists() else shared
         record = read_json(record_path) or {}
         checked = _checked(url, cache, record)
         fresh = checked is None
