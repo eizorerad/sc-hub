@@ -101,3 +101,12 @@ def test_a_limited_key_whose_gate_is_gone_is_repaired_not_duplicated(cluster):
     live = [line for line in keys(cluster) if KEY.split()[1] in line and not line.startswith("#")]
     assert live == [KEY]  # replaced in place: sshd would use a first, broken line
     assert (cluster[1] / "calls").read_text().splitlines() == ["password"]
+
+
+def test_the_installers_alias_never_shares_a_connection_either(cluster):
+    """With `ControlMaster auto` under `Host *`, a connection the student's own login made would carry the assistants'
+    commands past the gate (the page's block says no to it; so must this one)."""
+    result = run(cluster, 'HOST=login.example REMOTE_USER=u SSH_CONFIG="$HOME/ssh_config"; add_ssh_alias; cat "$SSH_CONFIG"')
+    assert result.returncode == 0, result.stderr
+    block = result.stdout.split("Host mbzuai-schub")[1].split("Host *")[0]
+    assert "    ControlMaster no\n    ControlPath none\n" in block and "IdentitiesOnly yes" in block

@@ -36,7 +36,8 @@ note() {
 refuse() {
   note refused
   printf 'sc-hub: this key only opens sc-hub (MCP server, dashboard, sessions): %s\n' "$1" >&2
-  printf 'sc-hub: for anything else use your own login (with your password).\n' >&2
+  printf 'sc-hub: an assistant works through the sc-hub tools and tells the student what else it needs; the student\n' >&2
+  printf 'sc-hub: logs in themselves (schub login or ssh mbzuai-login in a terminal, or with the password).\n' >&2
   exit 126
 }
 

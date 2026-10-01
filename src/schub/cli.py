@@ -194,6 +194,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         from .bench.ide import proxy
 
         return proxy(hub.settings, hub.slurm)
+    if args.command == "shell":  # the terminal's own: nothing of ours may be printed on stdout either
+        from .bench.ide import shell
+
+        return shell(hub.settings, hub.slurm, command=args.shell_command, start=not args.no_start)
     if args.command == "ide-setup":
         from .bench.ide import IdeError, setup
 

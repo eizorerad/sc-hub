@@ -14,10 +14,9 @@ import subprocess
 import sys
 import threading
 import time
-import webbrowser
 from pathlib import Path
 
-from . import agent_cli
+from . import agent_cli, browser
 from .engine import Engine
 from .server import OnboardServer
 from .sshkit import HOST, Paths
@@ -47,7 +46,7 @@ def main(argv: list[str] | None = None) -> int:
         print("sc-hub onboarding needs Python 3.9 or newer", file=sys.stderr)
         return 2
     paths = Paths(home=args.home.resolve()) if args.home else Paths()
-    open_url = (lambda url: None) if args.no_browser else webbrowser.open  # the page shows every link anyway
+    open_url = (lambda url: None) if args.no_browser else browser.open_in_browser  # the page shows every link anyway
     detach()
     # --no-browser: the dashboard is not started either (a trial's --home gets a dashboard of its own)
     engine = Engine(build(Setup(paths, args.host, args.remote_root, open_url=open_url,
@@ -55,11 +54,11 @@ def main(argv: list[str] | None = None) -> int:
     server = OnboardServer(engine, args.port)
     page = agent_cli.write_page_file(paths, server.port, server.token)  # for `status`, `retry` and `stop`
     engine.start()  # the steps run whether or not the page is open yet; forms wait for the student
-    print(f"sc-hub setup: open {server.url}", flush=True)
-    if not args.no_browser:
-        webbrowser.open(server.url)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
+    opened = None if args.no_browser else browser.open_in_browser(server.url)
+    print("\n".join(browser.startup_lines(server.url, opened, browser.start_file(), home=paths.home if args.home else None)),
+          flush=True)
     try:
         while thread.is_alive():
             time.sleep(2)

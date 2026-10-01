@@ -29,6 +29,8 @@ def helper(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("PATH", f"{FAKES}:/usr/bin:/bin")
     monkeypatch.setenv("FAKE_CLUSTER", str(tmp_path / "cluster"))
     monkeypatch.setenv("FAKE_PASSWORD", "right horse battery")
+    monkeypatch.setenv("SHELL", "/bin/zsh")  # macOS: the PATH block of `schub` goes into the test home's ~/.zshrc
+    monkeypatch.delenv("ZDOTDIR", raising=False)  # (a shell that exports it, VS Code's terminal, must not steer the test)
     home = tmp_path / "home"
     home.mkdir()
     (home / ".ssh").mkdir()
@@ -41,6 +43,15 @@ def helper(tmp_path: Path, monkeypatch):
     threading.Thread(target=server.serve_forever, daemon=True).start()
     yield server, paths, tmp_path / "cluster"
     server.shutdown()
+
+
+def authorized(cluster: Path, public: Path) -> dict:
+    """The cluster's authorized_keys entry of a public key file: {"key": its line, "options": what limits it}."""
+    return json.loads((cluster / "authorized.json").read_text())[public.read_text().split()[1]]
+
+
+def calls_to(cluster: Path) -> list[dict]:
+    return [json.loads(line) for line in (cluster / "calls.jsonl").read_text().splitlines()]
 
 
 def api(server: OnboardServer, path: str, body: dict | None = None, token: str | None = None, host: str | None = None):
@@ -80,7 +91,9 @@ def form(server: OnboardServer, title: str, timeout: float = 60) -> dict:
     return asking(state)["ask"]
 
 
-def to_the_agents(server: OnboardServer, typo_first: bool = True) -> None:
+def to_the_agents(server: OnboardServer, typo_first: bool = True, own_key: str = "install") -> None:
+    """The browser form and the sign-in (a typo first, if asked), then the form of the own key: "install" answers it, "skip"
+    presses Not now, "leave" leaves it to the test."""
     api(server, "/api/start", {})
     assert "student ChatGPT and Claude accounts" in json.dumps(form(server, "browser for the sign-ins"))
     reply(server, {"ok": True})
@@ -90,6 +103,10 @@ def to_the_agents(server: OnboardServer, typo_first: bool = True) -> None:
         ask = form(server, "refused the login")
         assert ask["fields"][0]["value"] == "test.user"  # the login is kept, the password is not
     reply(server, {"login": "test.user", "password": "right horse battery"})
+    if own_key != "leave":
+        ask = form(server, "Install your own key on the cluster")  # the first run asks too, with nothing to type
+        assert not ask.get("fields") and [c["name"] for c in ask["choices"]] == ["skip"]
+        reply(server, {"choice": "skip"} if own_key == "skip" else {})
 
 
 def test_the_whole_onboarding_from_the_page(helper) -> None:
@@ -100,13 +117,22 @@ def test_the_whole_onboarding_from_the_page(helper) -> None:
     assert not failed, failed
     assert state["progress"] == 100 and [x["status"] for x in state["steps"]][-1] == "skipped"
     assert state["next"] == ""  # no dashboard started here (the fixture's --no-browser): nothing to open
-    vscode = next(x for x in state["steps"] if x["id"] == "vscode")  # no VS Code here: nothing set up
-    assert vscode["status"] == "skipped" and "no VS Code" in vscode["detail"]
-    # this computer: the alias first in ~/.ssh/config, the old settings kept, a key, the assistants' configs
+    by_id = {x["id"]: x for x in state["steps"]}
+    assert by_id["login-key"]["status"] == "done" and "ssh mbzuai-login" in by_id["login-key"]["detail"]
+    terminal = by_id["terminal"]  # no VS Code here: the terminal is set up all the same
+    launcher = paths.home / ".sc-hub" / "bin" / "schub"
+    assert terminal["status"] == "done" and "job 207131 on gpu-03" in terminal["detail"] and str(launcher) in terminal["detail"]
+    # this computer: the alias first in ~/.ssh/config, the old settings kept, two keys, the assistants' configs
     config = (paths.ssh_config).read_text()
     assert config.startswith("# >>> sc-hub >>>\nHost mbzuai-schub\n") and "ServerAliveInterval 30" in config
-    assert "User test.user" in config and paths.key.exists()
-    assert "Host mbzuai-schub-ide" not in config  # no editor, no shell into the job
+    assert "User test.user" in config and paths.key.exists() and paths.login_key.exists()
+    assert "Host mbzuai-schub-ide" not in config  # no editor: the assistants' key gets no way into the job
+    assert "    ControlMaster no\n    ControlPath none\n" in config.split("Host mbzuai-login")[0]  # never a shared connection
+    # the student's own key: the login node, and the terminal, which is `schub shell` there on a terminal of its own
+    own_hosts = config.split("Host mbzuai-login\n")[1]
+    assert f'IdentityFile "{paths.login_key.as_posix()}"' in own_hosts and "Host schub\n" in own_hosts
+    assert "    RequestTTY force\n    RemoteCommand /l/users/test.user/schub/bin/schub shell\n" in own_hosts
+    assert config.count("RemoteCommand") == 1 and config.count(f'IdentityFile "{paths.key.as_posix()}"') == 1
     codex = (paths.home / ".codex" / "config.toml").read_text()
     assert "[mcp_servers.schub]" in codex and "/l/users/test.user/schub/bin/schub-mcp" in codex and str(paths.ssh_config) in codex
     # sc-hub only where the student asks for it: off in general, on in the (trusted) workspace, a skill to start it
@@ -120,17 +146,26 @@ def test_the_whole_onboarding_from_the_page(helper) -> None:
     # what the student runs outside any sandbox (the dashboard, the session opener) lives out of the workspace the
     # assistants write in; the launcher tries this setup's Python first
     bin_dir = paths.home / ".sc-hub" / "bin"
-    assert not any((paths.workspace / name).exists() for name in ("schub-view", "schub_view.py", "schub-lab"))
+    assert not any((paths.workspace / name).exists() for name in ("schub-view", "schub_view.py", "schub-lab", "schub"))
     assert all((bin_dir / name).exists() for name in ("schub_view.py", "schub_view_copy.py", "schub_view_pages.py",
-                                                      "schub-lab"))
+                                                      "schub-lab", "schub"))
     assert f'PINNED="{sys.executable}"' in (bin_dir / "schub-view").read_text() and bin_dir.stat().st_mode & 0o077 == 0
+    assert os.access(bin_dir / "schub", os.X_OK)  # the terminal command: typed in a new window, lands in the job
+    rc = (paths.home / ".zshrc").read_text()  # (the fixture's shell is zsh) ~/.sc-hub/bin on the PATH, in a marked block
+    assert rc.count("# >>> sc-hub (this computer) >>>") == 1 and '$HOME/.sc-hub/bin' in rc and \
+        (paths.home / ".bashrc").exists() is False
     # what the welcome page will say: the assistants, the accounts, and codex and claude on the PATH at login
     welcome = json.loads((paths.home / ".sc-hub" / "welcome.json").read_text())
     assert welcome["login"] == "test.user" and welcome["cluster_path"] == ["claude", "codex"]
     assert welcome["cluster_agents"] == {"codex": "test.user@mbzuai.ac.ae", "claude": "test.user@mbzuai.ac.ae"}
     assert welcome["workspace"] == str(paths.workspace) and welcome["remote_root"] == "/l/users/test.user/schub"
     assert welcome["view_command"] == str(bin_dir / "schub-view")  # (a trial's home: its full path)
+    # (a trial's home changed only its own shell files: the full path, and the ssh config to use; a real one says `schub`)
+    command = f"SCHUB_SSH_CONFIG={paths.ssh_config} {launcher}"
+    assert welcome["terminal_command"] == command and welcome["login_command"] == f"{command} login"
     assert f"Start your dashboard with {bin_dir / 'schub-view'}" in " ".join(state["summary"]["lines"])
+    assert f"Your terminal: type {command} in a new terminal window to land in your workbench job on the cluster; " \
+           f"{command} login opens the login node. Neither asks for a password." in state["summary"]["lines"]
     assert "next" not in json.loads(paths.state.read_text())["values"]  # an address of this run only
     assert "On the cluster, claude and codex work after you log in (ssh test.user@login-student-lab.mbzu.ae)." \
         in state["summary"]["lines"]
@@ -138,10 +173,15 @@ def test_the_whole_onboarding_from_the_page(helper) -> None:
     assert any("PATH at login:" in line for line in agents["log"])
     # research there; the way back to fixing sc-hub names the folder the setup ran from
     assert f"(sc-hub setup folder: {ONBOARD.parent})" in (paths.workspace / "AGENTS.md").read_text()
-    # the cluster: the key limited to the gate at the end, sc-hub uploaded, bootstrap and a first run
-    authorized = json.loads((cluster / "authorized.json").read_text())
-    assert authorized["options"] == 'restrict,port-forwarding,command="/l/users/test.user/schub/bin/schub-gate"'
-    calls = [json.loads(line)["command"] for line in (cluster / "calls.jsonl").read_text().splitlines()]
+    # the cluster: sc-hub's key limited to the gate at the end, the student's own key a normal one, sc-hub uploaded,
+    # bootstrap and a first run
+    gate = authorized(cluster, paths.key.with_suffix(".pub"))
+    assert gate["options"] == 'restrict,port-forwarding,command="/l/users/test.user/schub/bin/schub-gate"'
+    own = authorized(cluster, paths.login_key.with_suffix(".pub"))
+    assert own["options"] == "" and own["key"].startswith("ssh-ed25519 ") and own["key"] != gate["key"]
+    logged = calls_to(cluster)
+    assert sum("PubkeyAuthentication=no" in c["args"] for c in logged) == 2  # the typo and the password: no other
+    calls = [c["command"] for c in logged]  # password login, not even for the student's own key
     assert any("bootstrap_cluster.sh" in c for c in calls) and sum("bench-run" in c for c in calls) == 2
     assert (cluster / "bundle.b64").stat().st_size > 10_000
     saved = paths.state.read_text()
@@ -272,23 +312,162 @@ def test_the_page_goes_only_to_the_dashboards_welcome_on_this_computer() -> None
     assert r"const NEXT = /^http:\/\/127\.0\.0\.1:\d+\/go\?to=%2F\w*$/;" in PAGE
 
 
-def test_a_rerun_skips_what_is_done_and_asks_the_password_for_setup(helper) -> None:
+def finish(engine: Engine, step: str, timeout: float = 30) -> str:
+    """Run `step` again and wait for its end; a form that asks for something on the way is reported, not answered."""
+    wait_for_the_run_to_end(engine, timeout)
+    engine.retry(step)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline and engine.states[step].status not in ("done", "failed", "skipped", "asking"):
+        time.sleep(0.05)
+    return engine.states[step].status
+
+
+def wait_for_the_run_to_end(engine: Engine, timeout: float = 30) -> None:
+    """The last run's tail (the dashboard step): a retry meanwhile would not start a run."""
+    deadline = time.monotonic() + timeout
+    while engine._thread is not None and engine._thread.is_alive() and time.monotonic() < deadline:
+        time.sleep(0.05)
+
+
+def forget_the_own_key(cluster: Path, paths: Paths) -> None:
+    """The cluster no longer knows the student's own key (the sc-hub key, limited, is all that is left), and the laptop's
+    copy is gone too: an account set up before the own key existed."""
+    entries = json.loads((cluster / "authorized.json").read_text())
+    entries.pop(paths.login_key.with_suffix(".pub").read_text().split()[1])
+    (cluster / "authorized.json").write_text(json.dumps(entries))
+    paths.login_key.unlink()
+    paths.login_key.with_suffix(".pub").unlink()
+
+
+def a_finished_setup(helper) -> tuple:
+    """The whole onboarding done, and an engine that loads its saved state (a restarted helper)."""
     server, paths, cluster = helper
     test_the_whole_onboarding_from_the_page(helper)
-    engine = Engine(build(Setup(paths, open_dashboard=False)), paths.state)
-    assert [engine.states[s.id].status for s in engine.steps] == ["done"] * 6 + ["skipped", "done", "done", "waiting"]
+    wait_for_the_run_to_end(server.engine)
+    return paths, cluster, Engine(build(Setup(paths, open_dashboard=False)), paths.state)
+
+
+def test_a_rerun_skips_what_is_done_and_asks_the_password_for_setup(helper) -> None:
+    """The key is limited now, and so is the way into the cluster that the page uses: it asks the password once for an update,
+    whoever else could log in (the student's own key is for the student, not for the page: a human is in the loop)."""
+    paths, cluster, engine = a_finished_setup(helper)
+    assert [engine.states[s.id].status for s in engine.steps] == ["done"] * 10 + ["waiting"]
     engine.retry("cluster")  # e.g. an update of the cluster side: the key only opens sc-hub now
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline and engine.states["cluster"].status != "asking":
         time.sleep(0.05)
-    assert "password" in json.dumps(engine.states["cluster"].ask)
+    assert engine.states["cluster"].ask["title"] == "Your cluster password, for this run"
+    assert "choices" not in engine.states["cluster"].ask  # (nothing to put off here)
     engine.answer({"password": "right horse battery", "form_id": engine.states["cluster"].ask["id"]})
     while time.monotonic() < deadline and engine.states["cluster"].status not in ("done", "failed"):
         time.sleep(0.05)
     assert engine.states["cluster"].status == "done", engine.states["cluster"].detail
+    assert any("bootstrap_cluster.sh" in c["command"] and "PubkeyAuthentication=no" in c["args"] for c in calls_to(cluster))
 
 
-def test_with_vs_code_the_editor_gets_its_host_into_the_workbench_job(helper, tmp_path) -> None:
+def test_the_own_key_of_an_account_set_up_before_it_existed_asks_what_it_installs_and_installs_it(helper) -> None:
+    """Students who finished the setup when only sc-hub's key existed: `retry login-key` asks the password once (sc-hub's key is
+    limited now), says what it installs, and only then makes the key. The terminal and the welcome follow by themselves."""
+    paths, cluster, _ = a_finished_setup(helper)
+    forget_the_own_key(cluster, paths)
+    engine = Engine(build(Setup(paths, open_dashboard=False)), paths.state)
+    assert finish(engine, "login-key") == "asking"
+    ask = engine.states["login-key"].ask
+    assert ask["title"] == "Install your own key on the cluster" and "not limited" not in json.dumps(ask) \
+        and "normal key" in json.dumps(ask) and "only opens sc-hub" in json.dumps(ask)
+    assert [c["name"] for c in ask["choices"]] == ["skip"] and ask["choices"][0]["label"] == "Not now"
+    assert not paths.login_key.exists()  # nothing made before the student has agreed
+    engine.answer({"password": "right horse battery", "form_id": ask["id"]})
+    wait_for_the_run_to_end(engine)
+    assert engine.states["login-key"].status == "done" and authorized(cluster, paths.login_key.with_suffix(".pub"))["options"] == ""
+    assert "right horse battery" not in paths.state.read_text()  # never saved
+    assert engine.states["terminal"].status == "done" and "job 207131 on gpu-03" in engine.states["terminal"].detail
+    welcome = json.loads((paths.home / ".sc-hub" / "welcome.json").read_text())
+    assert welcome["login_command"].endswith(" login")  # the welcome says it too, without waiting for a restart
+
+
+def test_not_now_puts_the_own_key_off_and_the_setup_goes_on(helper) -> None:
+    paths, cluster, _ = a_finished_setup(helper)
+    forget_the_own_key(cluster, paths)
+    engine = Engine(build(Setup(paths, open_dashboard=False)), paths.state)
+    assert finish(engine, "login-key") == "asking"
+    engine.answer({"choice": "skip", "form_id": engine.states["login-key"].ask["id"]})
+    wait_for_the_run_to_end(engine)
+    assert engine.states["login-key"].status == "skipped" and "retry login-key" in engine.states["login-key"].detail
+    assert engine.finished and not paths.login_key.exists()  # the dashboard step ran after it
+    assert json.loads(paths.state.read_text())["values"]["login_key"] is False
+
+
+def test_a_refused_password_or_a_stop_skips_the_own_key_instead_of_stopping_the_page(helper) -> None:
+    paths, cluster, _ = a_finished_setup(helper)
+    forget_the_own_key(cluster, paths)
+    engine = Engine(build(Setup(paths, open_dashboard=False)), paths.state)
+    assert finish(engine, "login-key") == "asking"
+    engine.answer({"password": "not it", "form_id": engine.states["login-key"].ask["id"]})
+    wait_for_the_run_to_end(engine)
+    state = engine.states["login-key"]
+    assert state.status == "skipped" and "refused the password" in state.detail and "retry login-key" in state.detail
+    assert engine.finished  # the steps after it, the dashboard's, ran
+    assert finish(engine, "login-key") == "asking"  # the stop button: the same
+    engine.answer({"cancel": True, "form_id": engine.states["login-key"].ask["id"]})
+    wait_for_the_run_to_end(engine)
+    assert engine.states["login-key"].status == "skipped" and engine.finished
+
+
+def test_a_failing_own_key_is_reported_but_does_not_stop_the_setup(helper, monkeypatch) -> None:
+    """The own key is a convenience: if the cluster does not take it, the page says so and the setup goes on."""
+    server, paths, cluster = helper
+    monkeypatch.setenv("FAKE_OWN_KEY", "ignored")  # the cluster answers "ok" but the key never works
+    to_the_agents(server, typo_first=False)
+    form(server, "Sign in to Codex")  # the steps after login-key ran
+    state = api(server, "/api/state")
+    by_id = {x["id"]: x for x in state["steps"]}
+    assert by_id["login-key"]["status"] == "skipped" and "retry login-key" in by_id["login-key"]["detail"]
+    assert by_id["cluster"]["status"] == "done"
+    assert by_id["terminal"]["status"] == "skipped" and "needs your own key" in by_id["terminal"]["detail"]
+    values = json.loads(paths.state.read_text())["values"]
+    assert values["login_key"] is False and "terminal_command" not in values  # `schub` and `schub login` are not promised
+    assert (paths.home / ".sc-hub" / "bin" / "schub").exists()  # (the command is there for when the key is)
+
+
+def test_a_cluster_that_cannot_be_reached_stops_the_page_to_retry_not_to_skip(helper, monkeypatch) -> None:
+    """A network blip is no refusal: a skipped step would never be tried again by itself."""
+    server, paths, cluster = helper
+    monkeypatch.setenv("FAKE_UNREACHABLE_OWN", "1")
+    to_the_agents(server, typo_first=False)
+    state = until(server, lambda s: any(x["status"] == "failed" for x in s["steps"]), timeout=60)
+    own = next(x for x in state["steps"] if x["id"] == "login-key")
+    assert own["status"] == "failed" and "cannot be reached" in own["detail"] and "VPN" in own["hint"]
+    monkeypatch.delenv("FAKE_UNREACHABLE_OWN")
+    api(server, "/api/retry", {"step": "login-key"})
+    form(server, "Install your own key on the cluster")  # (asked again: it is a new try)
+    reply(server, {})
+    form(server, "Sign in to Codex")  # the run went on
+    assert next(x for x in api(server, "/api/state")["steps"] if x["id"] == "login-key")["status"] == "done"
+
+
+def test_a_workbench_that_is_not_running_is_not_started_by_the_setup(helper, monkeypatch) -> None:
+    server, paths, cluster = helper
+    monkeypatch.setenv("FAKE_WORKBENCH", "stopped")
+    to_the_agents(server, typo_first=False)
+    form(server, "Sign in to Codex")
+    terminal = next(x for x in api(server, "/api/state")["steps"] if x["id"] == "terminal")
+    assert terminal["status"] == "done" and "it starts when you type schub" in terminal["detail"]
+    assert not any("sbatch" in c["command"] for c in calls_to(cluster))  # the setup starts nothing
+    probe = next(c for c in calls_to(cluster) if "shell --no-start" in c["command"])
+    assert probe["args"][-1] == "mbzuai-login"  # through the student's own key, and it only looks
+
+
+def test_a_cluster_with_an_older_sc_hub_says_to_update_it_and_does_not_stop_the_key_limit(helper, monkeypatch) -> None:
+    server, paths, cluster = helper
+    monkeypatch.setenv("FAKE_OLD_SCHUB", "1")  # no `schub shell` there yet
+    to_the_agents(server, typo_first=False)
+    form(server, "Sign in to Codex")  # the steps after the terminal ran: the key is limited next
+    terminal = next(x for x in api(server, "/api/state")["steps"] if x["id"] == "terminal")
+    assert terminal["status"] == "skipped" and "retry cluster" in terminal["detail"] and "retry terminal" in terminal["detail"]
+
+
+def test_with_vs_code_the_editor_gets_its_host_into_the_workbench_job_too(helper, tmp_path) -> None:
     server, paths, cluster = helper
     bin_dir = tmp_path / "vscode-bin"
     bin_dir.mkdir()
@@ -298,10 +477,577 @@ def test_with_vs_code_the_editor_gets_its_host_into_the_workbench_job(helper, tm
     to_the_agents(server)
     form(server, "Sign in to Codex")
     state = api(server, "/api/state")
-    vscode = next(x for x in state["steps"] if x["id"] == "vscode")
-    assert vscode["status"] == "done" and "job 207131 on gpu-03" in vscode["detail"]
-    config = paths.ssh_config.read_text()
-    assert "Host mbzuai-schub-ide" in config and "/l/users/test.user/schub/bin/schub ide-proxy" in config
+    terminal = next(x for x in state["steps"] if x["id"] == "terminal")
+    assert terminal["status"] == "done" and "job 207131 on gpu-03" in terminal["detail"]
+    assert "VS Code" in terminal["detail"] and "Remote-SSH" in terminal["detail"]
+    config = paths.ssh_config.read_text()  # the editor's way in is sc-hub's key through the gate; the terminal's is the own key
+    assert "Host mbzuai-schub-ide\n" in config and "/l/users/test.user/schub/bin/schub ide-proxy" in config
+    assert "Host schub\n" in config and "Host schub mbzuai-schub-ide" not in config
+
+
+def test_a_failing_vs_code_does_not_take_the_terminal_with_it(helper, tmp_path, monkeypatch) -> None:
+    server, paths, cluster = helper
+    bin_dir = tmp_path / "vscode-bin"
+    bin_dir.mkdir()
+    (bin_dir / "code").write_text("#!/bin/sh\nexit 0\n")
+    (bin_dir / "code").chmod(0o755)
+    os.environ["PATH"] = f"{bin_dir}:{os.environ['PATH']}"
+    (cluster).mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("FAKE_NO_IDE", "1")  # ide-setup never wrote the job's key: VS Code's connection is refused
+    to_the_agents(server, typo_first=False)
+    form(server, "Sign in to Codex")  # the key limit etc. were not held back
+    terminal = next(x for x in api(server, "/api/state")["steps"] if x["id"] == "terminal")
+    assert terminal["status"] == "done" and "VS Code was not set up" in terminal["detail"] and "retry terminal" in terminal["detail"]
+    assert "job 207131 on gpu-03" in terminal["detail"]
+
+
+def test_a_key_that_replaces_the_limited_one_is_limited_again(helper) -> None:
+    """The laptop lost sc-hub's key and the student signs in again: the new key comes without the limit, and the step that
+    limits it must run once more (it was done), or the assistants' key would stay a full shell."""
+    paths, cluster, _ = a_finished_setup(helper)
+    entries = json.loads((cluster / "authorized.json").read_text())
+    entries.pop(paths.key.with_suffix(".pub").read_text().split()[1])  # gone from the cluster ...
+    (cluster / "authorized.json").write_text(json.dumps(entries))
+    paths.key.unlink()
+    paths.key.with_suffix(".pub").unlink()  # ... and from the laptop
+    engine = Engine(build(Setup(paths, open_dashboard=False)), paths.state)
+    assert finish(engine, "sign-in") == "asking"
+    engine.answer({"login": "test.user", "password": "right horse battery", "form_id": engine.states["sign-in"].ask["id"]})
+    wait_for_the_run_to_end(engine)
+    assert engine.states["sign-in"].status == "done" and engine.states["limit"].status == "done"
+    entry = authorized(cluster, paths.key.with_suffix(".pub"))
+    assert entry["options"] == 'restrict,port-forwarding,command="/l/users/test.user/schub/bin/schub-gate"'
+
+
+def test_a_helper_updated_over_a_finished_setup_runs_the_new_steps_and_never_gets_stuck(helper) -> None:
+    """The saved state of an older helper has no `login-key` or `terminal` and has `vscode`: the next start runs the new steps.
+    The password form can be put off, and nothing after it waits for it."""
+    paths, cluster, _ = a_finished_setup(helper)
+    forget_the_own_key(cluster, paths)
+    saved = json.loads(paths.state.read_text())
+    for new in ("login-key", "terminal"):
+        saved["steps"].pop(new)
+    saved["steps"]["vscode"] = {**saved["steps"]["agents"], "id": "vscode", "status": "skipped"}
+    saved["values"].pop("login_key", None)
+    saved["values"].pop("terminal_command", None)
+    paths.state.write_text(json.dumps(saved))
+    engine = Engine(build(Setup(paths, open_dashboard=False)), paths.state)
+    assert engine.states["login-key"].status == "waiting" and engine.states["terminal"].status == "waiting"
+    engine.start()
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline and engine.states["login-key"].status != "asking":
+        time.sleep(0.05)
+    assert engine.states["login-key"].status == "asking"  # nothing else ran: it asks before it does anything
+    assert not paths.login_key.exists() and not any(c["command"].startswith("R=") for c in calls_to(cluster)[-1:])
+    engine.answer({"choice": "skip", "form_id": engine.states["login-key"].ask["id"]})
+    wait_for_the_run_to_end(engine)
+    assert engine.finished and engine.states["terminal"].status == "skipped" and engine.states["dashboard"].status == "skipped"
+
+
+def commands_since(cluster: Path, before: int) -> list[str]:
+    return [c["command"] for c in calls_to(cluster)[before:]]
+
+
+def test_a_replaced_key_on_a_limited_account_is_never_written_plain(helper) -> None:
+    """The laptop lost sc-hub's key and the student signs in again: the key goes in already limited, so there is not a moment
+    (or a failed check, or a page that stops) in which the assistants' key is a full shell."""
+    paths, cluster, _ = a_finished_setup(helper)
+    entries = json.loads((cluster / "authorized.json").read_text())
+    entries.pop(paths.key.with_suffix(".pub").read_text().split()[1])
+    (cluster / "authorized.json").write_text(json.dumps(entries))
+    paths.key.unlink()
+    paths.key.with_suffix(".pub").unlink()
+    engine = Engine(build(Setup(paths, open_dashboard=False)), paths.state)
+    before = len(calls_to(cluster))
+    assert finish(engine, "sign-in") == "asking"
+    engine.answer({"login": "test.user", "password": "right horse battery", "form_id": engine.states["sign-in"].ask["id"]})
+    wait_for_the_run_to_end(engine)
+    writes = [c for c in commands_since(cluster, before) if "OPTS=" in c]  # (the first 300 characters of each command are logged)
+    assert writes and all("OPTS='restrict,port-forwarding,command=\"/l/users/test.user/schub/bin/schub-gate\"'" in c
+                          for c in writes), writes
+    entry = authorized(cluster, paths.key.with_suffix(".pub"))
+    assert entry["options"].startswith("restrict,") and engine.states["limit"].status == "done"
+    assert json.loads(paths.state.read_text())["values"]["limited"] is True
+
+
+def test_without_the_gate_a_replaced_key_is_not_written_at_all(helper) -> None:
+    """The gate script is not there (the cluster's /l is down): a key that must be limited is not installed, and the page
+    says why, instead of leaving it plain."""
+    paths, cluster, _ = a_finished_setup(helper)
+    entries = json.loads((cluster / "authorized.json").read_text())
+    entries.pop(paths.key.with_suffix(".pub").read_text().split()[1])
+    (cluster / "authorized.json").write_text(json.dumps(entries))
+    paths.key.unlink()
+    paths.key.with_suffix(".pub").unlink()
+    os.environ["FAKE_NO_GATE"] = "1"
+    try:
+        engine = Engine(build(Setup(paths, open_dashboard=False)), paths.state)
+        assert finish(engine, "sign-in") == "asking"
+        engine.answer({"login": "test.user", "password": "right horse battery", "form_id": engine.states["sign-in"].ask["id"]})
+        wait_for_the_run_to_end(engine)
+        state = engine.states["sign-in"]  # stopped with the reason and what to do: not a password to type again
+        assert state.status == "failed" and "gate script is not there" in state.detail and "pilot owner" in state.hint
+        assert paths.key.with_suffix(".pub").read_text().split()[1] not in (cluster / "authorized.json").read_text()
+    finally:
+        del os.environ["FAKE_NO_GATE"]
+
+
+def test_a_key_that_works_but_is_not_limited_on_a_limited_account_is_limited_again(helper) -> None:
+    """Sign-in finds the key working (the line was written plain some other way): the state said `limited`, so the page looks
+    at the key itself and runs the limit step again. (That the key is never written plain by the page is the test above's.)"""
+    paths, cluster, _ = a_finished_setup(helper)
+    entries = json.loads((cluster / "authorized.json").read_text())
+    entry = entries[paths.key.with_suffix(".pub").read_text().split()[1]]
+    entry["options"] = ""  # a plain line again, whatever the way
+    (cluster / "authorized.json").write_text(json.dumps(entries))
+    engine = Engine(build(Setup(paths, open_dashboard=False)), paths.state)
+    assert finish(engine, "sign-in") == "done"  # the key works: no form
+    wait_for_the_run_to_end(engine)
+    entry = authorized(cluster, paths.key.with_suffix(".pub"))
+    assert entry["options"].startswith("restrict,") and engine.states["limit"].status == "done"
+
+
+def test_an_unreachable_cluster_after_the_limit_is_not_called_a_refused_password(helper, monkeypatch) -> None:
+    paths, cluster, _ = a_finished_setup(helper)
+    forget_the_own_key(cluster, paths)
+    engine = Engine(build(Setup(paths, open_dashboard=False)), paths.state)
+    assert finish(engine, "login-key") == "asking"
+    monkeypatch.setenv("FAKE_UNREACHABLE", "1")  # the VPN went off while the student typed
+    engine.answer({"password": "right horse battery", "form_id": engine.states["login-key"].ask["id"]})
+    wait_for_the_run_to_end(engine)
+    state = engine.states["login-key"]
+    assert state.status == "failed" and "cannot be reached" in state.detail and "VPN" in state.hint  # a Retry, not a skip
+    assert "refused" not in state.detail
+
+
+def test_retrying_the_own_key_without_a_network_does_not_offer_to_install_a_key_that_is_there(helper, monkeypatch) -> None:
+    paths, cluster, engine = a_finished_setup(helper)
+    monkeypatch.setenv("FAKE_UNREACHABLE", "1")
+    assert finish(engine, "login-key") == "failed"
+    assert "cannot be reached" in engine.states["login-key"].detail and engine.states["login-key"].ask is None
+
+
+def test_not_now_is_not_overridden_by_a_password_the_page_already_has(helper) -> None:
+    """The student put the key off; a later `retry cluster` made the page ask for the password and keep it for the run.
+    `retry login-key` must still show what it installs and offer "Not now": the form never depends on that cache."""
+    paths, cluster, _ = a_finished_setup(helper)
+    forget_the_own_key(cluster, paths)
+    engine = Engine(build(Setup(paths, open_dashboard=False)), paths.state)
+    assert finish(engine, "login-key") == "asking"
+    engine.answer({"choice": "skip", "form_id": engine.states["login-key"].ask["id"]})
+    wait_for_the_run_to_end(engine)
+    assert finish(engine, "cluster") == "asking"  # the password, for an update
+    engine.answer({"password": "right horse battery", "form_id": engine.states["cluster"].ask["id"]})
+    wait_for_the_run_to_end(engine)
+    assert engine.states["cluster"].status == "done" and engine.values.get("password")  # it is kept for this run
+    assert finish(engine, "login-key") == "asking"
+    ask = engine.states["login-key"].ask
+    assert ask["title"] == "Install your own key on the cluster" and "passphrase" in json.dumps(ask)
+    assert not paths.login_key.exists()
+
+
+def test_the_terminal_and_vs_code_do_not_wait_for_each_other(helper, tmp_path, monkeypatch) -> None:
+    """VS Code's connection timing out must not fail the step (it once held back the key limit), and VS Code that was set up
+    before is not set up again by a rerun (that asked for the password and started the workbench job)."""
+    import subprocess
+
+    server, paths, cluster = helper
+    bin_dir = tmp_path / "vscode-bin"
+    bin_dir.mkdir()
+    (bin_dir / "code").write_text("#!/bin/sh\nexit 0\n")
+    (bin_dir / "code").chmod(0o755)
+    os.environ["PATH"] = f"{bin_dir}:{os.environ['PATH']}"
+    from sc_hub_onboard import steps
+
+    real_run = steps.subprocess.run
+
+    def hanging(args, *more, **kwargs):
+        if "mbzuai-schub-ide" in args:  # VS Code's probe into the job
+            raise subprocess.TimeoutExpired(args, 1200)
+        return real_run(args, *more, **kwargs)
+
+    monkeypatch.setattr(steps.subprocess, "run", hanging)
+    to_the_agents(server, typo_first=False)
+    form(server, "Sign in to Codex")  # the steps after the terminal ran: nothing was held back
+    terminal = next(x for x in api(server, "/api/state")["steps"] if x["id"] == "terminal")
+    assert terminal["status"] == "done" and "VS Code was not set up" in terminal["detail"] and "job 207131" in terminal["detail"]
+
+
+def test_a_rerun_does_not_set_vs_code_up_again(helper, tmp_path) -> None:
+    server, paths, cluster = helper
+    bin_dir = tmp_path / "vscode-bin"
+    bin_dir.mkdir()
+    (bin_dir / "code").write_text("#!/bin/sh\n[ \"$1\" = --list-extensions ] && echo ms-vscode-remote.remote-ssh\nexit 0\n")
+    (bin_dir / "code").chmod(0o755)
+    os.environ["PATH"] = f"{bin_dir}:{os.environ['PATH']}"
+    to_the_agents(server, typo_first=False)  # a whole setup, VS Code and all
+    sign_in_both(server, cluster)
+    wait_for_the_run_to_end(server.engine)
+    engine = Engine(build(Setup(paths, open_dashboard=False)), paths.state)
+    assert "vscode_link" in engine.values and engine.states["terminal"].status == "done"
+    before = len(calls_to(cluster))
+    assert finish(engine, "terminal") == "done"  # no form: nothing here needs the password
+    assert not any("ide-setup" in c for c in commands_since(cluster, before)) and engine.states["terminal"].ask is None
+    assert "Remote-SSH" in engine.states["terminal"].detail
+
+
+def test_an_unreachable_cluster_at_the_terminal_look_skips_it_and_holds_nothing_back(helper, monkeypatch) -> None:
+    server, paths, cluster = helper
+    monkeypatch.setenv("FAKE_SHELL_UNREACHABLE", "1")
+    to_the_agents(server, typo_first=False)
+    form(server, "Sign in to Codex")  # agents came after it
+    terminal = next(x for x in api(server, "/api/state")["steps"] if x["id"] == "terminal")
+    assert terminal["status"] == "skipped" and "cannot be reached" in terminal["detail"] and "retry terminal" in terminal["detail"]
+    assert "terminal_command" not in json.loads(paths.state.read_text())["values"]
+    assert "Host schub" not in paths.ssh_config.read_text()  # no half-working alias
+
+
+def test_exit_codes_of_the_look_mean_one_thing_each(helper, monkeypatch) -> None:
+    """3 is what sc-hub's own bootstrap says when its Python is missing: it must not read as "the workbench is not running"."""
+    server, paths, cluster = helper
+    monkeypatch.setenv("FAKE_WORKBENCH", "broken")
+    to_the_agents(server, typo_first=False)
+    form(server, "Sign in to Codex")
+    terminal = next(x for x in api(server, "/api/state")["steps"] if x["id"] == "terminal")
+    assert terminal["status"] == "skipped" and "unavailable" in terminal["detail"] and "starts when you type" not in terminal["detail"]
+
+
+def test_a_stopped_bench_is_said_not_promised(helper, monkeypatch) -> None:
+    server, paths, cluster = helper
+    monkeypatch.setenv("FAKE_WORKBENCH", "bench-stopped")
+    to_the_agents(server, typo_first=False)
+    form(server, "Sign in to Codex")
+    terminal = next(x for x in api(server, "/api/state")["steps"] if x["id"] == "terminal")
+    assert terminal["status"] == "skipped" and "bench/STOP" in terminal["detail"]
+    assert "retry terminal" in terminal["detail"] and "then `schub` works" not in terminal["detail"]  # (no alias yet)
+    assert "terminal_command" not in json.loads(paths.state.read_text())["values"]  # `schub` would refuse: not promised
+
+
+def test_the_page_does_not_promise_a_terminal_without_the_own_key() -> None:
+    from sc_hub_onboard.steps import summary_lines, terminal_commands
+
+    assert terminal_commands({"terminal_command": "schub", "login_key": False}) == ("", "")
+    assert terminal_commands({"terminal_command": "schub"}) == ("", "")
+    assert terminal_commands({"terminal_command": "schub", "login_key": True}) == ("schub", "schub login")
+    assert terminal_commands({"terminal_command": "ssh schub", "login_key": True}) == ("ssh schub", "ssh mbzuai-login")
+    assert not any("Your terminal" in line for line in summary_lines({"terminal_command": "schub"}, "host"))
+
+
+def test_a_folder_name_from_the_saved_state_cannot_run_commands_on_the_cluster(helper) -> None:
+    """The state file is the helper's own; a quote in the saved folder name would end the single quotes of every command
+    sent to the cluster, a password session's included."""
+    paths, cluster, engine = a_finished_setup(helper)
+    engine.values["remote_root"] = "/l/users/x'; touch /tmp/pwned; '"
+    before = len(calls_to(cluster))
+    for step in ("terminal", "limit"):
+        assert finish(engine, step) == "failed", step
+        assert "plain path" in engine.states[step].detail
+        engine.states[step].status = "skipped"  # (a retry runs every failed step first: take this one out of the way)
+    assert not any("pwned" in c for c in commands_since(cluster, before))
+
+
+def test_the_first_run_says_what_the_own_key_is_and_lets_it_be_put_off(helper) -> None:
+    server, paths, cluster = helper
+    to_the_agents(server, typo_first=False, own_key="leave")
+    ask = form(server, "Install your own key on the cluster")
+    assert not ask.get("fields") and ask["submit"] == "Install my key"  # nothing to type: the account is not limited yet
+    text = json.dumps(ask)
+    assert "no passphrase" in text and "normal key" in text and "only opens sc-hub" in text
+    assert not paths.login_key.exists()  # nothing is made before the student has agreed
+    reply(server, {"choice": "skip"})
+    form(server, "Sign in to Codex")  # the setup went on
+    by_id = {x["id"]: x for x in api(server, "/api/state")["steps"]}
+    assert by_id["login-key"]["status"] == "skipped" and "retry login-key" in by_id["login-key"]["detail"]
+    assert by_id["terminal"]["status"] == "skipped" and by_id["cluster"]["status"] == "done"
+    assert not paths.login_key.exists() and "Host mbzuai-login" not in paths.ssh_config.read_text()
+
+
+def test_the_assistants_are_connected_only_once_the_key_is_limited(helper) -> None:
+    """Pressing Stop on a sign-in, or any step between, ends the run: an assistant connected before that would hold a key that
+    is still a full shell. They come after the limit."""
+    from sc_hub_onboard.steps import build as build_steps, Setup as SetupSteps
+
+    ids = [s.id for s in build_steps(SetupSteps(Paths(home=Path("/nonexistent"))))]
+    assert ids.index("assistants") > ids.index("limit") and ids.index("agents") < ids.index("limit")
+    server, paths, cluster = helper
+    to_the_agents(server)
+    form(server, "Sign in to Codex")  # the run is at `agents`: the key is not limited, and nothing is connected
+    assert not (paths.home / ".codex" / "config.toml").exists() and not paths.workspace.exists()
+    reply(server, {"cancel": True})  # Stop here
+    until(server, lambda s: any(x["id"] == "agents" and x["status"] == "failed" for x in s["steps"]))
+    assert not (paths.home / ".codex" / "config.toml").exists()
+
+
+def test_a_limit_the_state_forgot_is_taken_up_not_fought(helper) -> None:
+    """The line on the cluster is limited but the state does not say so (the helper stopped before it saved, a blip at the
+    probe): `retry limit` used to send its rewrite through the limited key, be refused, and say "could not limit" for ever.
+    Now the page looks at the key, sees the gate, and asks for the password like any update."""
+    paths, cluster, engine = a_finished_setup(helper)
+    engine.values.pop("limited", None)  # what a lost or late save leaves
+    assert finish(engine, "limit") == "asking" and engine.states["limit"].ask["title"] == "Your cluster password, for this run"
+    engine.answer({"password": "right horse battery", "form_id": engine.states["limit"].ask["id"]})
+    wait_for_the_run_to_end(engine)
+    assert engine.states["limit"].status == "done" and engine.values["limited"] is True
+
+
+def test_a_blip_at_the_limit_probe_is_unreachable_not_a_key_that_opens_a_shell(helper, monkeypatch) -> None:
+    server, paths, cluster = helper
+    monkeypatch.setenv("FAKE_UNREACHABLE_PROBE", "1")  # the network goes at the one command that looks at the key
+    to_the_agents(server, typo_first=False)
+    state = sign_in_both(server, cluster)  # up to the step that ended the run
+    limit = next(x for x in state["steps"] if x["id"] == "limit")
+    assert limit["status"] == "failed" and "cannot be reached" in limit["detail"] and "VPN" in limit["hint"]
+    assert "still opens a shell" not in limit["detail"]
+
+
+def test_an_own_key_that_is_sc_hubs_key_is_refused_and_the_gate_stays(helper) -> None:
+    """A copy of sc-hub's key at the own key's place (a hand copy, a mixed-up .pub) would rewrite sc-hub's line as a plain one."""
+    import shutil
+
+    paths, cluster, _ = a_finished_setup(helper)
+    forget_the_own_key(cluster, paths)
+    shutil.copy(paths.key, paths.login_key)
+    shutil.copy(paths.key.with_suffix(".pub"), paths.login_key.with_suffix(".pub"))
+    before = authorized(cluster, paths.key.with_suffix(".pub"))
+    engine = Engine(build(Setup(paths, open_dashboard=False)), paths.state)
+    assert finish(engine, "login-key") == "asking"
+    engine.answer({"password": "right horse battery", "form_id": engine.states["login-key"].ask["id"]})
+    wait_for_the_run_to_end(engine)
+    state = engine.states["login-key"]
+    assert state.status == "skipped" and "same key as sc-hub's" in state.detail
+    assert authorized(cluster, paths.key.with_suffix(".pub")) == before  # still the gate's line
+
+
+def test_a_lost_state_file_does_not_take_the_gate_off_the_key_the_assistants_use(helper) -> None:
+    """The saved values are gone (login, `limited`) but the key is on the cluster: sign-in asks for the login, finds the key
+    working and writes nothing, instead of putting a plain line over the limited one."""
+    paths, cluster, _ = a_finished_setup(helper)
+    saved = json.loads(paths.state.read_text())
+    saved["values"] = {}
+    paths.state.write_text(json.dumps(saved))
+    engine = Engine(build(Setup(paths, open_dashboard=False)), paths.state)
+    before = len(calls_to(cluster))
+    assert finish(engine, "sign-in") == "asking"
+    engine.answer({"login": "test.user", "password": "right horse battery", "form_id": engine.states["sign-in"].ask["id"]})
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline and engine.states["sign-in"].status not in ("done", "failed"):
+        time.sleep(0.05)
+    assert engine.states["sign-in"].status == "done" and engine.values["limited"] is True  # taken up from the key itself
+    assert not any("OPTS=" in c for c in commands_since(cluster, before))  # no write to authorized_keys at all
+    assert authorized(cluster, paths.key.with_suffix(".pub"))["options"].startswith("restrict,")
+
+
+@pytest.mark.parametrize("kept", [(), ("login", "remote_root")])
+def test_a_gate_that_does_not_run_when_the_state_forgot_the_limit_never_gets_a_plain_line(helper, monkeypatch, kept) -> None:
+    """The saved values are gone (all of them, or `limited` alone: the helper stopped before it saved) and right then the gate
+    cannot run (the cluster's /l is not mounted): the key's login fails, but in the gate, so its line is the limited one.
+    Sign-in wrote a plain line over it, and with the limit step done nothing limited it again: the assistants' key was a
+    shell for good (found in review). Now nothing is written plain, and the page says why."""
+    paths, cluster, _ = a_finished_setup(helper)
+    saved = json.loads(paths.state.read_text())
+    saved["values"] = {name: saved["values"][name] for name in kept}
+    paths.state.write_text(json.dumps(saved))
+    monkeypatch.setenv("FAKE_GATE_GONE", "1")
+    engine = Engine(build(Setup(paths, open_dashboard=False)), paths.state)
+    before = len(calls_to(cluster))
+    assert finish(engine, "sign-in") == "asking"
+    engine.answer({"login": "test.user", "password": "right horse battery", "form_id": engine.states["sign-in"].ask["id"]})
+    wait_for_the_run_to_end(engine)
+    state = engine.states["sign-in"]  # the folder known: limited, so not without the gate; unknown: no gate to point at
+    assert state.status == "failed" and "not written" in state.detail and "/l" in state.hint and "pilot owner" in state.hint
+    assert not any("OPTS=''" in c for c in commands_since(cluster, before))  # no plain line, not even for a moment
+    assert authorized(cluster, paths.key.with_suffix(".pub"))["options"].startswith("restrict,")
+
+
+def test_a_plain_line_is_limited_again_even_when_the_state_forgot_it_was_limited(helper) -> None:
+    """The key works and opens a shell (its line was written plain some other way), and the saved `limited` is gone too: the
+    limit step is done, so the key must be limited again, or the assistants' key stays a shell for good."""
+    paths, cluster, _ = a_finished_setup(helper)
+    entries = json.loads((cluster / "authorized.json").read_text())
+    entries[paths.key.with_suffix(".pub").read_text().split()[1]]["options"] = ""
+    (cluster / "authorized.json").write_text(json.dumps(entries))
+    saved = json.loads(paths.state.read_text())
+    del saved["values"]["limited"]
+    paths.state.write_text(json.dumps(saved))
+    engine = Engine(build(Setup(paths, open_dashboard=False)), paths.state)
+    assert finish(engine, "sign-in") == "done"  # the key works: no form
+    wait_for_the_run_to_end(engine)
+    assert authorized(cluster, paths.key.with_suffix(".pub"))["options"].startswith("restrict,")
+    assert engine.states["limit"].status == "done"
+
+
+def test_a_failing_terminal_leaves_no_alias_behind_and_never_holds_back_the_limit(helper, monkeypatch) -> None:
+    from sc_hub_onboard import assistants
+
+    paths, cluster, engine = a_finished_setup(helper)
+    assert "Host schub\n" in paths.ssh_config.read_text()
+    monkeypatch.setenv("FAKE_WORKBENCH", "broken")  # sc-hub on the cluster cannot open the shell this time
+    assert finish(engine, "terminal") == "skipped"
+    assert "Host schub\n" not in paths.ssh_config.read_text() and "terminal_command" not in engine.values
+    monkeypatch.delenv("FAKE_WORKBENCH")
+    monkeypatch.setattr(assistants, "install_tools", lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))
+    assert finish(engine, "terminal") == "skipped" and "disk full" in engine.states["terminal"].detail  # not a failure
+
+
+def test_a_network_blip_at_a_rerun_of_the_terminal_keeps_the_schub_that_worked(helper, monkeypatch) -> None:
+    """The terminal step runs again after `retry login-key` or a replaced key, and looks at the job again: a network that is
+    down right then decides nothing, so the `schub` that worked stays (it was taken away until a `retry terminal`: found in
+    review)."""
+    paths, cluster, engine = a_finished_setup(helper)
+    command = engine.values["terminal_command"]
+    monkeypatch.setenv("FAKE_SHELL_UNREACHABLE", "1")
+    assert finish(engine, "terminal") == "skipped" and "cannot be reached" in engine.states["terminal"].detail
+    assert "Host schub\n" in paths.ssh_config.read_text() and engine.values["terminal_command"] == command
+
+
+def test_a_terminal_that_works_later_reaches_the_welcome_and_a_cluster_update_sets_it_up(helper, monkeypatch) -> None:
+    """An account set up before `schub shell` existed: the terminal step is skipped until sc-hub on the cluster is updated.
+    `retry cluster` alone then sets the terminal up, and the dashboard's welcome says what to type (it kept saying nothing
+    until the page was started again: found in review)."""
+    paths, cluster, engine = a_finished_setup(helper)
+    welcome = paths.state.parent / "welcome.json"
+    monkeypatch.setenv("FAKE_OLD_SCHUB", "1")
+    assert finish(engine, "terminal") == "skipped"
+    wait_for_the_run_to_end(engine)  # (the dashboard step ran in this run: it is done now)
+    assert json.loads(welcome.read_text())["terminal_command"] == ""
+    monkeypatch.delenv("FAKE_OLD_SCHUB")
+    assert finish(engine, "cluster") == "asking"  # an update of sc-hub on the cluster: the key is limited, the password
+    engine.answer({"password": "right horse battery", "form_id": engine.states["cluster"].ask["id"]})
+    wait_for_the_run_to_end(engine, 60)
+    assert engine.states["terminal"].status == "done" and "job 207131 on gpu-03" in engine.states["terminal"].detail
+    assert json.loads(welcome.read_text())["terminal_command"] == engine.values["terminal_command"] != ""
+
+
+def test_a_cluster_update_sets_up_the_terminal_also_when_vs_code_kept_the_step_done(helper, monkeypatch) -> None:
+    """With VS Code set up, the terminal step is done even when its terminal part failed (an older sc-hub on the cluster):
+    `retry cluster` must still set the terminal up (found in review)."""
+    paths, cluster, engine = a_finished_setup(helper)
+    engine.values.update(vscode=True, vscode_link="vscode://vscode-remote/ssh-remote+mbzuai-schub-ide/x",
+                         ide_proxy="ssh -T mbzuai-schub /x/bin/schub ide-proxy")  # (set up before: not done again)
+    monkeypatch.setenv("FAKE_OLD_SCHUB", "1")
+    assert finish(engine, "terminal") == "done" and "terminal_command" not in engine.values
+    wait_for_the_run_to_end(engine)
+    monkeypatch.delenv("FAKE_OLD_SCHUB")
+    assert finish(engine, "cluster") == "asking"
+    engine.answer({"password": "right horse battery", "form_id": engine.states["cluster"].ask["id"]})
+    wait_for_the_run_to_end(engine, 60)
+    assert engine.values.get("terminal_command") and "Host schub\n" in paths.ssh_config.read_text()
+
+
+def test_without_the_own_key_on_this_computer_the_terminal_is_not_promised(helper) -> None:
+    """The own key's file is gone from this computer (the state still says it was installed): the look would fail as a host
+    ssh cannot resolve, which reads as a network that is down. The step says what is missing instead."""
+    paths, cluster, engine = a_finished_setup(helper)
+    paths.login_key.unlink()
+    paths.login_key.with_suffix(".pub").unlink()
+    assert finish(engine, "terminal") == "skipped" and "retry login-key" in engine.states["terminal"].detail
+    assert "cannot be reached" not in engine.states["terminal"].detail
+    assert "terminal_command" not in engine.values and "Host schub\n" not in paths.ssh_config.read_text()
+
+
+def test_the_own_key_step_looks_at_the_limit_itself_before_it_asks(helper) -> None:
+    """The limit step's last look met a blip: the line on the cluster is limited, but `limited` was never saved. The own key's
+    step must not send its program through a key that refuses it (it offered "Not now" and then stopped on the gate's
+    refusal): it looks first, then asks for the password (found in review)."""
+    paths, cluster, _ = a_finished_setup(helper)
+    forget_the_own_key(cluster, paths)
+    saved = json.loads(paths.state.read_text())
+    del saved["values"]["limited"]
+    paths.state.write_text(json.dumps(saved))
+    engine = Engine(build(Setup(paths, open_dashboard=False)), paths.state)
+    assert finish(engine, "login-key") == "asking"
+    assert any(f["name"] == "password" for f in engine.states["login-key"].ask.get("fields", []))
+    engine.answer({"password": "right horse battery", "form_id": engine.states["login-key"].ask["id"]})
+    wait_for_the_run_to_end(engine)
+    assert engine.states["login-key"].status == "done" and authorized(cluster, paths.login_key.with_suffix(".pub"))
+
+
+def test_windows_students_are_told_the_login_they_have() -> None:
+    """There is no `schub` command on Windows (`ssh schub` is the terminal there): the own key's forms must not say `schub
+    login` to a Windows student (found in review)."""
+    from sc_hub_onboard import steps
+
+    assert steps.own_login(windows=True) == "ssh mbzuai-login" and steps.own_login(windows=False) == "schub login"
+    assert steps.own_login() in steps.OWN_KEY_CONSENT["text"][0] and steps.own_login() in steps.OWN_KEY_FORM["text"][0]
+
+
+def test_a_replaced_key_makes_vs_code_set_up_again_for_the_new_key(helper, tmp_path) -> None:
+    """The job's own sshd holds the old public key: after a key replacement the editor's host must be set up again."""
+    server, paths, cluster = helper
+    bin_dir = tmp_path / "vscode-bin"
+    bin_dir.mkdir()
+    (bin_dir / "code").write_text("#!/bin/sh\n[ \"$1\" = --list-extensions ] && echo ms-vscode-remote.remote-ssh\nexit 0\n")
+    (bin_dir / "code").chmod(0o755)
+    os.environ["PATH"] = f"{bin_dir}:{os.environ['PATH']}"
+    to_the_agents(server, typo_first=False)
+    sign_in_both(server, cluster)
+    wait_for_the_run_to_end(server.engine)
+    entries = json.loads((cluster / "authorized.json").read_text())
+    entries.pop(paths.key.with_suffix(".pub").read_text().split()[1])
+    (cluster / "authorized.json").write_text(json.dumps(entries))
+    paths.key.unlink()
+    paths.key.with_suffix(".pub").unlink()
+    engine = Engine(build(Setup(paths, open_dashboard=False)), paths.state)
+    before = len(calls_to(cluster))
+    assert finish(engine, "sign-in") == "asking"
+    engine.answer({"login": "test.user", "password": "right horse battery", "form_id": engine.states["sign-in"].ask["id"]})
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline and engine.states["terminal"].status != "asking":
+        time.sleep(0.05)
+    assert engine.states["terminal"].status == "asking"  # the editor's part asks the password again, for ide-setup
+    engine.answer({"password": "right horse battery", "form_id": engine.states["terminal"].ask["id"]})
+    wait_for_the_run_to_end(engine)
+    assert engine.states["terminal"].status == "done" and any("ide-setup" in c for c in commands_since(cluster, before))
+    assert "vscode_link" in engine.values
+
+
+def test_a_new_key_on_a_limited_account_goes_in_limited_through_the_password_window_too(helper, monkeypatch) -> None:
+    """Windows 10's ssh takes no password from the page: ssh asks in a window of its own. That path writes the same limited
+    line (and nothing without a gate: the next test)."""
+    from sc_hub_onboard import steps
+
+    paths, cluster, _ = a_finished_setup(helper)
+    entries = json.loads((cluster / "authorized.json").read_text())
+    entries.pop(paths.key.with_suffix(".pub").read_text().split()[1])
+    (cluster / "authorized.json").write_text(json.dumps(entries))
+    paths.key.unlink()
+    paths.key.with_suffix(".pub").unlink()
+    monkeypatch.setenv("FAKE_NO_ASKPASS", "1")
+    monkeypatch.setenv("FAKE_CONSOLE_PASSWORD", "right horse battery")
+    monkeypatch.setattr(steps, "console_available", lambda: True)
+    engine = Engine(build(Setup(paths, open_dashboard=False)), paths.state)
+    before = len(calls_to(cluster))
+    assert finish(engine, "sign-in") == "asking"
+    engine.answer({"login": "test.user", "password": "x", "form_id": engine.states["sign-in"].ask["id"]})
+    wait_for_the_run_to_end(engine)
+    writes = [c for c in commands_since(cluster, before) if "OPTS=" in c]
+    assert writes and all("OPTS='restrict,port-forwarding,command=" in c for c in writes), writes
+    assert authorized(cluster, paths.key.with_suffix(".pub"))["options"].startswith("restrict,")
+
+
+def test_the_password_window_writes_nothing_without_a_gate_and_says_so(helper, monkeypatch) -> None:
+    """The same path when the gate script is not there (the cluster's /l is down): the program writes nothing (exit 3), and
+    the step says so, not as a wrong password."""
+    from sc_hub_onboard import steps
+
+    paths, cluster, _ = a_finished_setup(helper)
+    entries = json.loads((cluster / "authorized.json").read_text())
+    entries.pop(paths.key.with_suffix(".pub").read_text().split()[1])
+    (cluster / "authorized.json").write_text(json.dumps(entries))
+    paths.key.unlink()
+    paths.key.with_suffix(".pub").unlink()
+    monkeypatch.setenv("FAKE_NO_ASKPASS", "1")
+    monkeypatch.setenv("FAKE_CONSOLE_PASSWORD", "right horse battery")
+    monkeypatch.setenv("FAKE_NO_GATE", "1")
+    monkeypatch.setattr(steps, "console_available", lambda: True)
+    engine = Engine(build(Setup(paths, open_dashboard=False)), paths.state)
+    assert finish(engine, "sign-in") == "asking"
+    engine.answer({"login": "test.user", "password": "x", "form_id": engine.states["sign-in"].ask["id"]})
+    wait_for_the_run_to_end(engine)
+    state = engine.states["sign-in"]
+    assert state.status == "failed" and "gate script is not there" in state.detail and "refused" not in state.detail
+    assert "pilot owner" in state.hint
+    assert paths.key.with_suffix(".pub").read_text().split()[1] not in (cluster / "authorized.json").read_text()
 
 
 def test_codex_without_device_codes_and_a_personal_account(helper, monkeypatch) -> None:
@@ -349,7 +1095,7 @@ def test_an_ssh_without_askpass_gets_a_password_window(helper, monkeypatch) -> N
     assert sign_in["status"] == "done" and "key installed" in sign_in["detail"]
     calls = [json.loads(line) for line in (cluster / "calls.jsonl").read_text().splitlines()]
     assert any("printf '%s\\n' 'ssh-ed25519 " in c["command"] for c in calls)
-    assert json.loads((cluster / "authorized.json").read_text())["key"] == paths.key.with_suffix(".pub").read_text().strip()
+    assert authorized(cluster, paths.key.with_suffix(".pub"))["key"] == paths.key.with_suffix(".pub").read_text().strip()
 
 
 def test_a_rerun_needing_the_password_says_to_update_an_old_ssh(helper, monkeypatch) -> None:
@@ -647,7 +1393,7 @@ def test_the_key_line_is_written_under_a_login_shell_with_noclobber(tmp_path) ->
     (tmp_path / ".ssh").mkdir()
     keys = tmp_path / ".ssh" / "authorized_keys"
     keys.write_text("ssh-rsa AAAAother other@laptop\n")
-    key = "ssh-ed25519 AAAAschub schub@laptop"
+    key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA schub@laptop"
     (tmp_path / "bin").mkdir()
     (tmp_path / "bin" / "schub-gate").write_text("")
     (tmp_path / "bin" / "schub-gate").chmod(0o755)

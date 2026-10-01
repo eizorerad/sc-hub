@@ -23,6 +23,7 @@ import threading
 import time
 from typing import Any, Callable, Sequence
 
+from . import shellrc
 from .engine import Context, StepFailed
 from .sshkit import Ssh
 
@@ -32,11 +33,19 @@ CODEX_PORT = 1455  # Codex's sign-in redirect (http://localhost:1455/auth/callba
 START_S = 90
 DEVICE_S = 16 * 60  # the device code expires after 15 minutes
 
-# Every command starts with this: the CLIs where their installers put them, Codex's SQLite files per host
-# (the home folder is on NFS, shared by every node), and a helper that stops a sign-in when ssh goes away.
+# Codex's SQLite files live in one folder per host, because the home folder is on NFS, shared by every node. An inherited
+# value under ~/.codex-sqlite is replaced: srun and sbatch pass the environment on, so a shell in a job would otherwise keep
+# the login node's folder. One chosen elsewhere is the owner's. The folders are made without ever failing the caller (a
+# script that runs with `set -e` and sources ~/.bashrc must not end over a full quota or a race to make the same folder).
+SQLITE_LINES = [
+    'case "${CODEX_SQLITE_HOME:-}" in ""|"$HOME/.codex-sqlite/"*) export CODEX_SQLITE_HOME="$HOME/.codex-sqlite/$(hostname -s 2>/dev/null || uname -n)" ;; esac',
+    '[ -d "$HOME/.codex-sqlite" ] || mkdir -m 700 "$HOME/.codex-sqlite" 2>/dev/null || :',
+    '[ -d "$CODEX_SQLITE_HOME" ] || mkdir -m 700 "$CODEX_SQLITE_HOME" 2>/dev/null || :',
+]
+# Every command starts with this: the CLIs where their installers put them, Codex's SQLite files per host, and a helper
+# that stops a sign-in when ssh goes away.
 PRELUDE = r"""export PATH="$HOME/.local/bin:$PATH" CODEX_NON_INTERACTIVE=1
-export CODEX_SQLITE_HOME="${CODEX_SQLITE_HOME:-$HOME/.codex-sqlite/$(hostname -s)}"
-[ -d "$HOME/.codex-sqlite" ] || mkdir -m 700 "$HOME/.codex-sqlite"; [ -d "$CODEX_SQLITE_HOME" ] || mkdir -p -m 700 "$CODEX_SQLITE_HOME"
+""" + "\n".join(SQLITE_LINES) + r"""
 codex_bin() { for c in "$HOME/.codex/packages/standalone/current/bin/codex" "$HOME/.local/bin/codex" "$(command -v codex)"; do
   [ -n "$c" ] && [ -x "$c" ] && { printf '%s' "$c"; return 0; }; done; return 1; }
 claude_bin() { for c in "$HOME/.local/bin/claude" "$(command -v claude)"; do
@@ -46,64 +55,20 @@ until_hangup() { exec 3<&0; "$@" </dev/null 3<&- & p=$!; ( cat <&3 >/dev/null; k
   exec 3<&-; wait "$p"; }
 """
 # Codex and Claude Code on the student's own PATH (python3 on the login node): the installers skip this when
-# ~/.local/bin is already on PATH, as it is in these commands. A marked block, rewritten on every run, goes at the end
-# of ~/.bashrc (interactive shells) and of the file a login shell reads first. Only a block whose lines are exactly
-# ones this program wrote is ever replaced (KNOWN lists every body it shipped): markers that are the student's own, or
-# with lines of theirs between them, leave the file alone, and so does a file another account owns (a linked, shared
-# dotfile). A linked dotfile of the student's is edited where it lives, through a temporary file, so a full disk never
-# leaves half a file; its line endings stay as they were.
-REGISTER_PATH = r"""
-import os, re, shutil, tempfile
-home = os.path.expanduser("~")
-BEGIN, END = "# >>> sc-hub >>>", "# <<< sc-hub <<<"
-BLOCK = "\n".join([BEGIN, "# Codex and Claude Code, installed by the sc-hub setup, live in ~/.local/bin.",
-                   'case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$HOME/.local/bin:$PATH" ;; esac',
-                   END]) + "\n"
-KNOWN = [BLOCK.splitlines()[1:-1]]  # every body this program shipped (add the old one here when the text changes)
-OURS = re.compile("^" + re.escape(BEGIN) + r"\r?\n(?:" + "|".join(
-    "".join(re.escape(line) + r"[ \t]*\r?\n" for line in body) for body in KNOWN) + ")" +
-    re.escape(END) + r"[ \t]*(?:\r?\n|\Z)", re.M)
-login = next((n for n in (".bash_profile", ".bash_login", ".profile") if os.path.lexists(os.path.join(home, n))),
-             ".profile")
-names = [".bashrc", login] + ([".zshrc"] if os.path.basename(os.environ.get("SHELL", "")) == "zsh" else [])
-for name in names:
-    real = os.path.realpath(os.path.join(home, name))
-    try:
-        if os.stat(real).st_uid != os.getuid():
-            print("PATH: left ~/%s alone (another account owns it)" % name)
-            continue
-        with open(real, newline="") as handle:
-            old = handle.read()
-    except FileNotFoundError:
-        old = ""
-    except (OSError, UnicodeDecodeError) as exc:
-        print("PATH: could not read ~/%s (%s)" % (name, getattr(exc, "strerror", None) or exc))
-        continue
-    rest, count = OURS.subn("", old)
-    starts = len(re.findall("^" + re.escape(BEGIN), old, re.M))
-    ends = len(re.findall("^" + re.escape(END), old, re.M))
-    if starts != count or ends != count:
-        print("PATH: left ~/%s alone (its sc-hub lines were edited; remove them and run this again)" % name)
-        continue
-    eol = "\r\n" if "\r\n" in old else "\n"
-    new = rest.rstrip("\r\n") + (eol * 2 if rest.strip() else "") + BLOCK.replace("\n", eol)
-    if new == old:
-        print("PATH: ~/%s already has it" % name)
-        continue
-    temp = None
-    try:
-        fd, temp = tempfile.mkstemp(dir=os.path.dirname(real), prefix=".schub-")
-        with os.fdopen(fd, "w", newline="") as handle:
-            handle.write(new)
-        if os.path.exists(real):
-            shutil.copymode(real, temp)
-        os.replace(temp, real)
-        print("PATH: added to ~/%s" % name)
-    except OSError as exc:
-        if temp and os.path.exists(temp):
-            os.remove(temp)
-        print("PATH: could not write ~/%s (%s)" % (name, exc.strerror or exc))
-"""
+# ~/.local/bin is already on PATH, as it is in these commands. shellrc.py says how the marked block is written and
+# when a file is left alone. Besides the PATH, the block keeps Codex's SQLite files per host (SQLITE_LINES), as the lab
+# agent does, so the student's own `codex` is as safe on any node, the workbench job's included. (The sign-ins themselves
+# are in ~/.codex and ~/.claude, in that same home: the lab agent and the student's own shells use the same accounts,
+# nothing is kept for sc-hub apart.)
+BLOCK_BODY = [
+    "# Codex and Claude Code, installed by the sc-hub setup, live in ~/.local/bin.",
+    'case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$HOME/.local/bin:$PATH" ;; esac',
+    "# /home is NFS, shared by every node: Codex keeps its SQLite files in one folder per host (a job's shell inherits the",
+    "# login node's, so a folder of another host is replaced; one chosen elsewhere stays).",
+    *SQLITE_LINES,
+]
+EARLIER_BODIES = [BLOCK_BODY[:2]]  # the first setups wrote the PATH line only: still this program's own block
+REGISTER_PATH = shellrc.program(BLOCK_BODY, EARLIER_BODIES)
 # What a new ssh login finds: a login shell with the student's own files and an empty environment. The files may print
 # or ask things, so only paths ending in /codex or /claude count, stdin is closed and it gets 30 seconds (where
 # `timeout` exists: the cluster has it, macOS does not).

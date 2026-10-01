@@ -9,9 +9,41 @@ if args == ["-V"]:
     sys.exit(0)
 cluster = Path(os.environ["FAKE_CLUSTER"])
 cluster.mkdir(parents=True, exist_ok=True)
-host = next(a for a in args if a in ("mbzuai-schub", "mbzuai-schub-ide"))
-command = args[args.index(host) + 1]
+KNOWN = ("mbzuai-schub", "mbzuai-schub-ide", "mbzuai-login", "schub")
+host = next(a for a in args if a in KNOWN)
+command = args[args.index(host) + 1] if args.index(host) + 1 < len(args) else ""
 agents = cluster / "agents.json"
+
+
+def config_stanzas() -> list:
+    """The test's own ~/.ssh/config (the helper passes -F <it> for a home other than the real one): [(patterns, options)]."""
+    if "-F" not in args:
+        return []
+    found, current = [], None
+    for raw in Path(args[args.index("-F") + 1]).read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        key, _, value = line.partition(" ")
+        if key.lower() == "host":
+            current = (value.split(), {})
+            found.append(current)
+        elif current is not None:
+            current[1].setdefault(key.lower(), []).append(value.strip())
+    return found
+
+
+def options_of(alias: str):
+    """The options of the first Host block that names `alias`, as ssh would find them (None: ssh cannot resolve it)."""
+    return next((options for patterns, options in config_stanzas() if alias in patterns), None)
+
+
+def public_key_of(alias: str):
+    """The public key file of the IdentityFile that `alias` has in the config (None: no such alias or identity)."""
+    options = options_of(alias)
+    if not options or not options.get("identityfile"):
+        return None
+    return Path(options["identityfile"][0].strip('"') + ".pub")
 
 
 def agent_state() -> dict:
@@ -38,12 +70,30 @@ def until_approved() -> None:  # the student approves in the browser (the test w
 
 with (cluster / "calls.jsonl").open("a") as log:
     log.write(json.dumps({"args": args[:-1], "command": command[:300]}) + "\n")
-state = cluster / "authorized.json"
+state = cluster / "authorized.json"  # ~/.ssh/authorized_keys on the cluster: {key blob: {"key": line, "options": ...}}
 auth = json.loads(state.read_text()) if state.exists() else {}
 password_login = "PubkeyAuthentication=no" in args
+
+
+def own_entry() -> dict:
+    """The authorized_keys entry of the key this alias logs in with, as the config names it ({} if it is not installed)."""
+    public = public_key_of(host)
+    return auth.get(public.read_text().split()[1], {}) if public is not None and public.exists() else {}
+
+
+if os.environ.get("FAKE_UNREACHABLE"):  # the VPN is off: no call gets anywhere
+    sys.stderr.write("ssh: Could not resolve hostname login-student-lab.mbzu.ae: nodename nor servname provided, or not known\n")
+    sys.exit(255)
+if os.environ.get("FAKE_UNREACHABLE_PROBE") and command.startswith("echo sc-hub-probe"):  # a blip right at the probe
+    sys.stderr.write("ssh: connect to host login-student-lab.mbzu.ae port 22: Operation timed out\n"); sys.exit(255)
+if options_of(host) is None:  # ssh would not know the name: the config block that defines it is missing
+    sys.stderr.write(f"ssh: Could not resolve hostname {host}: Name or service not known\n"); sys.exit(255)
+gate_gone = os.environ.get("FAKE_GATE_GONE")  # the gate script cannot run now (the cluster's /l is not mounted)
+if gate_gone and not password_login and "schub-gate" in own_entry().get("options", ""):  # sshd starts it through bash
+    sys.stderr.write("bash: line 1: /l/users/test.user/schub/bin/schub-gate: No such file or directory\n"); sys.exit(127)
 if host == "mbzuai-schub-ide":  # through the gate's ide-proxy into the job's own sshd
     ide = cluster / "ide_authorized"
-    if not ide.exists() or ide.read_text().strip() != auth.get("key", ""):
+    if not ide.exists() or ide.read_text().strip() != own_entry().get("key", ""):
         sys.stderr.write("Permission denied (publickey).\n"); sys.exit(255)
     print("207131 gpu-03"); sys.exit(0)
 if password_login:
@@ -53,9 +103,9 @@ if password_login:
         given = os.environ.get("FAKE_CONSOLE_PASSWORD", "") if not os.environ.get("SSH_ASKPASS") else ""
     if given != os.environ["FAKE_PASSWORD"]:
         sys.stderr.write("test.user@login: Permission denied (password).\n"); sys.exit(255)
-elif not auth.get("key"):
+elif not own_entry():
     sys.stderr.write("test.user@login: Permission denied (publickey).\n"); sys.exit(255)
-elif "schub-gate" in auth.get("options", ""):
+elif "schub-gate" in own_entry()["options"]:
     if not (command == "true" or command.endswith("/bin/schub-mcp") or command.endswith("dashboard >/dev/null")):
         sys.stderr.write("sc-hub: this key only opens sc-hub (MCP server, dashboard, sessions): no shell\n"); sys.exit(126)
 if "login --device-auth" in command:
@@ -82,10 +132,35 @@ if "auth login" in command:
 stdin = b"" if sys.stdin is None or sys.stdin.closed else sys.stdin.buffer.read()
 if "authorized_keys" in command:
     options = command.split("OPTS='", 1)[1].split("';", 1)[0]
-    key = command.split("printf '%s\\n' '", 1)[1].split("'", 1)[0] if "printf '%s" in command else stdin.decode().strip()
-    state.write_text(json.dumps({"key": key, "options": options}))
+    key = command.split("printf '%s\\n' '", 1)[1].split("'", 1)[0] if "printf '%s\\n' 'ssh-" in command else stdin.decode().strip()
+    if options and (os.environ.get("FAKE_NO_GATE") or gate_gone):  # (no gate: the real program fails closed, writes nothing)
+        sys.stderr.write("sc-hub: the gate /l/users/test.user/schub/bin/schub-gate is not there\n"); sys.exit(3)
+    own_public = public_key_of("mbzuai-login")
+    is_own = own_public is not None and own_public.exists() and key.split()[1] == own_public.read_text().split()[1]
+    if is_own and os.environ.get("FAKE_UNREACHABLE_OWN"):
+        sys.stderr.write("ssh: Could not resolve hostname login-student-lab.mbzu.ae: nodename nor servname provided\n"); sys.exit(255)
+    if is_own and os.environ.get("FAKE_OWN_KEY") == "ignored":
+        sys.exit(0)  # says ok, but the student's own key never gets into authorized_keys (a quota, a mode: it is up to sshd)
+    auth[key.split()[1]] = {"key": key, "options": options}  # a key's line is rewritten in place, never doubled
+    state.write_text(json.dumps(auth))
 elif command == "true":
     pass
+elif command == "echo sc-hub-own":  # a real shell (the gate refuses it before it gets here)
+    print("sc-hub-own")
+elif " shell --no-start" in command:  # `schub shell` on the cluster: the terminal's far end
+    if os.environ.get("FAKE_OLD_SCHUB"):
+        sys.stderr.write("schub: error: argument command: invalid choice: 'shell'\n"); sys.exit(2)
+    if os.environ.get("FAKE_SHELL_UNREACHABLE"):  # the network went away right at this look
+        sys.stderr.write("ssh: connect to host login-student-lab.mbzu.ae port 22: Operation timed out\n"); sys.exit(255)
+    workbench = os.environ.get("FAKE_WORKBENCH", "")
+    if workbench == "stopped":  # not running now
+        sys.stderr.write("sc-hub: your workbench job is not running now; type schub to start it\n"); sys.exit(75)
+    if workbench == "bench-stopped":  # bench/STOP is there
+        sys.stderr.write("sc-hub: your bench is stopped (bench/STOP exists on the cluster); remove it to use schub\n"); sys.exit(76)
+    if workbench == "broken":  # an exit code 3 of the cluster's own (bootstrap's): sc-hub's Python is gone
+        sys.stderr.write("sc-hub: /l/users/test.user/schub/env/bin/python is unavailable\n"); sys.exit(3)
+    print("Welcome to the MBZUAI cluster")  # what /etc/profile.d says to the login shell `bash -lc` in the job
+    print("sc-hub-job 207131 gpu-03" if "sc-hub-job" in command else "207131 gpu-03")
 elif command.startswith("echo sc-hub-probe"):
     print("sc-hub-probe")
 elif "base64 -di" in command:
@@ -94,7 +169,8 @@ elif "base64 -di" in command:
 elif "bootstrap_cluster.sh" in command:
     print("[sc-hub] using the shared library"); print("[sc-hub] done")
 elif "ide-setup" in command:
-    (cluster / "ide_authorized").write_text(stdin.decode().strip())
+    if not os.environ.get("FAKE_NO_IDE"):  # (else the job's own sshd never gets the key: VS Code's connection is refused)
+        (cluster / "ide_authorized").write_text(stdin.decode().strip())
     print('{"ide": "/l/users/test.user/schub/ide"}')
 elif "bench-run" in command:
     slurm = "%%slurm" in stdin.decode()

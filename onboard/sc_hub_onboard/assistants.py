@@ -19,6 +19,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from . import shellrc
 from .sshkit import ALIAS, BEGIN, END, Paths, strip_block
 
 
@@ -198,6 +199,18 @@ SAFE_PATH = re.compile(r"[\w .:/\\()+~-]+")  # nothing a shell would expand insi
 VIEW_PROGRAM = ("schub_view.py", "schub_view_copy.py", "schub_view_pages.py")
 VIEW_LAUNCHERS = ("schub-view.cmd", "schub-view.ps1") if os.name == "nt" else ("schub-view",)
 LAB_LAUNCHERS = ("schub-lab.cmd", "schub-lab.ps1") if os.name == "nt" else ("schub-lab",)
+JOB_LAUNCHERS = () if os.name == "nt" else ("schub",)  # the terminal command; Windows has `ssh schub`
+# ~/.sc-hub/bin on the PATH of new terminal windows, so `schub` (and schub-view, schub-lab) are typed by name. At the
+# end of the PATH: it never shadows a command the student has. (shellrc.py: how the block is written, what it leaves.)
+LAPTOP_BODY = [
+    "# sc-hub's commands (schub, schub-view, schub-lab), installed by the sc-hub setup.",
+    'case ":$PATH:" in *":$HOME/.sc-hub/bin:"*) ;; *) export PATH="$PATH:$HOME/.sc-hub/bin" ;; esac',
+]
+# Markers of its own: a dotfiles repository synced between the laptop and the cluster account then carries both blocks, and
+# each program knows its own (the cluster's are the plain `sc-hub` ones).
+LAPTOP_BEGIN, LAPTOP_END = "# >>> sc-hub (this computer) >>>", "# <<< sc-hub (this computer) <<<"
+LAPTOP_PATH = shellrc.program(LAPTOP_BODY, names=shellrc.ONE_SHELL, folder="~/.sc-hub/bin",
+                              markers=(LAPTOP_BEGIN, LAPTOP_END))
 # What earlier setups left in the workspace (the dashboard and the session opener now live in ~/.sc-hub/bin).
 OLD_TOOL_FILES = ("schub-view", "schub-view.cmd", "schub-view.ps1", *VIEW_PROGRAM,
                   "schub-lab", "schub-lab.cmd", "schub-lab.ps1")
@@ -244,9 +257,28 @@ def install_tools(paths: Paths, repo: Path, python: str = sys.executable) -> Pat
     if os.name != "nt":
         os.chmod(folder.parent, 0o700)
         os.chmod(folder, 0o700)
-    for name in (*VIEW_PROGRAM, *VIEW_LAUNCHERS, *LAB_LAUNCHERS):
+    for name in (*VIEW_PROGRAM, *VIEW_LAUNCHERS, *LAB_LAUNCHERS, *JOB_LAUNCHERS):
         text = (repo / "scripts" / name).read_text(encoding="utf-8")
         if PINNED_PYTHON in text and SAFE_PATH.fullmatch(python):  # it sits between double quotes in sh and PowerShell
             text = text.replace(PINNED_PYTHON, python)
-        _write(folder / name, text, executable=name in (*VIEW_LAUNCHERS, *LAB_LAUNCHERS) or name == "schub_view.py")
+        _write(folder / name, text,
+               executable=name in (*VIEW_LAUNCHERS, *LAB_LAUNCHERS, *JOB_LAUNCHERS) or name == "schub_view.py")
     return folder / VIEW_LAUNCHERS[0]
+
+
+def register_path(paths: Paths) -> list[str]:
+    """~/.sc-hub/bin on the PATH of this computer's new terminal windows (macOS, Linux); what it did, line by line.
+    Nothing on Windows: `ssh schub` does the same there."""
+    if os.name == "nt":
+        return []
+    env = {**os.environ, "HOME": str(paths.home)}
+    if paths.custom:  # a trial's own home: the real shell's ZDOTDIR (VS Code's terminal exports it) must not steer it
+        env["ZDOTDIR"] = str(paths.home)
+    try:
+        done = subprocess.run([sys.executable, "-"], input=LAPTOP_PATH, capture_output=True, text=True, timeout=60,
+                              env=env)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return [f"PATH: could not update the shell's files ({exc})"]
+    if done.returncode != 0:
+        return [f"PATH: could not update the shell's files ({done.stderr.strip()[-120:]})"]
+    return done.stdout.splitlines()

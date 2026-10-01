@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# Your sc-hub workbench on the MBZUAI cluster, from a terminal on this computer. No password.
+#
+#   schub                   a shell inside your workbench job (it starts if it is not running)
+#   schub login             a shell on the login node, with your own key
+#   schub status            your jobs on the cluster
+#   schub view              your dashboard in the browser
+#   schub lab [cellxgene]   the JupyterLab or cellxgene session your assistant started
+#   schub help
+#
+# The setup installs it in ~/.sc-hub/bin (with schub-view and schub-lab) and puts that folder on your PATH: a new
+# terminal window finds it. Both ways in use your own key, which opens a normal shell on the login node: `schub` is the
+# ssh host `schub`, which runs `schub shell` there (it starts your workbench job if it is not running, then srun --pty
+# into it, as a workstation command does), and `schub login` is the host `mbzuai-login`. Both are in ~/.ssh/config, so
+# `ssh schub` works too (not scp: use `ssh mbzuai-login` for that). This is the laptop's command; on the cluster,
+# sc-hub's own is ~/schub/bin/schub.
+set -u
+unset CDPATH  # (a `cd` would print where it went, and the folder below would be garbage)
+
+JOB_HOST="${SCHUB_JOB_HOST:-schub}"
+LOGIN_HOST="${SCHUB_LOGIN_HOST:-mbzuai-login}"
+SSH_F=()
+if [ -n "${SCHUB_SSH_CONFIG:-}" ]; then SSH_F=(-F "$SCHUB_SSH_CONFIG"); fi  # another ssh config (trials, tests)
+
+# Where this file really is, even when ~/.sc-hub/bin is linked into another folder of the PATH.
+SELF="${BASH_SOURCE[0]}"
+while [ -h "$SELF" ]; do
+  DIR="$(cd "$(dirname "$SELF")" && pwd)"
+  SELF="$(readlink "$SELF")"
+  case "$SELF" in /*) ;; *) SELF="$DIR/$SELF" ;; esac
+done
+HERE="$(cd "$(dirname "$SELF")" && pwd)"
+
+# (empty-array-safe for the bash 3.2 that ships with macOS)
+sshx() { ssh ${SSH_F[@]+"${SSH_F[@]}"} "$@"; }
+
+usage() {
+  cat <<'EOF'
+sc-hub, from a terminal:
+  schub                   a shell inside your workbench job (it starts if it is not running)
+  schub login             a shell on the login node, with your own key
+  schub status            your jobs on the cluster
+  schub view              your dashboard in the browser
+  schub lab [cellxgene]   the JupyterLab or cellxgene session your assistant started
+  schub help              this list
+None of them asks for a password.
+EOF
+}
+
+# ssh ends with 255 when it could not connect or log in; anything else is what the shell on the cluster ended with.
+shell_on() {  # host, the setup step that makes it
+  sshx -t "$1"
+  local code=$?
+  if [ "$code" = 255 ]; then
+    echo "sc-hub: could not log in to '$1'. On campus Wi-Fi or the VPN? If it keeps failing, ask your assistant to run" >&2
+    echo "sc-hub: the setup step again: sh onboard/start.sh retry $2 (in the folder you set sc-hub up from)." >&2
+  fi
+  exit "$code"
+}
+
+case "${1:-}" in
+  "")
+    echo "Connecting to your sc-hub workbench job (it starts if it is not running; the first time can take a minute or two)."
+    shell_on "$JOB_HOST" terminal ;;
+  login)
+    shell_on "$LOGIN_HOST" login-key ;;
+  status)
+    echo "Your jobs on the cluster:"
+    sshx -o BatchMode=yes "$LOGIN_HOST" "squeue --me -o '%.10i %.12P %.22j %.10T %.10M %.12l %R'"
+    code=$?
+    if [ "$code" = 255 ]; then
+      echo "sc-hub: could not log in to '$LOGIN_HOST'; ask your assistant to run the setup step again (retry login-key)." >&2
+    fi
+    exit "$code" ;;
+  view)
+    shift
+    exec "$HERE/schub-view" "$@" ;;
+  lab)
+    shift
+    exec "$HERE/schub-lab" "$@" ;;
+  help | -h | --help)
+    usage ;;
+  *)
+    echo "schub: unknown command '$1' (schub help lists them)" >&2
+    exit 2 ;;
+esac

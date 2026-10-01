@@ -353,6 +353,19 @@ def test_codex_keeps_its_sqlite_files_per_host(tmp_path: Path) -> None:
     assert Claude().environment(None) is None  # only Codex has the NFS problem
 
 
+def test_a_sqlite_folder_that_came_with_the_job_from_another_host_is_this_hosts_own_again(tmp_path: Path) -> None:
+    """srun and sbatch pass the environment on: a lab agent in a job on a compute node must not keep the login node's
+    folder, or both hosts would share one SQLite folder over NFS again."""
+    import socket
+
+    here = str(tmp_path / ".codex-sqlite" / socket.gethostname().split(".")[0])
+    for inherited in (tmp_path / ".codex-sqlite" / "lo-02-another-host", tmp_path / ".codex-sqlite" / "gpu-03-too"):
+        env = Codex().environment({"HOME": str(tmp_path), "CODEX_SQLITE_HOME": str(inherited)})
+        assert env["CODEX_SQLITE_HOME"] == here and Path(here).is_dir()
+    mine = str(tmp_path / "somewhere-of-the-owners")  # outside ~/.codex-sqlite: theirs, kept
+    assert Codex().environment({"HOME": str(tmp_path), "CODEX_SQLITE_HOME": mine})["CODEX_SQLITE_HOME"] == mine
+
+
 
 def test_only_real_actions_count_as_codex_work() -> None:
     """A notice ("error" item) before a failure is not work: a broken login must still pause the engine."""
@@ -414,3 +427,12 @@ def test_the_newest_model_at_xhigh_by_default_and_older_files_get_it(tmp_path: P
     assert older.claude_effort == "xhigh" and older.codex_effort == "high"  # an empty one was the old default
     engine_policy.set_mode(path, "mixed", claude_effort="")  # an explicit "": the CLI's own default, kept
     assert load(path).claude_effort == ""
+
+
+def test_a_folder_that_cannot_be_made_leaves_codex_its_default_not_another_hosts_folder(tmp_path: Path) -> None:
+    """The comment says Codex then uses its default: an inherited folder of another host must not stay in the environment."""
+    home = tmp_path / "a-file-not-a-folder"
+    home.write_text("")  # nothing can be made under it
+    inherited = str(home / ".codex-sqlite" / "lo-02")
+    env = Codex().environment({"HOME": str(home), "CODEX_SQLITE_HOME": inherited, "PATH": "/usr/bin"})
+    assert "CODEX_SQLITE_HOME" not in env and env["PATH"] == "/usr/bin"

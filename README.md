@@ -31,14 +31,19 @@ onboard\start.cmd                                               # Windows 10/11
 > Its `AGENTS.md` tells it to start the setup page and hand it to you.
 
 A local page walks through each step with a progress bar:
-1. Sign in to the cluster once. The password goes to `ssh`, never to the assistant.
+1. Sign in to the cluster once. The password goes to `ssh`, never to the assistant. You get your own key too: from then on, no password.
 2. sc-hub is installed on the cluster, and a first cell and Slurm job run.
-3. Your assistants, VS Code in your workbench job, and Codex and Claude Code on the cluster (with your student accounts, on your PATH there) are connected.
+3. Your assistants, a terminal and VS Code in your workbench job, and Codex and Claude Code on the cluster (with your student accounts, on your PATH there) are connected.
 4. Your dashboard starts at `http://sc-hub.localhost:27182` and opens with a short welcome; a
    [cluster guide](docs/how-it-works.md#dashboard-on-a-weak-laptop) for newcomers to Slurm is one click away.
 
 If a step fails, the page says what to do. Your assistant can also diagnose and
 fix it ([docs/setup.md](docs/setup.md)).
+
+Open a new terminal window and type `schub`: you land in your own workbench job on the cluster
+(it starts if it is not running), with no password. `schub login` opens the login node the same way,
+and `schub status`, `schub view`, `schub lab` list your jobs and open the dashboard and a Jupyter session
+(Windows: `ssh schub`; for `scp` and `rsync` use `ssh mbzuai-login`).
 
 Then work in the workspace and ask for research. In Codex type `$schub`, in Claude Code `/schub`:
 
@@ -70,7 +75,7 @@ flowchart LR
 - **Cells.** The assistant acts through **cells**: code with a required *why* and *expect*, run in a live kernel inside the student's workbench job. Heavy work goes to a `%%slurm` cell, which becomes its own job.
 - **The journal.** Each cell becomes an entry in the project's **journal**: outputs, figures, files, downloads, jobs and **checks** (a failed check marks the entry). The dashboard shows the journal. A new chat starts from its hand-over. A finished study becomes a **report** notebook.
 - **The lab agent.** It can keep working on a goal between chats, in Slurm slices.
-- **The key.** On the login node the SSH key runs only sc-hub's own commands (`schub-gate`). VS Code, if installed, gets a shell inside your own workbench job ([details](docs/setup.md#install-student-one-command)).
+- **The keys.** On the login node sc-hub's SSH key runs only sc-hub's own commands (`schub-gate`). VS Code, if installed, gets a shell inside your own workbench job through it. Your own, second key logs you in normally, and `schub` runs the terminal over it, for you alone ([details](docs/setup.md#install-student-one-command)).
 
 Details: [docs/how-it-works.md](docs/how-it-works.md). The older brick
 pipelines: [docs/bricks.md](docs/bricks.md).

@@ -90,6 +90,15 @@ class Context:
     def clear(self) -> None:
         self.engine.set(self.state, status="running", ask=None)
 
+    def status(self, step_id: str) -> str:
+        """Where another step stands ("done", "skipped", "waiting", ...)."""
+        return self.engine.states[step_id].status
+
+    def reopen(self, step_id: str) -> None:
+        """Make a later step run again when the run gets to it (a key was replaced and must be limited again; the
+        dashboard's welcome must say what a new key makes possible)."""
+        self.engine.set(self.engine.states[step_id], status="waiting", hint="")
+
 
 class Engine:
     def __init__(self, steps: list[Step], state_path: Path, values: dict[str, Any] | None = None) -> None:

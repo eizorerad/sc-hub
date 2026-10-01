@@ -49,15 +49,18 @@ class Codex(Engine):
         """Codex's SQLite files in a folder per host: the home folder is on NFS, shared by every node, and SQLite
         on NFS from several hosts at once corrupts or locks up (the pilot owner's wrapper does the same)."""
         env = dict(os.environ if env is None else env)
-        if not env.get("CODEX_SQLITE_HOME"):
-            parent = Path(env.get("HOME") or Path.home()) / ".codex-sqlite"
+        parent = Path(env.get("HOME") or Path.home()) / ".codex-sqlite"
+        current = env.get("CODEX_SQLITE_HOME", "")
+        # unset, or one host's folder under ~/.codex-sqlite: srun and sbatch pass the environment on, so it may be the login
+        # node's, and this job's host needs its own. A place the owner chose elsewhere is theirs.
+        if not current or Path(current).parent == parent:
             folder = parent / socket.gethostname().split(".")[0]
             try:  # private: Codex keeps its session logs there
                 parent.mkdir(mode=0o700, exist_ok=True)
                 folder.mkdir(mode=0o700, exist_ok=True)
                 env["CODEX_SQLITE_HOME"] = str(folder)
-            except OSError:
-                pass  # Codex then uses its default
+            except OSError:  # Codex then uses its default, and not another host's folder that came with the job
+                env.pop("CODEX_SQLITE_HOME", None)
         return env
 
     def argv(self, binary: str, turn: Turn) -> list[str]:

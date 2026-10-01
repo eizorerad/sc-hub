@@ -132,6 +132,12 @@ def welcome_page(facts: dict[str, Any], port: int, nonce: str) -> bytes:
                           f"{names}.")
         have.append(f"<li><b>Codex and Claude Code on the cluster</b>, signed in: {who}. The lab agent uses them."
                     f"{login_line}</li>")
+    terminal_command = str(facts.get("terminal_command") or "")
+    if terminal_command:
+        login_command = str(facts.get("login_command") or "")
+        also = f" <code>{_say(login_command)}</code> opens the login node." if login_command else ""
+        have.append(f"<li><b>A terminal into your job</b>: in a new terminal window type "
+                    f"<code>{_say(terminal_command)}</code>.{also} No password.</li>")
     if facts.get("vscode_host"):
         have.append(f"<li><b>VS Code</b>: Remote-SSH → <code>{_say(facts['vscode_host'])}</code> opens your projects "
                     "inside your workbench job.</li>")
