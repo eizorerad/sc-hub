@@ -131,7 +131,8 @@ it does not give a lab is the following, which is what sc-hub adds:
   duplicate submissions on retry, cached step reuse, a per-user cap on active
   pipelines with sc-hub's own queue above it, nothing heavy on the login node.
 - **A key that only opens sc-hub.** The agent's passphrase-less key runs the
-  MCP server and the dashboard mirror, nothing else (`schub-gate`).
+  MCP server and the dashboard mirror, nothing else (`schub-gate`). The student's
+  own key is another file, a normal one, for logging in from a terminal.
 - **One environment and one layout for the lab.** Results from different
   students are comparable because they come from the same brick versions.
 - **Provenance and measurement.** Every run keeps plan, params, versions and

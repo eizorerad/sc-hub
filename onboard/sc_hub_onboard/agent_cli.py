@@ -24,6 +24,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from . import browser
 from .sshkit import Paths
 
 REPO = Path(__file__).resolve().parents[2]
@@ -125,8 +126,6 @@ def status(paths: Paths, as_json: bool = False) -> int:
 
 def open_page(paths: Paths) -> int:
     """The running page in the student's browser, without showing its link (the token) to anyone."""
-    import webbrowser
-
     try:
         page = json.loads(page_file(paths).read_text())
         url = f"http://127.0.0.1:{int(page['port'])}/?t={page['token']}"
@@ -136,7 +135,8 @@ def open_page(paths: Paths) -> int:
     if _call(paths, "/api/state") is None:
         print("The page is not running. Start it again: it resumes where it stopped.")
         return 1
-    print("Opened in the default browser." if webbrowser.open(url) else "No browser could be opened on this computer.")
+    print("Opened in the default browser." if browser.open_in_browser(url) else
+          "No browser could be opened on this computer.")
     return 0
 
 

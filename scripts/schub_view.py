@@ -654,6 +654,34 @@ def stop(place: Place, quiet: bool = False) -> int:
     return 0 if gone else 1
 
 
+SYSTEM_OPENERS = {"darwin": "open", "linux": "xdg-open"}  # what Python's webbrowser may fail to reach (no GUI session)
+
+
+def open_in_browser(url: str, opener: Callable[[str], Any] | None = None, runner: Callable[..., Any] = subprocess.run,
+                    platform: str = sys.platform) -> bool:
+    """`url` in the default browser: Python's webbrowser first, then the system's own opener (`open` on macOS,
+    `xdg-open` on Linux; the program gets the address as an argument, never through a shell). Never raises: False says
+    nothing opened it. (The setup's helper has the same; this program is installed alone, so it cannot import it.)"""
+    try:
+        if (opener or webbrowser.open)(url):
+            return True
+    except (OSError, webbrowser.Error):
+        pass
+    command = SYSTEM_OPENERS.get("linux" if platform.startswith("linux") else platform)
+    if command is None:
+        return False
+    try:
+        return runner([command, url], capture_output=True, timeout=20, stdin=subprocess.DEVNULL).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def not_opened_message(url: str) -> str:
+    """When no browser took the page: the address last, on its own, and no leading "open" (zsh would run it as a
+    command with the words after it, and read the address's characters as shell)."""
+    return f"Your dashboard did not open by itself. Open this address in your browser: {url}"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="schub-view", description=(__doc__ or "").split("\n\n")[0])
     parser.add_argument("command", nargs="?", default="start", choices=("start", "open", "status", "stop", "serve"))
@@ -703,8 +731,8 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"url": info["url"], "port": port, "open": opener, "dir": info["dir"]}))
     else:
         print(f"sc-hub dashboard: {info['url']} (or http://127.0.0.1:{port})")
-    if not args.no_open and not webbrowser.open(opener):
-        print(f"open {info['url']} in your browser")
+    if not args.no_open and not open_in_browser(opener):
+        print(not_opened_message(info["url"]))
     return 0
 
 

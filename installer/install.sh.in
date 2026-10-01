@@ -34,8 +34,11 @@ KEY_LIMITED=0
 # Rewrites the sc-hub key's line in authorized_keys to "$OPTS <key>" (empty OPTS: a
 # plain key line again). Commented-out lines are left alone; the file is rewritten in
 # place (cat, not mv, so a symlinked file stays one) after a copy to .schub-backup.
-# The caller prefixes R= and OPTS=.
-KEY_LINE_REMOTE='set -e; umask 077; mkdir -p ~/.ssh; f=~/.ssh/authorized_keys; touch "$f"; if [ -n "$OPTS" ]; then test -x "$R/bin/schub-gate"; fi; line=$(tr -d '"'"'\r'"'"' | head -n 1); set -- $line; blob="$1 $2"; new="${OPTS:+$OPTS }$line"; cp "$f" "$f.schub-backup"; tmp=$(mktemp); awk -v blob="$blob" -v new="$new" '"'"'!/^[[:space:]]*#/ && index($0, blob) { if (!done) print new; done = 1; next } { print } END { if (!done) print new }'"'"' "$f" >| "$tmp"; cat "$tmp" >| "$f"; rm -f "$tmp"'
+# The key on stdin must be one whole public key line, or nothing changes; limiting a key
+# needs the gate script, or nothing is written. The caller prefixes R= and OPTS=. The same program as
+# onboard/sc_hub_onboard/sshkit.py's KEY_LINE_REMOTE: tests/test_onboard_ssh_config.py
+# keeps the two equal.
+KEY_LINE_REMOTE='unset IFS; set -e -f; umask 077; mkdir -p ~/.ssh; f=~/.ssh/authorized_keys; touch "$f"; if [ -n "$OPTS" ]; then test -x "$R/bin/schub-gate" || { echo "sc-hub: the gate $R/bin/schub-gate is not there" >&2; exit 3; }; fi; line=$(tr -d '"'"'\r'"'"' | head -n 1); set -- $(printf '"'"'%s\n'"'"' "$line"); ok=0; case "${1:-}" in ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521) ok=1;; esac; case "${2:-}" in ""|*[!A-Za-z0-9+/=]*) ok=0;; esac; [ "${#2}" -ge 40 ] || ok=0; [ "$ok" = 1 ] || { echo '"'"'sc-hub: that is not a public key line'"'"' >&2; exit 2; }; new="${OPTS:+$OPTS }$line"; cp "$f" "$f.schub-backup"; tmp=$(mktemp); TYPE="$1" BLOB="$2" NEW="$new" awk '"'"'function hit(a, n, i, l) { l = $0; sub(/\r$/, "", l); n = split(l, a, /[ \t]+/); for (i = 1; i < n; i++) if (a[i] ~ /^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521))$/) return a[i] == ENVIRON["TYPE"] && a[i + 1] == ENVIRON["BLOB"]; return 0 } !/^[[:space:]]*#/ && hit() { if (!done) print ENVIRON["NEW"]; done = 1; next } { print } END { if (!done) print ENVIRON["NEW"] }'"'"' "$f" >| "$tmp"; cat "$tmp" >| "$f"; rm -f "$tmp"'
 
 # Password logins of one run share one connection (one password prompt), never the
 # user's own ControlMaster, which may be logged in with the limited key.
@@ -117,6 +120,9 @@ add_ssh_alias() {
     # No Apple-only options (UseKeychain): OpenSSH elsewhere rejects the whole file,
     # breaking ssh to every host, not just this one.
     printf '    StrictHostKeyChecking accept-new\n'
+    # Never a connection another login made: with `ControlMaster auto` under `Host *` the assistants' alias would ride the
+    # student's own (unlimited) one, and the gate would never run.
+    printf '    ControlMaster no\n    ControlPath none\n'
     printf '    ServerAliveInterval 60\n    ServerAliveCountMax 3\n'
     # Settings that were at the top of the file keep applying to every host.
     printf 'Host *\n# <<< sc-hub <<<\n'

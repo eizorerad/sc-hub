@@ -25,22 +25,50 @@ something only where it has to:
    (`~/.ssh/mbzuai_schub_ed25519`, alias `mbzuai-schub`); it is never stored and
    never reaches the assistant. On Windows 10, whose OpenSSH does not take a
    password from a program, a console window opens and you type it there.
-3. **sc-hub on the cluster**, in `/l/users/LOGIN/schub`, set up in a Slurm job:
+3. **Your own key.** A second key, `~/.ssh/mbzuai_schub_login_ed25519`, goes onto the
+   cluster with the first one, so no password is asked again. It is a normal key, for
+   you alone: `schub login` in a terminal (or `ssh mbzuai-login`, also for `scp` and
+   `rsync`) logs you in to the login node. Unlike sc-hub's key it is not limited
+   (step 8), and the assistants' instructions tell them not to use it. It has no
+   passphrase, like sc-hub's: whoever can read your files can use it, so keep the
+   computer's disk encrypted and its screen locked. To revoke it, delete its line
+   (comment `sc-hub-login`) from `~/.ssh/authorized_keys` on the cluster. The page
+   uses it only to look (does it work; is the workbench running). Updating the cluster
+   side still asks your password once sc-hub's key is limited, so a human is in the loop.
+   If the own key cannot be set up, the step says so and the rest goes on; an
+   unreachable cluster (the VPN) stops the page for a Retry instead, because a skipped
+   step is not tried again by itself. `start.sh retry login-key` tries again. An account
+   set up before this step existed gets it on the next start: the page asks your
+   password once, says what it installs (a normal key, no passphrase) and has a "Not
+   now" button, which comes every time, whatever password the page already holds.
+4. **sc-hub on the cluster**, in `/l/users/LOGIN/schub`, set up in a Slurm job:
    your own environment with the analysis tools (scanpy, CellTypist, DE, Jupyter;
    about 1.3 GB) and the starter datasets (about 150 MB): a few minutes. The
    deep-learning tools (torch with its CUDA libraries and scvi-tools: up to 6.5 GB, most
    of the download) follow in a background job you do not wait for; it starts ten
    minutes later and takes a few minutes to half an hour, depending on the network.
    The dashboard, `cluster()` and `schub doctor` say while it is on its way.
-4. **A first run**: a kernel cell and a small Slurm job with a check, in the
+5. **A first run**: a kernel cell and a small Slurm job with a check, in the
    project `hello`.
-5. **Your assistants**: `~/sc-hub-workspace` is created, and sc-hub is switched on
-   there only. Codex gets the skill `$schub` and Claude Code `/schub`; in other folders
-   they work without sc-hub. Claude Desktop (a chat app that reaches the cluster only
-   through sc-hub) gets the server as before.
-6. **VS Code in your workbench job**: the host `mbzuai-schub-ide` gives VS Code
-   (Remote-SSH) a shell and files inside your own workbench job, which it starts
-   if needed; set up once, it works for every later job.
+6. **A terminal and VS Code in your workbench job**: in a terminal, `schub` lands you
+   in your own workbench job on the cluster, like a workstation command: it logs in with
+   your own key and runs `schub shell` on the login node, which starts the workbench
+   if it is not running and then `srun --pty`s into it. You are on the compute node where
+   your kernels run, with `codex` and `claude` there. `schub status` lists your jobs,
+   `schub view` and `schub lab` open the dashboard and a Jupyter session. `~/.sc-hub/bin`
+   is put on the PATH of new terminal windows (a marked block of its own in `~/.zshrc`,
+   or in `~/.bashrc` and the login file for bash; `$ZDOTDIR` is honoured); open a new
+   window to use it. Windows has `ssh schub` and `ssh mbzuai-login` instead. The setup
+   only looks at the workbench through your own key (it starts nothing). The step is
+   made of two parts that do not wait for each other, the terminal and VS Code, and a
+   problem in one is told in the step's line with how to try again (`retry terminal`;
+   `retry cluster` first if sc-hub on the cluster is older and has no `schub shell`):
+   the step is skipped only if nothing came out of it, so it never holds back the key
+   limit. The host `schub` is written into `~/.ssh/config` once it was seen to work. The
+   assistants' key gets no way into the job from this. Only where there is VS Code, the
+   host `mbzuai-schub-ide` (sc-hub's key through the gate into the job's own sshd) is set
+   up as before, with the Remote-SSH extension: that part starts the workbench job if it
+   is not running, takes the password after an update, and is not done again by a rerun.
 7. **Codex and Claude Code on the cluster**, for the lab agent and for you. Both are
    installed with their official installers, put on your PATH there (a marked
    block at the end of `~/.bashrc` and of `~/.profile` or `~/.bash_profile`; the
@@ -48,18 +76,31 @@ something only where it has to:
    Codex shows a one-time code (if your workspace turned device codes off, it
    signs in the usual way through a short-lived tunnel to `localhost:1455`),
    Claude shows a code to paste back into the page. The page then shows which
-   account each one uses, so you can check it is the student one.
-8. **The key only opens sc-hub** (see [the installer section](#install-student-one-command)); your password login is unchanged.
-9. **Your dashboard** starts on this computer, in the background, at
+   account each one uses, so you can check it is the student one. The same block keeps
+   Codex's SQLite files in one folder per host (`~/.codex-sqlite/<host>`): `/home` is
+   NFS, shared by every node, and the lab agent does the same, so your own `codex` is
+   as safe on any node as it is. The sign-ins sit in `~/.codex` and `~/.claude` in that
+   home: the lab agent and your own shells use the same accounts, nothing is kept for
+   sc-hub apart.
+8. **sc-hub's key only opens sc-hub** (see [the installer section](#install-student-one-command)); your own key and your password login are unchanged. On an account that is limited already, a key that replaces the old one (a new laptop) is written limited from the start, and with the gate script not there nothing is written; the page also looks at the key itself each time it signs in, and limits it again if it opens a shell.
+9. **Your assistants**, after the limit (an assistant connected sooner would hold a key that is still a full shell if the run stopped in between, at a sign-in you pressed Stop on): `~/sc-hub-workspace` is created, and sc-hub is switched on
+   there only. Codex gets the skill `$schub` and Claude Code `/schub`; in other folders
+   they work without sc-hub. Claude Desktop (a chat app that reaches the cluster only
+   through sc-hub) gets the server as before.
+10. **Your dashboard** starts on this computer, in the background, at
    `http://sc-hub.localhost:27182` (the next free port if that one is taken), and
    the page takes you to its welcome: what was installed and how to work with it,
    in brief. The cluster guide for newcomers to Slurm is linked from there and from
    the dashboard's cluster overview. After a restart of the computer,
-   `~/.sc-hub/bin/schub-view` brings it back (Windows: `~\.sc-hub\bin\schub-view.cmd`). The
+   `~/.sc-hub/bin/schub-view` (or `schub view`) brings it back (Windows: `~\.sc-hub\bin\schub-view.cmd`). The
    dashboard's program lives there, outside the folders your assistants write in.
 
+
 A step that fails says what to do and has a Retry button; running the page again
-skips what is done. `--home DIR` writes everything under `DIR` instead of your
+skips what is done. The page also says how to open itself again (`sh onboard/start.sh open`,
+or the link, shown bare: in zsh a `?` or `!` in a pasted command is read as shell, so the
+page never asks for `open <link>`); it opens in your default browser by itself, with the
+system's own opener (`open`, `xdg-open`) when Python's cannot. `--home DIR` writes everything under `DIR` instead of your
 home (for trials), `--no-browser` opens nothing by itself.
 
 ### When the assistant runs it: fixes that come back
@@ -142,14 +183,19 @@ refuses the rest, a shell on the login node included; every decision goes to
 tools (quotas and jobs come from the `cluster` tool, not from a shell).
 
 It is a guard rail, not a security boundary:
-- **VS Code's shell.** With VS Code, the same key opens a shell inside the student's own workbench job (`mbzuai-schub-ide`, for the editor).
+- **VS Code's shell.** Where there is VS Code, the same key opens a shell inside the student's own workbench job (`mbzuai-schub-ide`), for the editor. The terminal (`schub`) does not use this key.
 - **Cells and tunnels.** Cells run the student's code on a compute node that shares the home folder, and the key may open tunnels.
-- **Agent instructions.** The assistants' instructions tell them not to use either for anything else.
+- **The student's own key.** The setup page also installs a normal key of the student's own (step 3: `~/.ssh/mbzuai_schub_login_ed25519`, `schub login`, `schub`), so they log in without a password. It has no passphrase, so anything that runs as the student on their computer could use it. sc-hub's own alias never shares a connection with it (`ControlMaster no`, `ControlPath none` in its block): a connection the own key made would carry the assistants' commands past the gate.
+- **Agent instructions.** The assistants' instructions (the workspace's `AGENTS.md` and the server's) tell them not to use any of these for anything else.
 
 The student's own login (password) is unaffected. Delete that line to revoke the
 key; re-running the installer with `SCHUB_KEY_UNRESTRICTED=1` makes it a normal
 key again (not recommended). The setup page limits the key on every system; the
-older Windows installer does not.
+older Windows installer does not. The older installers create only sc-hub's key:
+the student's own key, the `schub` command and the PATH entry for `~/.sc-hub/bin`
+come from the setup page. Running an older installer over a page setup replaces
+sc-hub's block in `~/.ssh/config` and with it the hosts `mbzuai-login` and `schub`:
+`start.sh retry sign-in` and `retry terminal` put them back.
 
 Running it again is safe: it replaces its own blocks in `~/.ssh/config` and the
 Codex config (between `# >>> sc-hub >>>` markers), so a mistyped login is fixed
@@ -218,6 +264,30 @@ unreadable, bootstrap builds a private environment as above. If the library lack
 one asset, only that asset is downloaded into `library-local`. At any time `bench.fetch` in a cell or `schub fetch` in a job fetches a
 download job. Datasets with a recorded checksum get the same cache keys whether
 they come from the library or a fallback copy.
+
+## Updating an installed setup
+
+A student whose setup is finished updates with `git pull --ff-only` and `sh onboard/start.sh`:
+the page runs the steps that are new (`login-key`, `terminal`) and skips the rest. Two
+things need a nudge. The new `schub shell` command is part of sc-hub on the cluster, so
+until `retry cluster` uploads it (the page asks the password once) the `terminal` step
+says so and is skipped; `retry cluster` then sets the terminal up too. And the cluster's shell
+block, which now also keeps Codex's SQLite files per host, is rewritten by `retry agents`
+(which asks to confirm the accounts again).
+
+## Where things live on the cluster
+
+`/home` (NFS) is for what runs often and quickly: scripts, environments, sign-ins, shell
+settings. `/l` (Lustre) is for datasets and files. What the setup adds follows that: the
+sign-ins (`~/.codex`, `~/.claude`), Codex's SQLite files (`~/.codex-sqlite/<host>`), the
+PATH block in the shell's files and the keys are in the home; datasets, projects, runs,
+journals, downloads and logs are under `/l/users/LOGIN/schub`.
+
+Not following it yet: sc-hub's own code (`src/`), its wrappers (`bin/`) and its Python
+environment (`env/`, with the uv-managed Python under `.cache/`) sit in that same Lustre
+folder, and so does a shared library's environment. Moving them into the home needs
+`SCHUB_ROOT` to split into a code folder and a data folder, and the home's per-user quota
+is not visible from a client (an environment is about 8 GB): ask HPC about it first.
 
 ## The pilot owner's commands, all of them
 

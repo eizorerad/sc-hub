@@ -1,4 +1,5 @@
-"""Codex and Claude Code on the student's own PATH on the cluster: the block the setup writes into the shell's files.
+"""Codex and Claude Code on the student's own PATH on the cluster, and `schub` on the PATH of this computer: the
+blocks the setup writes into the shell's files.
 
 The official installers skip this when ~/.local/bin is already on PATH, which it is in the setup's own commands,
 so a student who logged in to the cluster found no `codex` and no `claude`. The program runs on the login node
@@ -18,6 +19,7 @@ import pytest
 ONBOARD = Path(__file__).resolve().parents[1] / "onboard"
 sys.path.insert(0, str(ONBOARD))
 
+from sc_hub_onboard.assistants import LAPTOP_BEGIN, LAPTOP_END, LAPTOP_PATH  # noqa: E402
 from sc_hub_onboard.cluster_agents import INSTALL, REGISTER_PATH, login_path  # noqa: E402
 
 SKEL_BASHRC = "# ~/.bashrc\ncase $- in\n    *i*) ;;\n      *) return;;\nesac\nHISTSIZE=1000\n"
@@ -25,9 +27,10 @@ SKEL_PROFILE = 'if [ -n "$BASH_VERSION" ]; then\n    if [ -f "$HOME/.bashrc" ]; 
 BEGIN, END = "# >>> sc-hub >>>", "# <<< sc-hub <<<"
 
 
-def register(home: Path, shell: str = "/bin/bash", before: str = "") -> list[str]:
-    done = subprocess.run([sys.executable, "-"], input=before + REGISTER_PATH, capture_output=True, text=True,
-                          timeout=60, env={"HOME": str(home), "SHELL": shell, "PATH": os.environ.get("PATH", "")})
+def register(home: Path, shell: str = "/bin/bash", before: str = "", program: str = REGISTER_PATH,
+             **env: str) -> list[str]:
+    done = subprocess.run([sys.executable, "-"], input=before + program, capture_output=True, text=True,
+                          timeout=60, env={"HOME": str(home), "SHELL": shell, "PATH": os.environ.get("PATH", ""), **env})
     assert done.returncode == 0, done.stderr
     return done.stdout.splitlines()
 
@@ -92,13 +95,24 @@ def test_a_lost_end_marker_leaves_the_file_alone_instead_of_eating_lines(home: P
     assert (home / ".bashrc").read_text() == text and register(home)[0] == lines[0]
 
 
-def test_line_endings_stay_as_they_were(home: Path) -> None:
+def test_the_block_is_always_lf_even_in_a_file_of_crlf_lines(home: Path) -> None:
+    """bash and zsh cannot read a CRLF line (`$'\\r': command not found`, a `case` that never ends): a block of CRLF lines would
+    never set the PATH, whatever the file's other lines are. The lines the student has are left as they are."""
     (home / ".bashrc").write_bytes(b"alias a=b\r\nexport X=1\r\n")
     register(home)
     raw = (home / ".bashrc").read_bytes()
-    assert raw.startswith(b"alias a=b\r\nexport X=1\r\n\r\n# >>> sc-hub >>>\r\n") and b"\n" not in raw.replace(b"\r\n", b"")
+    assert raw.startswith(b"alias a=b\r\nexport X=1\r\n\n# >>> sc-hub >>>\n") and raw.endswith(b"# <<< sc-hub <<<\n")
+    assert raw.count(b"\r\n") == 2  # (only the student's own two lines)
     before = raw
     assert register(home)[0] == "PATH: ~/.bashrc already has it" and (home / ".bashrc").read_bytes() == before
+
+
+def test_a_block_an_earlier_helper_wrote_in_crlf_is_replaced_by_an_lf_one(home: Path) -> None:
+    body = "\r\n".join([BEGIN, *OLD_BODY, END]) + "\r\n"
+    (home / ".bashrc").write_bytes(b"alias a=b\r\n" + body.encode())
+    assert register(home)[0] == "PATH: added to ~/.bashrc"
+    raw = (home / ".bashrc").read_bytes()
+    assert raw.count(BEGIN.encode()) == 1 and raw.count(b"\r\n") == 1 and raw.endswith(b"# <<< sc-hub <<<\n")
 
 
 def test_a_file_another_account_owns_is_left_alone(home: Path) -> None:
@@ -176,3 +190,174 @@ def test_the_install_registers_the_path_and_checks_a_login() -> None:
     # the installers still run first, and a failed PATH update does not fail the install
     assert INSTALL.index("chatgpt.com/codex/install.sh") < INSTALL.index("SCHUB_PATH")
     assert "|| echo \"PATH: could not update" in INSTALL
+
+
+OLD_BODY = [  # what the setup wrote before the block also kept Codex's files apart: a block of its own, not the student's
+    "# Codex and Claude Code, installed by the sc-hub setup, live in ~/.local/bin.",
+    'case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$HOME/.local/bin:$PATH" ;; esac',
+]
+
+
+def test_a_block_an_earlier_setup_wrote_is_replaced_and_not_taken_for_the_students_own(home: Path) -> None:
+    (home / ".bashrc").write_text(SKEL_BASHRC + "\n".join([BEGIN, *OLD_BODY, END]) + "\n")
+    assert register(home)[0] == "PATH: added to ~/.bashrc"
+    text = (home / ".bashrc").read_text()
+    assert text.count(BEGIN) == 1 and text.startswith(SKEL_BASHRC) and "CODEX_SQLITE_HOME" in text
+    assert register(home)[0] == "PATH: ~/.bashrc already has it"
+
+
+@pytest.mark.skipif(shutil.which("bash") is None or shutil.which("hostname") is None, reason="needs bash")
+def test_the_students_own_codex_keeps_its_sqlite_files_per_host_like_the_lab_agent(tmp_path: Path) -> None:
+    """/home is NFS, shared by every node: Codex's SQLite files from two nodes at once corrupt or lock up. The lab
+    agent already keeps one folder per host; the student's own shell now does the same, on every node."""
+    bare = tmp_path / "bare"  # (the cluster's own ~/.bashrc returns early for a shell that is not interactive)
+    bare.mkdir()
+    register(bare)
+    block = (bare / ".bashrc").read_text().split(BEGIN)[1]
+    assert "echo" not in block  # a non-interactive login must stay silent
+    env = {"HOME": str(bare), "PATH": os.environ.get("PATH", "")}
+    done = subprocess.run(["bash", "-c", '. "$HOME/.bashrc"; printf "%s" "$CODEX_SQLITE_HOME"'], capture_output=True,
+                          text=True, timeout=60, env=env)
+    short = subprocess.run(["hostname", "-s"], capture_output=True, text=True, timeout=30).stdout.strip()
+    assert done.returncode == 0 and done.stdout == f"{bare}/.codex-sqlite/{short}" and done.stderr == ""
+    assert (bare / ".codex-sqlite").stat().st_mode & 0o777 == 0o700
+    assert Path(done.stdout).is_dir() and Path(done.stdout).stat().st_mode & 0o777 == 0o700
+    again = subprocess.run(["bash", "-c", 'export CODEX_SQLITE_HOME=/elsewhere; . "$HOME/.bashrc"; '
+                                          'printf "%s" "$CODEX_SQLITE_HOME"'],
+                           capture_output=True, text=True, timeout=60, env=env)
+    assert again.stdout == "/elsewhere" and again.stderr == ""  # a student's own setting wins
+    # srun and sbatch pass the environment on: a shell in a job starts with the login node's folder, and takes its own host's
+    inherited = subprocess.run(["bash", "-c", f'export CODEX_SQLITE_HOME="{bare}/.codex-sqlite/lo-02"; . "$HOME/.bashrc"; '
+                                              'printf "%s" "$CODEX_SQLITE_HOME"'],
+                               capture_output=True, text=True, timeout=60, env=env)
+    assert inherited.stdout == f"{bare}/.codex-sqlite/{short}" and inherited.stderr == ""
+
+
+@pytest.mark.skipif(shutil.which("bash") is None or os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+                    reason="needs bash and a user that cannot write everywhere")
+def test_the_block_never_ends_a_job_script_that_runs_with_set_e(tmp_path: Path) -> None:
+    """A `#!/bin/bash -e` script that sources ~/.bashrc must not die because a folder could not be made (over quota, or
+    two jobs making the same one at once)."""
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    register(bare)
+    bare.chmod(0o555)  # nothing can be made in the home
+    try:
+        done = subprocess.run(["bash", "-e", "-c", '. "$HOME/.bashrc"; echo survived'], capture_output=True, text=True,
+                              timeout=60, env={"HOME": str(bare), "PATH": os.environ.get("PATH", "")})
+    finally:
+        bare.chmod(0o755)
+    assert done.stdout == "survived\n" and done.stderr == ""  # and it says nothing either
+
+
+def test_the_setups_own_commands_keep_the_same_rule() -> None:
+    from sc_hub_onboard.cluster_agents import PRELUDE
+
+    assert 'case "${CODEX_SQLITE_HOME:-}" in ""|"$HOME/.codex-sqlite/"*)' in PRELUDE and "|| :" in PRELUDE
+
+
+# ---- this computer: ~/.sc-hub/bin, where `schub` lives ---------------------------------------------------------------
+
+def test_on_this_computer_zsh_gets_its_zshrc_and_nothing_else(tmp_path: Path) -> None:
+    """macOS: zsh reads ~/.zshrc in every terminal window; ~/.bashrc and ~/.profile are not its files."""
+    assert register(tmp_path, shell="/bin/zsh", program=LAPTOP_PATH) == ["PATH: added to ~/.zshrc"]
+    text = (tmp_path / ".zshrc").read_text()
+    assert text.startswith(LAPTOP_BEGIN) and text.rstrip().endswith(LAPTOP_END) and "$HOME/.sc-hub/bin" in text
+    assert 'export PATH="$PATH:$HOME/.sc-hub/bin"' in text  # last: it never shadows a command the student has
+    assert not (tmp_path / ".bashrc").exists() and not (tmp_path / ".profile").exists()
+    assert register(tmp_path, shell="/bin/zsh", program=LAPTOP_PATH) == ["PATH: ~/.zshrc already has it"]
+
+
+def test_on_this_computer_bash_gets_its_bashrc_and_the_login_file(tmp_path: Path) -> None:
+    (tmp_path / ".bash_profile").write_text("export EDITOR=vim\n")  # macOS's bash reads this one in a new window
+    assert register(tmp_path, shell="/bin/bash", program=LAPTOP_PATH) == ["PATH: added to ~/.bashrc",
+                                                                         "PATH: added to ~/.bash_profile"]
+    assert not (tmp_path / ".zshrc").exists()
+
+
+def test_on_this_computer_another_shell_is_told_to_add_the_folder_itself(tmp_path: Path) -> None:
+    assert register(tmp_path, shell="/usr/bin/fish", program=LAPTOP_PATH) == [
+        "PATH: your shell (fish) is not one the setup edits; add ~/.sc-hub/bin to your PATH yourself"]
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_on_this_computer_a_dotfile_the_student_keeps_in_a_dotfiles_folder_is_edited_there(tmp_path: Path) -> None:
+    (tmp_path / "dotfiles").mkdir()
+    (tmp_path / "dotfiles" / "zshrc").write_text("alias ll='ls -l'\n")
+    (tmp_path / ".zshrc").symlink_to("dotfiles/zshrc")
+    register(tmp_path, shell="/bin/zsh", program=LAPTOP_PATH)
+    assert (tmp_path / ".zshrc").is_symlink() and LAPTOP_BEGIN in (tmp_path / "dotfiles" / "zshrc").read_text()
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+def test_a_new_terminal_then_finds_schub_by_its_name(tmp_path: Path) -> None:
+    launcher = tmp_path / ".sc-hub" / "bin" / "schub"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("#!/bin/sh\necho launched\n")
+    launcher.chmod(0o755)
+    register(tmp_path, shell="/bin/bash", program=LAPTOP_PATH)
+    done = subprocess.run(["bash", "-c", '. "$HOME/.bashrc"; schub'], capture_output=True, text=True, timeout=60,
+                          env={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"})
+    assert done.stdout == "launched\n", (done.stdout, done.stderr)
+
+
+def test_the_laptops_block_and_the_clusters_can_share_a_dotfile(tmp_path: Path) -> None:
+    """A dotfiles repository synced between the laptop and the cluster account carries both: each program knows its own
+    block (another marker) and does not call the other's edited, as it would if both had the same markers."""
+    assert LAPTOP_BEGIN != BEGIN and LAPTOP_END != END
+    register(tmp_path, shell="/bin/zsh")  # the cluster's, which writes ~/.zshrc for zsh too
+    assert register(tmp_path, shell="/bin/zsh", program=LAPTOP_PATH) == ["PATH: added to ~/.zshrc"]
+    assert register(tmp_path, shell="/bin/zsh", program=LAPTOP_PATH) == ["PATH: ~/.zshrc already has it"]
+    again = register(tmp_path, shell="/bin/zsh")  # its own block goes behind the laptop's (the end, as always)
+    assert not any("left" in line or "edited" in line for line in again)
+    text = (tmp_path / ".zshrc").read_text()
+    assert text.count(BEGIN) == 1 and text.count(LAPTOP_BEGIN) == 1 and text.count(END) == 1
+
+
+def test_zsh_reads_the_folder_zdotdir_names_when_there_is_one(tmp_path: Path) -> None:
+    zdot = tmp_path / "zdot"
+    zdot.mkdir()
+    assert register(tmp_path, shell="/bin/zsh", program=LAPTOP_PATH, ZDOTDIR=str(zdot)) == [
+        f"PATH: added to {zdot}/.zshrc"]
+    assert LAPTOP_BEGIN in (zdot / ".zshrc").read_text() and not (tmp_path / ".zshrc").exists()
+    gone = tmp_path / "no-such-folder"  # a ZDOTDIR that is not a folder: zsh reads nothing there, the home it is
+    assert register(tmp_path, shell="/bin/zsh", program=LAPTOP_PATH, ZDOTDIR=str(gone)) == ["PATH: added to ~/.zshrc"]
+
+
+def test_without_a_shell_variable_the_accounts_own_login_shell_decides(tmp_path: Path) -> None:
+    """Started by an assistant, the helper may have no $SHELL: the program asks the account (macOS: zsh)."""
+    import pwd
+
+    lines = register(tmp_path, shell="", program=LAPTOP_PATH)
+    shell = os.path.basename(pwd.getpwuid(os.getuid()).pw_shell)
+    if shell == "zsh":
+        assert lines == ["PATH: added to ~/.zshrc"]
+    elif shell in ("bash", "sh"):
+        assert lines[0] == "PATH: added to ~/.bashrc"
+    else:
+        assert lines == [f"PATH: your shell ({shell}) is not one the setup edits; add ~/.sc-hub/bin to your PATH yourself"]
+
+
+def test_one_stray_crlf_does_not_turn_the_whole_block_into_crlf(home: Path) -> None:
+    """bash cannot read CRLF lines: a file with a single one (a pasted comment, ignored by bash) must stay readable."""
+    (home / ".bashrc").write_bytes(b"# pasted\r\nexport X=1\nexport Y=2\n")
+    register(home)
+    raw = (home / ".bashrc").read_bytes()
+    assert raw.count(b"\r\n") == 1 and raw.endswith(b"# <<< sc-hub <<<\n")
+    assert register(home)[0] == "PATH: ~/.bashrc already has it"
+
+
+def test_a_trial_home_never_writes_the_real_zdotdir(tmp_path: Path, monkeypatch) -> None:
+    """VS Code's terminal exports ZDOTDIR: a `--home` trial, or the tests, run from there must change their own home's
+    ~/.zshrc, not the student's real one."""
+    from sc_hub_onboard import assistants
+    from sc_hub_onboard.sshkit import Paths
+
+    real = tmp_path / "real-zdotdir"
+    real.mkdir()
+    monkeypatch.setenv("ZDOTDIR", str(real))
+    monkeypatch.setenv("SHELL", "/bin/zsh")
+    trial = Paths(home=tmp_path / "trial")
+    trial.home.mkdir()
+    assert assistants.register_path(trial) == ["PATH: added to ~/.zshrc"]
+    assert LAPTOP_BEGIN in (trial.home / ".zshrc").read_text() and list(real.iterdir()) == []

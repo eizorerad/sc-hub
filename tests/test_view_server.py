@@ -260,6 +260,35 @@ def test_the_welcome_page_says_what_the_setup_installed(app) -> None:
     assert re.search(r"script-src ([^;]+)", headers["Content-Security-Policy"])[1] == f"'nonce-{nonce_of(headers)}'"
 
 
+def test_the_welcome_page_says_how_to_land_in_the_job_from_a_terminal(app) -> None:
+    view.write_json(app.place.welcome, {"login": "test.user", "terminal_command": "schub",
+                                        "login_command": "schub login"})
+    text = get(app.port, "/welcome")[2].decode()
+    assert "A terminal into your job" in text and "<code>schub</code>" in text
+    assert "<code>schub login</code> opens the login node" in text and "No password." in text
+    view.write_json(app.place.welcome, {"login": "test.user", "terminal_command": "~/.sc-hub/bin/schub"})  # no own key
+    text = get(app.port, "/welcome")[2].decode()
+    assert "<code>~/.sc-hub/bin/schub</code>" in text and "opens the login node" not in text
+    view.write_json(app.place.welcome, {"login": "test.user", "terminal_command": "<b>x</b>"})  # facts are escaped
+    text = get(app.port, "/welcome")[2].decode()
+    assert "&lt;b&gt;x&lt;/b&gt;" in text and "<b>x</b>" not in text
+
+
+def test_the_terminal_line_does_not_confuse_the_command_for_the_workspace(app) -> None:
+    """A student who only has Codex is told to start `codex` in the workspace, with or without the terminal line (the
+    line's own variable once shadowed the list of terminal assistants: `claude (or claude)`)."""
+    view.write_json(app.place.welcome, {"login": "test.user", "workspace": "/Users/t/sc-hub-workspace",
+                                        "assistants": ["Codex"], "terminal_command": "schub",
+                                        "login_command": "schub login"})
+    text = get(app.port, "/welcome")[2].decode()
+    assert "cd /Users/t/sc-hub-workspace &amp;&amp; codex</code>." in text and "(or" not in text and "claude" not in text.split(
+        "How to work")[1].split("Good to know")[0]
+    view.write_json(app.place.welcome, {"workspace": "/Users/t/w", "assistants": ["Codex", "Claude Code"],
+                                        "terminal_command": "schub"})
+    text = get(app.port, "/welcome")[2].decode()
+    assert "&amp;&amp; codex</code> (or <code>claude</code>)." in text
+
+
 def test_the_welcome_page_without_the_setups_notes_is_still_useful(app) -> None:
     _, _, body = get(app.port, "/welcome")
     assert b"sc-hub is ready" in body and b"$schub" in body and b"Codex and Claude Code on the cluster" not in body

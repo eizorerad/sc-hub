@@ -75,6 +75,8 @@ def test_sc_hub_commands_pass(cluster_home, command, output):
     "schub/bin/schub-mcp --debug",
     "schub/bin/schub ide-proxy --debug",
     "schub/bin/schub ide-setup",  # the key's own line is set by the setup with the student's login, not by the key
+    "schub/bin/schub shell",  # the student's own terminal in the job: the student's own key runs it, never this one
+    "schub/bin/schub shell -c id",
     "schub/bin/schub view-pack",
     "schub/bin/schub view-pack full /etc",
     "schub/bin/schub view-pack ../x",

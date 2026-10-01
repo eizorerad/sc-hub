@@ -1,6 +1,10 @@
-"""VS Code on the student's laptop, inside the student's own workbench job.
+"""The student's own terminal, and VS Code, inside the student's own workbench job.
 
-On the laptop, ~/.ssh/config has a host `mbzuai-schub-ide` whose ProxyCommand is
+The terminal is `schub shell` (the setup's `schub` command on the laptop runs it over the student's own key, which opens a
+normal shell on the login node, like the pilot owner's `mbzuai` command): it starts the workbench if it is not running,
+waits for it, then `srun --pty`s into its allocation. The keys that only open sc-hub cannot run it (the gate refuses).
+
+VS Code on the laptop: ~/.ssh/config has a host `mbzuai-schub-ide` whose ProxyCommand is
 `ssh mbzuai-schub <root>/bin/schub ide-proxy`. The sc-hub gate lets that one command through
 the limited key. `ide-proxy` makes sure the workbench job runs, then starts a user-mode sshd
 in inetd mode inside that job's allocation (`srun --overlap --unbuffered sshd -i`); its stdin
@@ -28,6 +32,10 @@ from ..slurm import Slurm, SlurmError
 from .workbench import BenchStopped, Workbench
 
 SSHD = "/usr/sbin/sshd"
+# What `schub shell --no-start` exits with when it only looked and found nothing to go into: codes of its own, because the
+# cluster's bootstrap already exits with 3 (sc-hub's Python is missing), and "not running" (it starts when the student types
+# schub) is not "stopped" (it does not).
+NOT_RUNNING, STOPPED = 75, 76
 BEAT_S = 30
 ACTIVE_FOR_S = 180
 WAIT_S = 900
@@ -92,6 +100,7 @@ def active(settings: Settings) -> bool:
 
 def _touch(settings: Settings) -> None:
     try:
+        folder(settings).mkdir(mode=0o700, parents=True, exist_ok=True)  # (a terminal needs no VS Code set up)
         (folder(settings) / "active").touch()
     except OSError:
         pass
@@ -137,3 +146,42 @@ def proxy(settings: Settings, slurm: Slurm, wait_s: float = WAIT_S, err: TextIO 
             return process.wait(timeout=BEAT_S)
         except subprocess.TimeoutExpired:
             _touch(settings)
+
+
+def shell(settings: Settings, slurm: Slurm, command: str = "", start: bool = True, wait_s: float = WAIT_S,
+          err: TextIO = sys.stderr) -> int:
+    """`schub shell`: the student's terminal inside the workbench job. A login shell, or `command` through `bash -lc` (no
+    terminal). With `start` false a workbench that is not running is not started: NOT_RUNNING, nothing submitted (the setup
+    looks this way). While the shell lasts <root>/ide/active is touched, so the workbench does not stop for being idle
+    under the student (a look is not the student at work: it touches nothing). Returns what the shell ended with; a Ctrl-C
+    while it waits for the job, 130."""
+    bench = Workbench(settings, slurm)
+    try:
+        if start:
+            _touch(settings)  # counts from the first second: a starting workbench does not idle-stop under the student
+            bench.ensure()
+            job = _running_job(bench, time.monotonic() + wait_s, err)
+        else:
+            state = bench.state()
+            if state.stopped:
+                err.write("sc-hub: your bench is stopped (bench/STOP exists on the cluster); remove it to use schub\n")
+                return STOPPED
+            if not (state.job_id and state.slurm_state == "RUNNING"):
+                err.write("sc-hub: your workbench job is not running now; type schub to start it\n")
+                return NOT_RUNNING
+            job = state.job_id
+    except (BenchStopped, SlurmError, IdeError) as exc:
+        err.write(f"sc-hub: {exc}\n")
+        return 1
+    except KeyboardInterrupt:  # (the wait can last minutes: a line, not a traceback)
+        err.write("\nsc-hub: stopped waiting; the workbench job may still be starting: type schub again to get in\n")
+        return 130
+    args = ["srun", f"--jobid={job}", "--overlap", *(["bash", "-lc", command] if command else ["--pty", "bash", "-l"])]
+    process = subprocess.Popen(args)  # inherits the terminal
+    while True:
+        try:
+            return process.wait(timeout=BEAT_S)
+        except subprocess.TimeoutExpired:
+            _touch(settings)
+        except KeyboardInterrupt:  # (a command without a terminal: srun gets the Ctrl-C too and handles it; a second one
+            continue  # within a second ends the step)

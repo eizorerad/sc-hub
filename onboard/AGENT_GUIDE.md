@@ -44,15 +44,16 @@ The steps run in this order. A step that is done is skipped on the next run.
 | `computer` | Looks for ssh, ssh-keygen, codex, claude and VS Code on this computer | nothing |
 | `browser` | The student confirms their student accounts are in the default browser | nothing |
 | `sign-in` | Login and password on the page. The password goes to ssh through askpass once, to install a dedicated key. On Windows 10, a console window asks for it. | `~/.ssh/config` block `# >>> sc-hub >>>`, `~/.ssh/mbzuai_schub_ed25519`, the cluster's `~/.ssh/authorized_keys` |
+| `login-key` | The student's own key, `~/.ssh/mbzuai_schub_login_ed25519` (no passphrase), installed on the cluster with sc-hub's key while that is not limited yet. The page says what it installs and has a "Not now" button, on the first run too; once the key is limited it also asks the password, every time. Not essential: a refusal, Stop or "Not now" skips the step and the setup goes on; an unreachable cluster fails it for a Retry. | `~/.ssh/config` block (`mbzuai-login`; `schub` once the terminal works), `~/.ssh/mbzuai_schub_login_ed25519[.pub]`, the cluster's `~/.ssh/authorized_keys` |
 | `cluster` | Uploads this checkout to `/l/users/LOGIN/schub/src/sc-hub`, then runs `scripts/bootstrap_cluster.sh`. That runs a Slurm job on ws-ia (1 h) that installs the analysis tools and downloads the starter datasets (a few minutes), then queues a background job (ws-ia, 1 GPU, 2 h; it starts 10 minutes later) for the deep-learning tools (torch, scvi-tools: up to 6.5 GB, a few minutes to half an hour; `setup-extras.json` says where it stands, and a failed one restarts on `retry cluster`). | cluster: `/l/users/LOGIN/schub` |
 | `hello` | Project `hello`: one kernel cell (starts the workbench job), then one small `%%slurm` job with a check | cluster: `schub/projects/hello` |
-| `assistants` | Creates `~/sc-hub-workspace` and switches sc-hub on there only: Codex (`$schub`), Claude Code (`/schub`); Claude Desktop as before | `~/.codex/config.toml` block (server off, the workspace trusted), the workspace's `.codex/config.toml` (on), `claude mcp add -s local` in the workspace, skills in `~/.codex/skills/schub` and `~/.claude/skills/schub`, Claude Desktop's config (backup `.bak-schub`) |
-| `vscode` | `schub ide-setup` on the cluster, the `mbzuai-schub-ide` host, one test connection into the workbench job. Skipped without VS Code. | `~/.ssh/config` block, cluster `schub/ide` |
-| `agents` | Installs Codex and Claude Code on the login node, puts `~/.local/bin` on the student's PATH there and checks that a new login finds both, then signs them in with the student's accounts: a device code for Codex (or the usual sign-in through a tunnel to 127.0.0.1:1455), a pasted code for Claude. Then the student confirms the accounts. | cluster: `~/.codex`, `~/.claude`, `~/.local/bin`; a `# >>> sc-hub >>>` block at the end of `~/.bashrc` and of the login file (`~/.bash_profile`, `~/.bash_login` or `~/.profile`) |
+| `terminal` | `~/.sc-hub/bin/schub` (the terminal command) and `~/.sc-hub/bin` on the PATH of new terminals; one look, through the own key, at `schub shell --no-start` on the cluster (it starts nothing). With VS Code, also `schub ide-setup`, the host `mbzuai-schub-ide` and the Remote-SSH extension (once; it starts the workbench job). The two parts are independent, a problem in one is told in the step's line, and the step is skipped only if neither worked (never failed), so it cannot hold back `limit`. | `~/.ssh/config` block, `~/.sc-hub/bin`, a marked block of its own in `~/.zshrc` (zsh) or `~/.bashrc` and the login file (bash), cluster `schub/ide` (VS Code) |
+| `agents` | Installs Codex and Claude Code on the login node, puts `~/.local/bin` on the student's PATH there (and keeps Codex's SQLite files per host) and checks that a new login finds both, then signs them in with the student's accounts: a device code for Codex (or the usual sign-in through a tunnel to 127.0.0.1:1455), a pasted code for Claude. Then the student confirms the accounts. | cluster: `~/.codex`, `~/.claude`, `~/.local/bin`; a `# >>> sc-hub >>>` block at the end of `~/.bashrc` and of the login file (`~/.bash_profile`, `~/.bash_login` or `~/.profile`) |
 | `limit` | Limits the key to sc-hub: the key's line in `authorized_keys` gets `restrict,port-forwarding,command=".../schub-gate"` | cluster `~/.ssh/authorized_keys` (backup `.schub-backup`) |
+| `assistants` | (after `limit`: an assistant connected sooner would hold a key that is still a full shell if the run stopped in between) Creates `~/sc-hub-workspace` and switches sc-hub on there only: Codex (`$schub`), Claude Code (`/schub`); Claude Desktop as before | `~/.codex/config.toml` block (server off, the workspace trusted), the workspace's `.codex/config.toml` (on), `claude mcp add -s local` in the workspace, skills in `~/.codex/skills/schub` and `~/.claude/skills/schub`, Claude Desktop's config (backup `.bak-schub`) |
 | `dashboard` | Writes what was installed to `~/.sc-hub/welcome.json`, starts the dashboard's server (`schub_view.py` in the workspace) in the background at `http://sc-hub.localhost:27182` (or the next free port), and the page then opens its welcome. Skipped with `--no-browser`. | `~/.sc-hub/welcome.json`, `view.json`, `view-config.json`, `view.log`; the copy in `~/sc-hub-view` |
 
-Before `limit` is done, you can look at the cluster with the key:
+Before `limit` is done, you can look at the cluster with sc-hub's key:
 `ssh -o BatchMode=yes mbzuai-schub '<command>'`. Useful commands:
 - `squeue -u $USER` shows jobs waiting or running.
 - `~/schub/bin/schub doctor` checks the installation.
@@ -61,7 +62,8 @@ Before `limit` is done, you can look at the cluster with the key:
 
 Look only, and change nothing there by hand. After `limit`, the key runs only
 sc-hub's own commands. Use the MCP tools (`cluster`) or ask the student
-to run a command in their own terminal with their password.
+to run a command in their own terminal (`schub login`, on Windows `ssh mbzuai-login`; no password). The student's own key
+(`~/.ssh/mbzuai_schub_login_ed25519`, hosts `mbzuai-login` and `schub`) is theirs: never use it yourself.
 
 ## When a step fails or seems stuck
 
@@ -77,11 +79,14 @@ to run a command in their own terminal with their password.
 | `your cluster shell prints N bytes` | The cluster's `~/.bashrc` prints on non-interactive logins | The student adds the line below near the top of `~/.bashrc` on the cluster. Then `retry cluster`. |
 | `cluster` or `hello` waits long | The job waits for a slot: ws-ia allows 2 running jobs per user | `squeue -u $USER`. If the student's own jobs hold the slots, they decide what to stop. Never cancel jobs yourself. |
 | `the setup on the cluster failed` | The bootstrap log shows it: disk quota, a download, a package | Read the log lines. If sc-hub is at fault, it is a code fix (below). |
-| VS Code connection did not open | The workbench job did not start in time | `retry vscode` later |
+| The `terminal` step was skipped | The own key is missing (`retry login-key` first), sc-hub on the cluster is older and has no `schub shell` (`retry cluster`, which sets the terminal up again), the bench is stopped (`bench/STOP` on the cluster: the student removes it), or VS Code's connection did not open (the workbench waits for a free slot) | `retry terminal` (later) |
 | `port 1455 is taken` | Another sign-in on the same login node | Wait a few minutes, `retry agents` |
 | `the key still opens a shell` | The limit did not apply | `retry limit`. If it stays, report it. |
+| `the gate script is not there` or `the key is not written (never as a plain line)` at sign-in | sc-hub's key is limited on the account, but its gate under `/l/users/LOGIN/schub` did not run: `/l` is not available right now, or sc-hub's folder there was moved or deleted. The page never puts a plain key in its place | Wait and `retry sign-in`. If the folder is gone, tell the pilot owner. |
 | `the dashboard did not start` | Its server could not start: no Python 3.9+ for it, or run inside a sandbox | `~/.sc-hub/bin/schub-view`, outside the sandbox; `~/.sc-hub/bin/schub-view status` and `~/.sc-hub/view.log` say more. Then `retry dashboard`. |
 | The dashboard says it cannot reach the cluster | Off campus, the key refused, or sc-hub on the cluster older than the dashboard | Its note says which; the VPN, `retry sign-in` or `retry cluster`. It keeps showing the last copy meanwhile. |
+| `schub` not found in a terminal | That window was open before the setup, or the shell is not zsh or bash (the `terminal` step's details say which files it changed) | A new terminal window; else `~/.sc-hub/bin/schub`, or add `~/.sc-hub/bin` to the PATH |
+| `schub login` or `ssh mbzuai-login` asks for a password | The student's own key is not installed (the `login-key` step was skipped) | `retry login-key` (the page asks the password once) |
 | `codex` or `claude` not found after logging in to the cluster | That shell was open before the setup, or its login file skips `~/.bashrc` | Log in again or `source ~/.bashrc`. The `agents` step's details list the files it changed and what a new login found. |
 
 The `~/.bashrc` line, before any command that prints:
