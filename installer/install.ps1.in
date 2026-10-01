@@ -26,7 +26,7 @@ $Utf8 = New-Object Text.UTF8Encoding $false
 # Adds the key once, on its own line; strips the CR that Windows pipes append.
 # No double quotes anywhere: Windows PowerShell 5.1 mangles them in native arguments.
 $AddKeyRemote = 'umask 077; mkdir -p ~/.ssh; f=~/.ssh/authorized_keys; touch $f; t=$(mktemp); ' +
-    'tr -d ''\r'' > $t; if ! grep -qxFf $t $f; then if test -s $f && test $(tail -c1 $f | wc -l) -eq 0; ' +
+    'tr -d ''\r'' >| $t; if ! grep -qxFf $t $f; then if test -s $f && test $(tail -c1 $f | wc -l) -eq 0; ' +
     'then echo >> $f; fi; cat $t >> $f; fi; rm -f $t'
 
 function Log($Text) { Write-Host "[sc-hub] $Text" -ForegroundColor Cyan }

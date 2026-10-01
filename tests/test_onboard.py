@@ -638,3 +638,21 @@ def test_without_a_toml_parser_only_the_quoted_folder_counts_as_trusted(tmp_path
     assert assistants._trusted(f'[projects."{workspace}"]\n', workspace)
     assert assistants._trusted(f"[projects.'{workspace}']\n", workspace)
     assert not assistants._trusted(f'[projects."{workspace}-old"]\n', workspace)  # only a name that starts the same
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the cluster's shell")
+def test_the_key_line_is_written_under_a_login_shell_with_noclobber(tmp_path) -> None:
+    import subprocess
+    from sc_hub_onboard.sshkit import KEY_LINE_REMOTE
+    (tmp_path / ".ssh").mkdir()
+    keys = tmp_path / ".ssh" / "authorized_keys"
+    keys.write_text("ssh-rsa AAAAother other@laptop\n")
+    key = "ssh-ed25519 AAAAschub schub@laptop"
+    (tmp_path / "bin").mkdir()
+    (tmp_path / "bin" / "schub-gate").write_text("")
+    (tmp_path / "bin" / "schub-gate").chmod(0o755)
+    for options in ("", "restrict"):  # sign-in, then a rewrite of the same line (as `limit` does)
+        done = subprocess.run(["bash", "-C", "-c", f"R='{tmp_path}'; OPTS='{options}'; {KEY_LINE_REMOTE}"], input=key + "\n",
+                              capture_output=True, text=True, env={**os.environ, "HOME": str(tmp_path)})
+        assert done.returncode == 0, done.stderr
+    assert keys.read_text().splitlines() == ["ssh-rsa AAAAother other@laptop", f"restrict {key}"]
