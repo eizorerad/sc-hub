@@ -201,7 +201,7 @@ class Setup:
     def _run(self, ssh: Ssh, schub: str, code: str, why: str, expect: str, checks: list | None = None,
              wait: int = 60) -> dict:
         """A cell through the CLI: its code goes through stdin into a file, so no quoting can break it."""
-        command = (f'f=$(mktemp) && cat > "$f" && {schub} bench-run {HELLO} --code "$f" --why {_q(why)} '
+        command = (f'f=$(mktemp) && cat >| "$f" && {schub} bench-run {HELLO} --code "$f" --why {_q(why)} '
                    f"--expect {_q(expect)} --checks {_q(json.dumps(checks or []))} --wait {wait}; "
                    'code=$?; rm -f "$f"; exit $code')
         done = ssh.run(command, stdin=code.encode(), timeout=wait + 300)

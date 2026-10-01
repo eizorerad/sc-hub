@@ -29,12 +29,13 @@ ASKPASS_MIN = (8, 4)  # OpenSSH that honours SSH_ASKPASS_REQUIRE=force; older on
 NO_CONSOLE = {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)} if os.name == "nt" else {}
 # Rewrites the sc-hub key's line in authorized_keys to "$OPTS <key>" (the same program as the shell
 # installer's KEY_LINE_REMOTE): commented lines are left alone, a copy goes to .schub-backup first.
+# `>|` because a login shell may have noclobber on (set -C), which refuses `>` onto the mktemp file.
 KEY_LINE_REMOTE = (
     "set -e; umask 077; mkdir -p ~/.ssh; f=~/.ssh/authorized_keys; touch \"$f\"; "
     "if [ -n \"$OPTS\" ]; then test -x \"$R/bin/schub-gate\"; fi; line=$(tr -d '\\r' | head -n 1); "
     "set -- $line; blob=\"$1 $2\"; new=\"${OPTS:+$OPTS }$line\"; cp \"$f\" \"$f.schub-backup\"; tmp=$(mktemp); "
     "awk -v blob=\"$blob\" -v new=\"$new\" '!/^[[:space:]]*#/ && index($0, blob) { if (!done) print new; "
-    "done = 1; next } { print } END { if (!done) print new }' \"$f\" > \"$tmp\"; cat \"$tmp\" > \"$f\"; rm -f \"$tmp\""
+    "done = 1; next } { print } END { if (!done) print new }' \"$f\" >| \"$tmp\"; cat \"$tmp\" >| \"$f\"; rm -f \"$tmp\""
 )
 
 
